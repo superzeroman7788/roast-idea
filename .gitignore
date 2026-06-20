@@ -21,3 +21,6 @@ src-tauri/gen/
 *.db-shm
 *.db-wal
 data/
+
+# --- 本地编辑器/预览配置(含机器绝对路径,不进库) ---
+.claude/

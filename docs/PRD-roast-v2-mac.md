@@ -2,7 +2,8 @@
 
 > 交接对象：Claude Code / Codex（重建本项目）
 > 版本：v2.0 设计 ｜ 日期：2026-06-20
-> 一句话：把"AI 主观吐槽器"升级为**有证据的跨厂商反方决策议会**，先做 macOS 原生版。
+> 一句话：把"AI 主观吐槽器"升级为**有证据的跨厂商反方决策议会**。
+> **交付顺序：先做 Web 版上线,再用 Tauri 包成 macOS 版**(同一套前端+后端,改动很小)。
 
 ---
 
@@ -21,7 +22,7 @@
 
 **为什么这版不同**：从"AI 凭直觉吐槽"(可被一句"它会枪毙 Airbnb"打死)升级为"带 receipts 的反方会议"——更可信、更好传播、周末抄不走。证据层是护城河(接地)的第一块砖,也是通往未来 ontology 接地的路。
 
-**本期目标**：交付一个 **macOS 原生应用**,跑通"点子 → 证据包 → 反方议会 → 裁决"完整闭环,UI 采用暗色图谱风(见第 9 节),并从第一天起把每次 run 落库(为未来的"裁决 vs 真实结果"数据集 = 真护城河)。
+**本期目标**：先交付一个**可上线的 Web 应用**(一个 URL,好分享、好传播、好迭代),跑通"点子 → 证据包 → 反方议会 → 裁决"完整闭环,UI 采用 JARVIS 暗色图谱风(见第 9 节),并从第一天起把每次 run 落库(为未来的"裁决 vs 真实结果"数据集 = 真护城河)。Web 跑通后,用 Tauri 把同一套前端+后端包成 **macOS 版**。
 
 ---
 
@@ -141,6 +142,13 @@ interface RunRecord {        // 落库 = 护城河数据集
 - **检索层**:2-3 个检索器起步(见第 7 节),结果带 source/url/fetchedAt,缓存进 SQLite。
 - **模型调用**:直连各 provider(OpenAI 兼容 + Anthropic),BYO key;失败走 `Promise.allSettled`,进 failures,不伪造。
 
+> **本期是 Web 版,上面第 5 节那套(Tauri+Keychain+本地 SQLite)是后续 Mac 版。Web 版主路径如下:**
+> - 前端 Vite/React 部署到 Vercel/Netlify;后端用 serverless / Node 服务跑议会编排 + 证据检索。
+> - **密钥策略(Web 的命门)**:绝不把你的高价 key 给全网免费跑。两选一——① 用户前端填自己的 key,**每次请求带上、服务端只中转不存储**;② 你用便宜/开源模型 + 严格限额 + 缓存做"免费试一次",重度模式要求 BYO key。
+> - 落库用 hosted DB(Postgres 或磁盘 SQLite);run 数据集照样攒。
+> - 隐私:Web 托管=点子经过你服务器,必须明示 + 可关检索。
+> - **Mac 版后做**:Tauri 复用同一套前端+后端,只把 key 换 Keychain、DB 换本地 SQLite。
+
 ---
 
 ## 6. 议会与裁决逻辑（核心算法,逐条实现）
@@ -215,11 +223,11 @@ interface RunRecord {        // 落库 = 护城河数据集
 
 ## 10. 技术选型理由
 
-| 选项 | 取舍 |
-|---|---|
-| **Tauri 2 + React**(选它) | 复用现有 React;产出真 .app 体积小;Rust 外壳可管 sidecar;暗色图谱用 web(canvas/WebGL,如 react-force-graph / D3)好做;Keychain/SQLite 有官方插件 |
-| Electron | 能复用但体积大、耗内存,Mac 原生感弱 |
-| SwiftUI 纯原生 | 最原生最丝滑,但要重写议会后端、丢掉现有 React,周期长——留作未来"完全原生"再考虑 |
+| 阶段 | 选型 | 理由 |
+|---|---|---|
+| **本期 Web(选它)** | Vite + React + TS 前端 + Node/serverless 后端 | 复用现有代码;最快上线;一个 URL 好分享/传播(契合 HN/PH/X 发布);JARVIS UI 是 HTML/SVG,浏览器原生支持 |
+| **后续 Mac** | **Tauri 2** 包同一套前端+后端 | 产出真 .app 体积小;key 换 Keychain、DB 换本地 SQLite,改动小 |
+| 不选 | Electron(重、Mac 原生感弱) / SwiftUI(要重写、丢 React) | — |
 
 ---
 
@@ -227,10 +235,12 @@ interface RunRecord {        // 落库 = 护城河数据集
 
 | 阶段 | 交付 | 验收标准 |
 |---|---|---|
-| **P0 清理+自包含** | 去 agent-group 依赖、去硬路径、硬化 .gitignore、删/隔离 mock、SQLite 建 RunRecord 表 | `git` 不会提交 key;无外部服务依赖;空跑不出现伪造议会 |
-| **P1 真议会核心 + 图谱骨架(Tauri 壳)** | Tauri 打出 .app;直连各 provider(BYO key);**裁决跨席位聚合 + 强制魔鬼代言人 + simulated 门**;**中央实时议会图谱的可用骨架**(节点=模型,发言发光,分歧红边,流式) | 真·多厂商→聚合裁决;<2 厂商 simulated;每次 run 落库;**图谱能看见模型实时发言与分歧(非占位、非假数据)** |
+| **P0 清理+自包含** | 去 agent-group 依赖、去硬路径、硬化 .gitignore、删/隔离 mock、建 RunRecord 表(Web 用 hosted DB,Mac 用本地 SQLite) | `git` 不会提交 key;无外部服务依赖;空跑不出现伪造议会 |
+| **P1 真议会核心 + 图谱骨架(Web)** | Vite 构建可部署 Web 应用 + 定 key 策略;直连各 provider(BYO key);**裁决跨席位聚合 + 强制魔鬼代言人 + simulated 门**;**中央实时议会图谱的可用骨架**(节点=模型,发言发光,分歧红边,流式) | 真·多厂商→聚合裁决;<2 厂商 simulated;每次 run 落库;**图谱能看见模型实时发言与分歧(非占位、非假数据)** |
 | **P2 证据层 + 图谱接证据** | 2-3 个检索器 → EvidencePack(带链接/时间)→ 两段式 UX(证据先显示)→ 反方**引用证据ID + 校验**;**图谱加入证据节点 + "模型引用证据"连线** | 报告每条风险可点开真实来源;引用不存在的被标红/丢弃;可关检索;**证据→模型引用连线实时点亮** |
 | **P3 图谱打磨 + 分享 + 遥测** | 流式动效、布局过滤(只看分歧/只看证据)、重置布局、**生成带 receipts 分享图**、右栏完整遥测、单模型失败降级 | 动效顺滑;分享图含各模型名+证据;遥测准确;单模型失败不崩全场 |
+| **P4 上线 Web** | 部署(Vercel/Netlify + 后端)、限额/缓存、隐私说明、落地页 | 公网可访问;成本可控;可发 HN/PH/X |
+| **P5 Mac 封装(Web 跑通后)** | 用 Tauri 把同一套前端+后端包成 .app,key→Keychain,DB→本地 SQLite | .app 跑出与 Web 一致的议会;无外部依赖/硬路径 |
 
 **不要做(本期)**:**语音输入(已砍)**、账号系统、团队协作、56 层数据、WorldMonitor 那套 registry/JMESPath、付费层。
 

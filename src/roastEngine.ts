@@ -1,13 +1,35 @@
+// ⚠️ SAMPLE ONLY —— 本文件是写死的示例报告,仅用于首屏/演示占位。
+// 它【不是】真实议会结果:每个产出都带 isSample:true,UI 必须标注为 SAMPLE。
+// 真实裁决一律来自后端 /api/roast(直连各 provider)。绝不把这里的内容当真 run 渲染。
 export type RoastMode = "idea" | "copy";
 
 type Stance = "Ship" | "Fix" | "Pause" | "Kill" | "Failed";
 
+export type Objection = {
+  text: string;
+  evidenceId: string | null;
+  valid?: boolean;
+};
+
+export type EvidenceItem = {
+  id: string;
+  claim: string;
+  url: string;
+  source: string;
+  title: string;
+  snippet: string;
+  fetchedAt: string;
+  credibility: "high" | "medium" | "low";
+};
+
 export type CouncilMember = {
   provider: string;
   role: string;
+  roleAngle?: string;
   stance: Stance;
   take: string;
   blindspot: string;
+  objections?: Objection[];
 };
 
 export type CouncilReport = {
@@ -33,6 +55,25 @@ export type CouncilReport = {
   sevenDayPlan: string;
   panel: CouncilMember[];
   debate: Array<{ speaker: string; line: string }>;
+  isSample?: boolean; // true = 写死示例,非真实 run
+  evidence?: {
+    items: EvidenceItem[];
+    byTheme: {
+      competitors: string[];
+      demandSignals: string[];
+      pricing: string[];
+      saturation: string[];
+    };
+    sources: string[];
+    redacted: boolean;
+    count: number;
+  };
+  citations?: {
+    total: number;
+    valid: number;
+    invalid: number;
+    rate: number | null;
+  };
   live?: {
     simulated: boolean;
     providerCount: number;
@@ -128,7 +169,7 @@ const copyPanel: CouncilMember[] = [
   },
 ];
 
-export function runCouncil(brief: string, mode: RoastMode): CouncilReport {
+export function buildSampleReport(brief: string, mode: RoastMode): CouncilReport {
   const normalized = brief.toLowerCase();
   const mentionsScore = /score|0-100|100|分数/.test(normalized);
   const mentionsMultiModel =
@@ -141,6 +182,7 @@ export function runCouncil(brief: string, mode: RoastMode): CouncilReport {
 
   if (mode === "copy") {
     return {
+      isSample: true,
       verdict: "Fix the promise",
       summary:
         "The copy has a usable category hook, but it overclaims prediction. Make it a diagnostic tool that creates sharper tests, not a fortune teller for viral success.",
@@ -197,6 +239,7 @@ export function runCouncil(brief: string, mode: RoastMode): CouncilReport {
   }
 
   return {
+    isSample: true,
     verdict: mentionsMultiModel ? "Fix, then ship" : "Pause until real dissent",
     summary:
       "The idea is worth prototyping if the first visible feature proves cross-vendor disagreement. The product should act like a hard-nosed coach, not a judge with fake precision.",

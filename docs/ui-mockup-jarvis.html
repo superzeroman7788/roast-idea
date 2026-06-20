@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Roast · Decision Council — JARVIS UI Mockup</title>
+<style>
+  :root{
+    --bg0:#04070e; --bg1:#070b16; --panel:#0a1020cc; --panel2:#0c1426;
+    --line:#1c2c47; --line2:#2a4a6a;
+    --cyan:#34e1ff; --cyan-dim:#1b9fc4; --cyan-faint:#34e1ff22;
+    --amber:#ffb44d; --amber-dim:#c9821f;
+    --red:#ff5c6a; --green:#46e6a0;
+    --tx:#dcecf6; --tx2:#7f97b0; --tx3:#52688200;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,"Helvetica Neue",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1200px 700px at 50% 38%, #0a1326 0%, #060a14 55%, #03060d 100%);
+    font-family:var(--sans); color:var(--tx);
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:28px;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* scanlines + grid overlay */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:99;
+    background:
+      repeating-linear-gradient(0deg, #ffffff05 0 1px, transparent 1px 3px),
+      radial-gradient(900px 600px at 50% 40%, transparent 60%, #00000066 100%);
+    mix-blend-mode:overlay; opacity:.5;
+  }
+  .app{
+    width:1180px; height:760px; position:relative;
+    background:linear-gradient(180deg,#070c18 0%,#050810 100%);
+    border:1px solid #16314e; border-radius:16px;
+    box-shadow:0 0 0 1px #0a1830, 0 30px 80px #000a, 0 0 120px #0e3a5533 inset;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  /* top chrome */
+  .chrome{height:40px; display:flex; align-items:center; gap:8px; padding:0 14px;
+    border-bottom:1px solid #122742; background:#060a14;}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+  .chrome .title{flex:1;text-align:center;font-family:var(--mono);font-size:12px;
+    letter-spacing:.32em;color:#5f7a98}
+  .chrome .title b{color:var(--cyan);font-weight:500;text-shadow:0 0 10px #34e1ff66}
+  /* body grid */
+  .grid{flex:1;display:grid;grid-template-columns:248px 1fr 232px;min-height:0}
+  .col{padding:16px;display:flex;flex-direction:column;min-height:0}
+  .col.left{border-right:1px solid #0f2138}
+  .col.right{border-left:1px solid #0f2138}
+  .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.26em;color:#5f7a98;
+    text-transform:uppercase;display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  .eyebrow .live{display:inline-flex;align-items:center;gap:5px;color:var(--cyan)}
+  .blink{width:6px;height:6px;border-radius:50%;background:var(--cyan);
+    box-shadow:0 0 8px var(--cyan);animation:blink 1.6s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+
+  /* left: reactor + stats */
+  .reactor-wrap{display:flex;justify-content:center;margin:8px 0 18px}
+  .stat-row{display:flex;justify-content:space-between;align-items:center;
+    padding:9px 0;border-bottom:1px solid #0e1f34;font-family:var(--mono);font-size:11px}
+  .stat-row span{color:#6f88a4;letter-spacing:.12em}
+  .stat-row b{color:var(--tx);font-weight:500;font-size:13px}
+  .stat-row b.amber{color:var(--amber);text-shadow:0 0 8px #ffb44d55}
+  .stat-row b.red{color:var(--red)}
+  .mode{display:flex;gap:6px;margin-top:16px}
+  .mode button{flex:1;font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+    padding:8px;border-radius:7px;border:1px solid #1d3350;background:#0a1626;color:#7f97b0;cursor:pointer}
+  .mode button.on{border-color:var(--cyan);color:var(--cyan);background:#0c2536;
+    box-shadow:0 0 14px #34e1ff22, inset 0 0 14px #34e1ff14}
+  .verdict{margin-top:auto;border:1px solid #1d3a2e;border-radius:10px;padding:12px;
+    background:linear-gradient(180deg,#0a1a16,#08130f)}
+  .verdict .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.24em;color:#5f7a98}
+  .verdict .v{font-size:17px;color:var(--green);font-weight:500;margin-top:4px;
+    text-shadow:0 0 12px #46e6a055}
+
+  /* center: HUD graph */
+  .stage{display:flex;justify-content:center;gap:0;margin-bottom:6px}
+  .stage .step{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:#3f5a72;
+    padding:4px 14px;position:relative}
+  .stage .step.done{color:#2f6f88}
+  .stage .step.now{color:var(--cyan);text-shadow:0 0 10px #34e1ff66}
+  .stage .step+.step::before{content:"›";position:absolute;left:-3px;color:#27405a}
+  .scene{flex:1;position:relative;display:flex;align-items:center;justify-content:center}
+  .hud{width:100%;height:100%}
+  .spin{transform-origin:260px 260px;animation:spin 26s linear infinite}
+  .spin-r{transform-origin:260px 260px;animation:spin 40s linear infinite reverse}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .pulse{animation:pz 2.4s ease-in-out infinite}
+  @keyframes pz{0%,100%{opacity:.5}50%{opacity:1}}
+  .core{animation:core 3s ease-in-out infinite}
+  @keyframes core{0%,100%{r:15;opacity:.95}50%{r:18;opacity:1}}
+  /* legend */
+  .legend{position:absolute;left:8px;bottom:6px;display:flex;flex-direction:column;gap:5px}
+  .legend div{font-family:var(--mono);font-size:10px;color:#6f88a4;display:flex;align-items:center;gap:7px;letter-spacing:.1em}
+  .lg{width:9px;height:9px;border-radius:50%}
+  .controls{position:absolute;right:8px;bottom:6px;display:flex;gap:6px}
+  .controls button{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:#6f88a4;
+    background:#0a1626;border:1px solid #173052;border-radius:6px;padding:5px 9px;cursor:pointer}
+
+  /* right: telemetry */
+  .tel{display:flex;justify-content:space-between;align-items:baseline;
+    padding:10px 0;border-bottom:1px solid #0e1f34}
+  .tel .k{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:#6f88a4;text-transform:uppercase}
+  .tel .val{font-family:var(--mono);font-size:15px;color:var(--tx);font-weight:500}
+  .tel .val.cyan{color:var(--cyan);text-shadow:0 0 8px #34e1ff44}
+  .tel .val.red{color:var(--red)}
+  .tel .val.green{color:var(--green)}
+  .ticks{margin-top:16px}
+  .tick{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11px;
+    color:#6f88a4;padding:6px 0;letter-spacing:.1em}
+  .tick i{width:7px;height:7px;border-radius:50%;background:#15263b;border:1px solid #2a4a6a}
+  .tick.done i{background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+  .tick.now i{background:var(--amber);border-color:var(--amber);box-shadow:0 0 8px var(--amber);animation:blink 1.4s infinite}
+  .tick.done{color:#9fb4c8}
+  .arc-wrap{margin-top:auto;display:flex;flex-direction:column;align-items:center;padding-top:14px}
+
+  /* bottom input bar */
+  .bar{height:64px;border-top:1px solid #122742;background:#060b15;
+    display:flex;align-items:center;gap:12px;padding:0 16px}
+  .field{flex:1;display:flex;align-items:center;gap:10px;background:#0a1424;
+    border:1px solid #18314f;border-radius:10px;padding:0 14px;height:40px;
+    box-shadow:inset 0 0 18px #0c2a4022}
+  .field i{color:var(--cyan);font-style:normal}
+  .field input{flex:1;background:none;border:none;outline:none;color:var(--tx);
+    font-family:var(--sans);font-size:13px}
+  .field input::placeholder{color:#4f6a86}
+  .run{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:#10202c;
+    background:linear-gradient(180deg,#ffce7a,#f2a23a);border:none;border-radius:9px;
+    padding:11px 22px;cursor:pointer;font-weight:600;
+    box-shadow:0 0 22px #ffb44d44, 0 0 0 1px #ffce7a88}
+  .corner{position:absolute;width:14px;height:14px;border:1px solid #34e1ff55}
+  .c-tl{top:46px;left:6px;border-right:0;border-bottom:0}
+  .c-tr{top:46px;right:6px;border-left:0;border-bottom:0}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="chrome">
+      <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+      <div class="title">ROAST · <b>DECISION COUNCIL</b> · 认知界面</div>
+      <div style="font-family:var(--mono);font-size:11px;color:#46e6a0;display:flex;align-items:center;gap:6px">
+        <span class="blink" style="background:#46e6a0;box-shadow:0 0 8px #46e6a0"></span>已连接</div>
+    </div>
+
+    <div class="grid">
+      <!-- LEFT -->
+      <div class="col left">
+        <div class="eyebrow">输入处理器 <span class="live" style="margin-left:auto"><span class="blink"></span>实时</span></div>
+        <div class="reactor-wrap">
+          <svg width="140" height="140" viewBox="0 0 140 140">
+            <circle cx="70" cy="70" r="58" fill="none" stroke="#163a52" stroke-width="1"/>
+            <circle cx="70" cy="70" r="58" fill="none" stroke="#34e1ff" stroke-width="1.4"
+              stroke-dasharray="6 10" opacity=".7" style="transform-origin:70px 70px;animation:spin 18s linear infinite"/>
+            <circle cx="70" cy="70" r="44" fill="none" stroke="#173052" stroke-width="1"
+              stroke-dasharray="2 6"/>
+            <circle cx="70" cy="70" r="30" fill="#0c2233" stroke="#34e1ff" stroke-width="1" opacity=".5"/>
+            <circle class="core" cx="70" cy="70" r="15" fill="#34e1ff" opacity=".9"
+              style="filter:drop-shadow(0 0 12px #34e1ff)"/>
+            <circle cx="70" cy="70" r="7" fill="#bfffff"/>
+          </svg>
+        </div>
+        <div class="stat-row"><span>EVIDENCE</span><b class="amber">12</b></div>
+        <div class="stat-row"><span>SOURCES</span><b>5</b></div>
+        <div class="stat-row"><span>MODELS</span><b>4 / 5</b></div>
+        <div class="stat-row"><span>CITATIONS</span><b>9 <span style="color:#52688a">/</span> <span class="red" style="font-size:11px">2✕</span></b></div>
+        <div class="mode">
+          <button class="on">IDEA</button>
+          <button>COPY</button>
+        </div>
+        <div class="verdict">
+          <div class="lbl">VERDICT · 裁决</div>
+          <div class="v">Fix, then ship</div>
+        </div>
+      </div>
+
+      <!-- CENTER -->
+      <div class="col" style="padding:14px 8px 8px">
+        <div class="stage">
+          <span class="step done">检索</span>
+          <span class="step done">整理</span>
+          <span class="step now">对线</span>
+          <span class="step">综合</span>
+        </div>
+        <div class="scene">
+          <svg class="hud" viewBox="0 0 520 520" preserveAspectRatio="xMidYMid meet">
+            <!-- concentric HUD rings -->
+            <g fill="none" stroke="#15324d">
+              <circle cx="260" cy="260" r="232" stroke="#16324d"/>
+              <circle cx="260" cy="260" r="186" stroke="#13283e"/>
+              <circle cx="260" cy="260" r="120" stroke="#12253a"/>
+            </g>
+            <!-- rotating dashed rings -->
+            <circle class="spin" cx="260" cy="260" r="232" fill="none" stroke="#34e1ff" stroke-width="1"
+              stroke-dasharray="2 16" opacity=".55"/>
+            <circle class="spin-r" cx="260" cy="260" r="186" fill="none" stroke="#34e1ff" stroke-width="1"
+              stroke-dasharray="1 22" opacity=".4"/>
+            <!-- tick marks -->
+            <g stroke="#2a4a6a" stroke-width="1">
+              <line x1="260" y1="22" x2="260" y2="34"/><line x1="260" y1="486" x2="260" y2="498"/>
+              <line x1="22" y1="260" x2="34" y2="260"/><line x1="486" y1="260" x2="498" y2="260"/>
+            </g>
+            <!-- reticle -->
+            <g stroke="#34e1ff33" stroke-width="1"><line x1="40" y1="260" x2="480" y2="260"/><line x1="260" y1="40" x2="260" y2="480"/></g>
+
+            <!-- edges: model -> evidence (cyan), model<->model dissent (red dashed) -->
+            <g stroke-width="1.3" fill="none">
+              <line x1="260" y1="260" x2="150" y2="150" stroke="#34e1ff" opacity=".5"/>
+              <line x1="260" y1="260" x2="378" y2="150" stroke="#34e1ff" opacity=".5"/>
+              <line x1="260" y1="260" x2="150" y2="372" stroke="#34e1ff" opacity=".5"/>
+              <line x1="260" y1="260" x2="372" y2="372" stroke="#34e1ff" opacity=".5"/>
+              <line x1="150" y1="150" x2="92" y2="96" stroke="#ffb44d" opacity=".55"/>
+              <line x1="378" y1="150" x2="436" y2="98" stroke="#ffb44d" opacity=".55"/>
+              <line x1="150" y1="372" x2="96" y2="430" stroke="#ffb44d" opacity=".55"/>
+              <line x1="372" y1="372" x2="430" y2="430" stroke="#ffb44d" opacity=".55"/>
+              <line x1="150" y1="150" x2="372" y2="372" stroke="#ff5c6a" stroke-dasharray="4 5" opacity=".7"/>
+            </g>
+
+            <!-- evidence nodes (amber) -->
+            <g font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#c9821f">
+              <circle cx="92" cy="96" r="5" fill="#ffb44d" opacity=".9" style="filter:drop-shadow(0 0 6px #ffb44d)"/><text x="74" y="86">E1·web</text>
+              <circle cx="436" cy="98" r="5" fill="#ffb44d" opacity=".9" style="filter:drop-shadow(0 0 6px #ffb44d)"/><text x="420" y="88">E4·HN</text>
+              <circle cx="96" cy="430" r="5" fill="#ffb44d" opacity=".9" style="filter:drop-shadow(0 0 6px #ffb44d)"/><text x="78" y="450">E7·GH</text>
+              <circle cx="430" cy="430" r="5" fill="#ffb44d" opacity=".9" style="filter:drop-shadow(0 0 6px #ffb44d)"/><text x="404" y="450">E9·PH</text>
+            </g>
+
+            <!-- model nodes (cyan) -->
+            <g font-family="ui-monospace,Menlo,monospace" font-size="10">
+              <circle class="pulse" cx="150" cy="150" r="11" fill="#0c2536" stroke="#34e1ff" stroke-width="1.6" style="filter:drop-shadow(0 0 10px #34e1ff88)"/>
+              <text x="120" y="132" fill="#7fd6ee">DeepSeek</text><text x="138" y="170" fill="#ff5c6a" font-size="9">KILL</text>
+
+              <circle cx="378" cy="150" r="11" fill="#0c2536" stroke="#34e1ff" stroke-width="1.6" style="filter:drop-shadow(0 0 10px #34e1ff88)"/>
+              <text x="356" y="132" fill="#7fd6ee">Kimi</text><text x="364" y="170" fill="#ffb44d" font-size="9">FIX</text>
+
+              <circle cx="150" cy="372" r="11" fill="#0c2536" stroke="#34e1ff" stroke-width="1.6" style="filter:drop-shadow(0 0 10px #34e1ff88)"/>
+              <text x="120" y="402" fill="#7fd6ee">Qwen</text><text x="138" y="360" fill="#ffb44d" font-size="9">FIX</text>
+
+              <circle class="pulse" cx="372" cy="372" r="11" fill="#241018" stroke="#ff5c6a" stroke-width="1.6" style="filter:drop-shadow(0 0 10px #ff5c6a88)"/>
+              <text x="338" y="402" fill="#ff9aa3">Devil's Adv.</text><text x="360" y="360" fill="#ff5c6a" font-size="9">KILL</text>
+            </g>
+
+            <!-- center idea core -->
+            <circle class="core" cx="260" cy="260" r="16" fill="#34e1ff" opacity=".9" style="filter:drop-shadow(0 0 16px #34e1ff)"/>
+            <circle cx="260" cy="260" r="8" fill="#dffaff"/>
+            <text x="232" y="296" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#9fdcef">IDEA · 核心</text>
+          </svg>
+          <div class="legend">
+            <div><span class="lg" style="background:#34e1ff"></span>模型席位</div>
+            <div><span class="lg" style="background:#ffb44d"></span>证据(带链接)</div>
+            <div><span class="lg" style="background:#ff5c6a"></span>分歧 / Kill</div>
+          </div>
+          <div class="controls">
+            <button>重置布局</button><button>只看分歧</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT -->
+      <div class="col right">
+        <div class="eyebrow">遥测 · TELEMETRY</div>
+        <div class="tel"><span class="k">节点</span><span class="val cyan">9</span></div>
+        <div class="tel"><span class="k">连线</span><span class="val">14</span></div>
+        <div class="tel"><span class="k">分歧</span><span class="val red">REAL</span></div>
+        <div class="tel"><span class="k">引用有效率</span><span class="val green">82%</span></div>
+        <div class="tel"><span class="k">TOK / S</span><span class="val">218</span></div>
+        <div class="tel"><span class="k">耗时</span><span class="val">00:41</span></div>
+        <div class="ticks">
+          <div class="eyebrow" style="margin:14px 0 8px">流水线 · TICK</div>
+          <div class="tick done"><i></i>检索证据</div>
+          <div class="tick done"><i></i>主脑整理</div>
+          <div class="tick now"><i></i>反方对线</div>
+          <div class="tick"><i></i>引用校验</div>
+          <div class="tick"><i></i>综合裁决</div>
+        </div>
+        <div class="arc-wrap">
+          <svg width="120" height="78" viewBox="0 0 120 78">
+            <path d="M14 70 A46 46 0 0 1 106 70" fill="none" stroke="#15314c" stroke-width="6" stroke-linecap="round"/>
+            <path d="M14 70 A46 46 0 0 1 92 34" fill="none" stroke="#34e1ff" stroke-width="6" stroke-linecap="round" style="filter:drop-shadow(0 0 6px #34e1ff88)"/>
+            <text x="60" y="64" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="17" fill="#dcecf6">71</text>
+            <text x="60" y="76" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#6f88a4">CONFIDENCE · 主观</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOTTOM INPUT -->
+    <div class="bar">
+      <div class="field">
+        <i>›</i>
+        <input value="一个跨厂商、有证据的反方 AI 议会,帮创业者在动工前反驳自己的点子" />
+      </div>
+      <button class="run">RUN COUNCIL</button>
+    </div>
+    <div class="corner c-tl"></div><div class="corner c-tr"></div>
+  </div>
+</body>
+</html>
