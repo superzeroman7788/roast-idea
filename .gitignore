@@ -1,0 +1,23 @@
+# --- Secrets (P7: 绝不进版本库) ---
+.env
+.env.local
+.env.*.local
+.env*.local
+*.key
+*.pem
+
+# --- Dependencies / build ---
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# --- Rust / Tauri ---
+src-tauri/target/
+src-tauri/gen/
+
+# --- Local data (SQLite 落库，含原始点子，不进库) ---
+*.db
+*.db-shm
+*.db-wal
+data/
