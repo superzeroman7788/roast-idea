@@ -123,6 +123,7 @@ function App() {
   const [runError, setRunError] = useState("");
   const [conn, setConn] = useState<{ ok: boolean; text: string }>({ ok: false, text: "检测中" });
   const [retrieve, setRetrieve] = useState(true);
+  const [solo, setSolo] = useState(true); // 只和主大脑讨论;需要时再引入辩论者
   const [dissentOnly, setDissentOnly] = useState(false);
   const [elapsed, setElapsed] = useState(0);
 
@@ -170,7 +171,7 @@ function App() {
     setRunError(""); setBusy(true); setDiscussion(null); setTurns([]); setPack(null); setConclusion("");
     setPhase("opening"); startTimer();
     try {
-      await streamSSE("/api/discussion/start", { mode, brief, redacted: !retrieve }, (ev, d) => {
+      await streamSSE("/api/discussion/start", { mode, brief, redacted: !retrieve, solo }, (ev, d) => {
         if (cancelled(t)) return;
         if (ev === "board") setPack(d.pack);
         else if (ev === "discussion") setDiscussion({ id: d.id, title: d.title, seats: d.seats });
@@ -182,14 +183,14 @@ function App() {
     finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
   }
 
-  async function respond(text: string) {
+  async function respond(text: string, soloVal: boolean = solo) {
     if (!discussion) return;
     const t = ++token.current;
     setBusy(true); setRunError(""); setPhase("responding"); startTimer();
     const nextRound = Math.max(0, ...turns.map((x) => x.round)) + 1;
     if (text) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text, citations: [] });
     try {
-      await streamSSE(`/api/discussion/${discussion.id}/respond`, { userTurn: text }, (ev, d) => {
+      await streamSSE(`/api/discussion/${discussion.id}/respond`, { userTurn: text, solo: soloVal }, (ev, d) => {
         if (cancelled(t)) return;
         if (ev === "turn") appendTurn(d);
         else if (ev === "round-done") setPhase("awaiting-user");
@@ -230,7 +231,8 @@ function App() {
 
   // 图谱席位:讨论席位 + 最近一条发言的引用 → 复用图谱引用连线
   const graphSeats: GraphSeat[] = useMemo(() => {
-    const seats = discussion?.seats || [];
+    const all = discussion?.seats || [];
+    const seats = solo ? all.filter((s) => s.role === "host") : all; // solo:图谱只显主脑
     return seats.map((s) => {
       const last = [...turns].reverse().find((x) => x.speaker === s.label && !x.failed);
       return {
@@ -240,7 +242,7 @@ function App() {
         objections: (last?.citations || []).map((c) => ({ evidenceId: c.evidenceId, valid: c.valid })),
       };
     });
-  }, [discussion, turns]);
+  }, [discussion, turns, solo]);
 
   const evNodes = useMemo(
     () => (pack?.items || []).map((i) => ({ id: i.id, source: i.source, credibility: i.credibility })),
@@ -302,6 +304,9 @@ function App() {
               检索证据 · {retrieve ? "ON" : "OFF(redacted)"}
             </button>
           )}
+          <button className={`ghost-row${solo ? " on" : ""}`} onClick={() => setSolo((v) => !v)} disabled={phase === "finalized"}>
+            讨论模式 · {solo ? "只和主脑" : "全议会"}
+          </button>
         </div>
 
         {/* CENTER: 辩论图谱 */}
@@ -402,7 +407,11 @@ function App() {
             <button className="btn primary" onClick={start} disabled={!brief.trim() || busy}>{busy ? "OPENING…" : "开场 START"}</button>
           ) : (
             <>
-              <button className="btn ghost" onClick={() => respond("")} disabled={busy || phase === "finalized"} title="让 agents 不带你的话再辩一轮">再辩一轮</button>
+              {solo ? (
+                <button className="btn accent" onClick={() => { setSolo(false); respond("", false); }} disabled={busy || phase === "finalized"} title="把建设者+反对者带进讨论">引入辩论者 →</button>
+              ) : (
+                <button className="btn ghost" onClick={() => respond("")} disabled={busy || phase === "finalized"} title="让 agents 不带你的话再辩一轮">再辩一轮</button>
+              )}
               <button className="btn ghost" onClick={sendUser} disabled={busy || phase === "finalized" || !userInput.trim()}>发送</button>
               <button className="btn primary" onClick={finalize} disabled={busy || phase === "finalized" || turns.length === 0}>{phase === "finalizing" ? "收敛中…" : "收敛成方案"}</button>
             </>

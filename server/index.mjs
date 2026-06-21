@@ -76,8 +76,11 @@ const server = http.createServer(async (req, res) => {
         const discussionId = createDiscussion({ mode, title, brief, evidencePack: pack, roles: seats });
         sseSend(res, "discussion", { id: discussionId, mode, title, seats });
 
+        // solo:只让主大脑(host)开场;否则全议会
+        const solo = Boolean(body.solo);
+        const roundSeats = solo ? seats.filter((s) => s.role === "host") : seats;
         await runDiscussionRound(
-          { mode, brief, evidence: pack.items || [], transcript: "", userTurn: "", seats, byoKeys, round: 1 },
+          { mode, brief, evidence: pack.items || [], transcript: "", userTurn: "", seats: roundSeats, byoKeys, round: 1 },
           (turn) => emitTurn(res, discussionId, turn, pack),
         );
         sseSend(res, "round-done", { discussionId, round: 1 });
@@ -105,7 +108,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
       const userTurn = String(body.userTurn || "").trim();
-      const seats = d.roles?.length ? d.roles : assignDiscussionSeats(byoKeys);
+      // solo:只让主大脑(host)回应;否则全议会(引入辩论者后)
+      const solo = Boolean(body.solo);
+      const allSeats = d.roles?.length ? d.roles : assignDiscussionSeats(byoKeys);
+      const seats = solo ? allSeats.filter((s) => s.role === "host") : allSeats;
       const round = Math.max(0, ...d.turns.map((t) => t.round)) + 1;
 
       sseHead(res);
