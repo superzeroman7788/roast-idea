@@ -101,3 +101,119 @@ export function assignAngles(count) {
   angles[count - 1] = "devils-advocate"; // 强制至少一席魔鬼代言人
   return angles;
 }
+
+// ============ 讨论式陪练(讨论重构)============
+// 角色从"出裁决的席位"改成"参与讨论的辩手":对话式、建设性,目标是把点子辩成更好的方案,不出裁决。
+export const DISCUSSION_ROLES = {
+  host: {
+    key: "host",
+    label: "主持/主脑",
+    system: `You are the HOST of a live, multi-vendor sparring session about a founder's idea or copy.
+Each turn: move the discussion forward — reflect what's at stake, name the sharpest open tension, and ask
+the founder ONE concrete question that unlocks the next step. You are a thinking partner, NOT a judge.
+Never deliver a Ship/Fix/Pause/Kill verdict. Warm but sharp, specific, non-generic.`,
+  },
+  builder: {
+    key: "builder",
+    label: "建设者",
+    system: `You are the BUILDER in a multi-vendor sparring session.
+Each turn: take the idea seriously and make it STRONGER — one concrete improvement: a sharper wedge,
+a narrower beachhead, or turning a weakness into an edge. Constructive and specific; not empty praise.`,
+  },
+  "devils-advocate": {
+    key: "devils-advocate",
+    label: "魔鬼代言人",
+    system: `You are the DEVIL'S ADVOCATE in a multi-vendor sparring session.
+Each turn: surface the single STRONGEST reason this could fail — the risk most likely to kill it — then
+suggest how the founder might get around it. Brutal about the risk, but you are a sparring partner, not an
+executioner: the goal is a better plan, not a death sentence. Specific, never generic.`,
+  },
+  "demand-skeptic": {
+    key: "demand-skeptic",
+    label: "需求怀疑者",
+    system: `You are the DEMAND SKEPTIC in a multi-vendor sparring session.
+Each turn: pressure-test who actually pays and why — vague buyer, low willingness-to-pay, "vitamin not
+painkiller", no urgency, no distribution. Then point at what would prove real demand. Specific.`,
+  },
+  feasibility: {
+    key: "feasibility",
+    label: "可行性/成本怀疑者",
+    system: `You are the FEASIBILITY & COST CRITIC in a multi-vendor sparring session.
+Each turn: pressure-test whether this can be built, operated, and sustained at acceptable cost/latency/
+reliability — hidden complexity, unit economics, dependency risk, "demo works, scale won't". Then suggest
+the cheapest way to de-risk it. Specific.`,
+  },
+  synthesizer: {
+    key: "synthesizer",
+    label: "综合者",
+    system: `You are the SYNTHESIZER who reads an entire sparring discussion and writes the BETTER PLAN.`,
+  },
+};
+
+const DISCUSSION_TURN_SHAPE = `Return ONLY one compact JSON object, no markdown, no prose outside it:
+{
+  "body": "your turn — conversational, 2-5 sentences; build on or push back against another participant and respond to the founder. Do NOT give a Ship/Fix/Pause/Kill verdict.",
+  "citations": [ { "evidenceId": "E# from the INFO BOARD, or omit" } ],
+  "askUser": "optional: one concrete question for the founder"
+}`;
+
+export function buildTurnPrompt({ mode, provider, role, brief, evidence, transcript, userTurn }) {
+  const r = DISCUSSION_ROLES[role] || DISCUSSION_ROLES.host;
+  const modeLine =
+    mode === "copy"
+      ? "The founder brought a piece of COPY to sharpen (hook / clarity / who-buys)."
+      : "The founder brought a product IDEA to sharpen.";
+  const ctx = [`IDEA/COPY:\n${brief}`, evidenceBlock(evidence)];
+  if (transcript) ctx.push(`DISCUSSION SO FAR:\n${transcript}`);
+  if (userTurn) ctx.push(`THE FOUNDER JUST SAID:\n${userTurn}`);
+  return [
+    {
+      role: "system",
+      content: `${r.system}
+
+You are vendor seat "${provider}", ONE independent vendor in a REAL multi-vendor discussion (not one model
+playing many). Stay in your role: ${r.label}. ${modeLine}
+The whole session's goal: help the founder turn this into a BETTER plan — not to judge it.
+
+${CITATION_RULES}
+
+${DISCUSSION_TURN_SHAPE}`,
+    },
+    { role: "user", content: ctx.join("\n\n") },
+  ];
+}
+
+export function buildFinalizePrompt({ mode, brief, evidence, transcript }) {
+  const subject = mode === "copy" ? "copy" : "idea";
+  return [
+    {
+      role: "system",
+      content: `${DISCUSSION_ROLES.synthesizer.system}
+
+Read the whole sparring discussion and synthesize the BETTER ${subject} — a concrete, improved plan the
+founder can act on. Fold in the strongest points from every participant; resolve or flag the key tensions.
+Output MARKDOWN (no JSON) with exactly these sections:
+## 一句话定位
+## 目标用户(收窄)
+## 方案要点(打磨后)
+## 最大风险与对策
+## 最便宜的下一步验证
+Cite evidence inline as (E#) where the info board supports a claim; never invent evidence or ids.`,
+    },
+    {
+      role: "user",
+      content: `${subject.toUpperCase()}:\n${brief}\n\n${evidenceBlock(evidence)}\n\nDISCUSSION:\n${transcript || "(none)"}`,
+    },
+  ];
+}
+
+const DEBATE_ORDER = ["host", "builder", "demand-skeptic", "feasibility", "devils-advocate"];
+// 把可用 provider 分配到讨论角色:host 固定首位(跨轮稳定),保证有魔鬼代言人。
+export function assignDiscussionRoles(count) {
+  if (count <= 0) return [];
+  if (count === 1) return ["host"];
+  const roles = DEBATE_ORDER.slice(0, count);
+  roles[0] = "host";
+  roles[count - 1] = "devils-advocate";
+  return roles;
+}

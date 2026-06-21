@@ -1,4 +1,12 @@
-import { buildSeatPrompt, assignAngles, ROLE_ANGLES } from "./prompts.mjs";
+import {
+  buildSeatPrompt,
+  assignAngles,
+  ROLE_ANGLES,
+  buildTurnPrompt,
+  buildFinalizePrompt,
+  assignDiscussionRoles,
+  DISCUSSION_ROLES,
+} from "./prompts.mjs";
 
 const OPENAI_COMPATIBLE = [
   {
@@ -249,4 +257,125 @@ function extractJson(text) {
   const match = trimmed.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("No JSON object found");
   return match[0];
+}
+
+// ============ 讨论式陪练(讨论重构)============
+
+export function getConfiguredProviders(byoKeys) {
+  return ALL.map((provider) => ({ provider, apiKey: resolveKey(provider, byoKeys) })).filter(
+    (e) => e.apiKey,
+  );
+}
+
+// 角色→provider 固定映射(host 首位稳定),整场复用。
+export function assignDiscussionSeats(byoKeys) {
+  const configured = getConfiguredProviders(byoKeys);
+  const roles = assignDiscussionRoles(configured.length);
+  return configured.map((e, i) => ({ id: e.provider.id, label: e.provider.label, role: roles[i] }));
+}
+
+// 统一聊天调用:Anthropic vs OpenAI 兼容;jsonMode 控制是否强制 JSON(finalize 出 markdown 不用)。
+async function chatRaw(provider, apiKey, messages, { jsonMode = true } = {}) {
+  const model = process.env[provider.modelEnv] || provider.defaultModel;
+  if (provider.id === "claude") {
+    const [system, user] = messages;
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1100,
+        temperature: 0.6,
+        system: system.content,
+        messages: [{ role: "user", content: user.content }],
+      }),
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!res.ok) throw new Error(`Claude ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    const json = await res.json();
+    return json.content?.map((p) => p.text || "").join("\n") || "";
+  }
+  const body = { model, messages, temperature: 0.6 };
+  if (jsonMode) body.response_format = { type: "json_object" };
+  const res = await fetch(`${provider.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok) throw new Error(`${provider.label} ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  const json = await res.json();
+  return json.choices?.[0]?.message?.content || "";
+}
+
+// 解析一条讨论发言;空 body / 不可解析 → 抛错(不伪造),由调用方降级。
+function parseTurnJson(rawText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(extractJson(rawText));
+  } catch {
+    throw new Error("unparseable turn (no valid JSON)");
+  }
+  const body = clean(parsed.body);
+  if (!body) throw new Error("empty turn body");
+  const citations = Array.isArray(parsed.citations)
+    ? parsed.citations
+        .map((c) => ({
+          evidenceId: (c && typeof c === "object" ? c.evidenceId : c) || null,
+          valid: false, // validateCitations 事后置真
+        }))
+        .filter((c) => c.evidenceId)
+    : [];
+  return { body, citations, askUser: clean(parsed.askUser) };
+}
+
+// 跑一轮讨论:每个 seat(角色)并行发一条,完成即 onTurn 回调(真实顺序);失败进降级不伪造。
+export async function runDiscussionRound(
+  { mode, brief, evidence, transcript, userTurn, seats, byoKeys, round },
+  onTurn,
+) {
+  const results = [];
+  await Promise.all(
+    seats.map(async (seat) => {
+      const provider = ALL.find((p) => p.id === seat.id);
+      const apiKey = provider ? resolveKey(provider, byoKeys) : "";
+      if (!provider || !apiKey) {
+        if (onTurn) onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: "not configured" });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const messages = buildTurnPrompt({ mode, provider: seat.label, role: seat.role, brief, evidence, transcript, userTurn });
+        const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true });
+        const parsed = parseTurnJson(rawText);
+        const turn = {
+          ok: true,
+          speaker: seat.label,
+          role: seat.role,
+          round,
+          body: parsed.body,
+          citations: parsed.citations,
+          askUser: parsed.askUser,
+          latencyMs: Date.now() - started,
+        };
+        results.push(turn);
+        if (onTurn) onTurn(turn);
+      } catch (e) {
+        if (onTurn) onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: compact(e?.message || String(e)) });
+      }
+    }),
+  );
+  return results;
+}
+
+// finalize:选一个 provider 当综合者(默认 host 那家),出 markdown 方案。
+export async function runFinalize({ mode, brief, evidence, transcript, byoKeys, providerId }) {
+  const seats = assignDiscussionSeats(byoKeys);
+  const chosen = providerId || seats.find((s) => s.role === "host")?.id || seats[0]?.id;
+  const provider = ALL.find((p) => p.id === chosen);
+  const apiKey = provider ? resolveKey(provider, byoKeys) : "";
+  if (!provider || !apiKey) throw new Error("no configured provider for finalize");
+  const messages = buildFinalizePrompt({ mode, brief, evidence, transcript });
+  const md = await chatRaw(provider, apiKey, messages, { jsonMode: false });
+  return { conclusion: clean(md), by: provider.label };
 }

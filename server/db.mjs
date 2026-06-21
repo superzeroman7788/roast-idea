@@ -2,6 +2,7 @@
 // 用 Node 内置 node:sqlite(零依赖)。DB 文件本地存放、已被 .gitignore 排除。
 // 隐私(P7):brief 为原始点子,默认本地落库;ROAST_PERSIST_BRIEF=0 可关闭存正文。
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -31,6 +32,32 @@ export function getDb() {
       pack      TEXT NOT NULL,            -- JSON: EvidencePack(降成本降延迟)
       cached_at TEXT NOT NULL             -- ISO
     );
+    -- 讨论式陪练(讨论重构):一场讨论 + 多方轮流发言
+    CREATE TABLE IF NOT EXISTS discussions (
+      id            TEXT PRIMARY KEY,
+      mode          TEXT NOT NULL,            -- idea | copy
+      title         TEXT NOT NULL,
+      brief         TEXT,                     -- 原始点子/文案(P7 可 redact)
+      status        TEXT NOT NULL DEFAULT 'open',  -- open | finalized
+      conclusion    TEXT NOT NULL DEFAULT '', -- finalize 产出的方案(markdown)
+      evidence_pack TEXT,                     -- JSON: 信息板快照(整场复用)
+      roles         TEXT,                     -- JSON: 角色→provider 固定映射(host 跨轮稳定)
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS discussion_turns (
+      id            TEXT PRIMARY KEY,
+      discussion_id TEXT NOT NULL,
+      seq           INTEGER NOT NULL,         -- 全场顺序
+      round         INTEGER NOT NULL DEFAULT 0,
+      speaker       TEXT NOT NULL,            -- provider label | 'you' | 'system'
+      role          TEXT NOT NULL DEFAULT '', -- host/builder/devils-advocate/...
+      body          TEXT NOT NULL,
+      citations     TEXT NOT NULL DEFAULT '[]', -- JSON: [{evidenceId, valid}]
+      latency_ms    INTEGER,
+      created_at    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_turns_discussion ON discussion_turns(discussion_id, seq);
   `);
   return db;
 }
@@ -100,4 +127,105 @@ export function setCachedPack(query, pack, nowIso) {
        ON CONFLICT(query) DO UPDATE SET pack = excluded.pack, cached_at = excluded.cached_at`,
     )
     .run(query, JSON.stringify(pack), nowIso);
+}
+
+// ---- 讨论式陪练(讨论重构)----
+const persistBrief = () => process.env.ROAST_PERSIST_BRIEF !== "0";
+
+export function createDiscussion({ mode, title, brief, evidencePack, roles }) {
+  const database = getDb();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      `INSERT INTO discussions (id, mode, title, brief, status, conclusion, evidence_pack, roles, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?)`,
+    )
+    .run(
+      id,
+      mode,
+      title,
+      persistBrief() ? brief : null,
+      evidencePack ? JSON.stringify(evidencePack) : null,
+      roles ? JSON.stringify(roles) : null,
+      now,
+      now,
+    );
+  return id;
+}
+
+// 追加一条发言(seq 自增,更新讨论 updated_at)。失败不静默伪装。
+export function addTurn({ discussionId, round, speaker, role, body, citations, latencyMs }) {
+  const database = getDb();
+  const exists = database.prepare(`SELECT 1 FROM discussions WHERE id = ?`).get(discussionId);
+  if (!exists) throw new Error(`discussion ${discussionId} not found`);
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const seq =
+    (database.prepare(`SELECT COALESCE(MAX(seq), 0) AS m FROM discussion_turns WHERE discussion_id = ?`).get(discussionId)?.m || 0) + 1;
+  database
+    .prepare(
+      `INSERT INTO discussion_turns (id, discussion_id, seq, round, speaker, role, body, citations, latency_ms, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      id,
+      discussionId,
+      seq,
+      round ?? 0,
+      speaker,
+      role || "",
+      body,
+      JSON.stringify(citations || []),
+      latencyMs ?? null,
+      now,
+    );
+  database.prepare(`UPDATE discussions SET updated_at = ? WHERE id = ?`).run(now, discussionId);
+  return { id, seq, createdAt: now };
+}
+
+export function getDiscussion(id) {
+  const database = getDb();
+  const d = database.prepare(`SELECT * FROM discussions WHERE id = ?`).get(id);
+  if (!d) return null;
+  const turns = database
+    .prepare(`SELECT * FROM discussion_turns WHERE discussion_id = ? ORDER BY seq ASC`)
+    .all(id);
+  return {
+    id: d.id,
+    mode: d.mode,
+    title: d.title,
+    brief: d.brief,
+    status: d.status,
+    conclusion: d.conclusion,
+    evidencePack: d.evidence_pack ? JSON.parse(d.evidence_pack) : null,
+    roles: d.roles ? JSON.parse(d.roles) : null,
+    createdAt: d.created_at,
+    updatedAt: d.updated_at,
+    turns: turns.map((t) => ({
+      id: t.id,
+      seq: t.seq,
+      round: t.round,
+      speaker: t.speaker,
+      role: t.role,
+      body: t.body,
+      citations: JSON.parse(t.citations || "[]"),
+      latencyMs: t.latency_ms,
+      createdAt: t.created_at,
+    })),
+  };
+}
+
+export function finalizeDiscussion(id, conclusion) {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(`UPDATE discussions SET status = 'finalized', conclusion = ?, updated_at = ? WHERE id = ?`)
+    .run(conclusion, now, id);
+  return now;
+}
+
+export function listDiscussions(limit = 50) {
+  return getDb()
+    .prepare(`SELECT id, mode, title, status, created_at, updated_at FROM discussions ORDER BY updated_at DESC LIMIT ?`)
+    .all(limit);
 }

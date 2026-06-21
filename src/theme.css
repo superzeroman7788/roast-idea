@@ -152,3 +152,76 @@ body::before{
 .err{position:absolute;left:50%;bottom:74px;transform:translateX(-50%);z-index:50;
   font-family:var(--mono);font-size:11px;color:var(--red);background:#1a0a0e;
   border:1px solid #3a1d22;border-radius:8px;padding:7px 12px;letter-spacing:.06em}
+
+/* ===== 讨论台(讨论重构) ===== */
+.grid.discuss{grid-template-columns:240px 1fr 392px}
+.board{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;min-height:0;margin-bottom:10px}
+.board-empty{font-family:var(--sans);font-size:11px;color:var(--tx3);line-height:1.5;padding:4px 0}
+.board-item{display:block;text-decoration:none;border:1px solid #112540;border-left:2px solid #2a4a6a;
+  border-radius:7px;padding:7px 9px;background:#0a1424}
+.board-item:hover{border-color:#1f456a;background:#0c1830;border-left-color:var(--amber)}
+.board-item.cred-high{border-left-color:var(--amber)}
+.board-item.cred-medium{border-left-color:#7a6a3a}
+.board-item.cred-low{border-left-color:#3a4658}
+.bi-head{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.1em;margin-bottom:3px}
+.bi-id{color:var(--amber)}.bi-src{color:var(--tx3)}
+.bi-title{font-size:11px;color:#bcd0e2;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ghost-row{margin-top:8px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--cyan);
+  padding:8px;border:1px solid #1d3350;border-radius:7px;background:#0a1626;cursor:pointer;text-align:left}
+
+.discuss-right{border-left:1px solid #0f2138}
+.transcript{flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:10px;padding-right:4px}
+.turn-item{border:1px solid #112540;border-radius:9px;padding:9px 11px;background:#0a121f}
+.turn-item.user{border-color:#1d3a2e;background:linear-gradient(180deg,#0a1a16,#08130f);align-self:flex-end;max-width:92%}
+.turn-item.failed{opacity:.6;border-style:dashed}
+.turn-head{display:flex;align-items:center;margin-bottom:5px}
+.turn-role{font-family:var(--mono);font-size:11px;font-weight:500;display:flex;align-items:center;gap:7px}
+.turn-rolelabel{font-size:9px;letter-spacing:.12em;color:var(--tx3);border:1px solid #1d3350;border-radius:4px;padding:1px 5px}
+.turn-body{font-family:var(--sans);font-size:12.5px;line-height:1.55;color:#cfe0ee;white-space:pre-wrap}
+.turn-body.fail{color:#6a7891;font-style:italic}
+.cites{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}
+.cite-chip{font-family:var(--mono);font-size:9px;letter-spacing:.08em;padding:1px 6px;border-radius:4px;border:1px solid}
+.cite-chip.ok{color:var(--amber);border-color:#5a4420;background:#1a1408}
+.cite-chip.bad{color:var(--red);border-color:#3a1d22;background:#1a0a0e;text-decoration:line-through}
+.thinking{font-family:var(--mono);font-size:11px;color:var(--cyan);display:flex;align-items:center;gap:7px;padding:4px 2px}
+.conclusion{border:1px solid #1d3a2e;border-radius:10px;padding:12px 14px;background:linear-gradient(180deg,#0a1a16,#070f0c)}
+.conc-head{font-family:var(--mono);font-size:11px;letter-spacing:.18em;color:var(--green);margin-bottom:8px;text-shadow:0 0 10px #46e6a055}
+.conc-body h4{font-family:var(--sans);font-size:13px;color:var(--green);margin:10px 0 4px}
+.conc-body p{font-size:12.5px;line-height:1.55;color:#cfe0ee;margin:3px 0}
+.conc-body ul{margin:3px 0 3px 16px}
+.conc-body li{font-size:12.5px;line-height:1.5;color:#cfe0ee;margin:2px 0}
+
+.bar .secondary{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:#9fb4c8;
+  background:#0a1626;border:1px solid #1d3350;border-radius:9px;padding:11px 14px;cursor:pointer}
+.bar .secondary:disabled{opacity:.4;cursor:not-allowed}
+
+/* ===== 启动页 / 密码门(讨论重构) ===== */
+.boot{position:fixed;inset:0;background:#04070e}
+.landing{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:6px;padding:24px;text-align:center;
+  background:radial-gradient(1100px 700px at 50% 42%, #0a1326 0%, #060a14 55%, #03060d 100%)}
+.landing::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:1;
+  background:repeating-linear-gradient(0deg,#ffffff05 0 1px,transparent 1px 3px),
+    radial-gradient(900px 600px at 50% 42%, transparent 60%, #00000066 100%);
+  mix-blend-mode:overlay;opacity:.5}
+.land-hud{width:min(420px,76vw);position:relative;z-index:2}
+.land-svg{width:100%;height:auto;display:block}
+.land-adv{opacity:0;animation:advIgnite .9s ease-out forwards}
+@keyframes advIgnite{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
+.land-mark{position:relative;z-index:2;margin-top:6px;
+  font-family:"Chakra Petch","Share Tech Mono",var(--mono);font-weight:700;font-size:64px;
+  letter-spacing:.28em;color:var(--cyan);text-shadow:0 0 24px #34e1ff66;text-indent:.28em}
+.land-sub{position:relative;z-index:2;font-family:var(--mono);font-size:13px;letter-spacing:.34em;color:#5f7a98}
+.land-tag{position:relative;z-index:2;margin-top:14px;max-width:520px;
+  font-family:var(--sans);font-size:14px;line-height:1.6;color:var(--tx2)}
+.land-gate{position:relative;z-index:2;margin-top:26px;display:flex;gap:8px}
+.land-gate input{width:200px;height:42px;background:#0a1424;border:1px solid #18314f;border-radius:10px;
+  padding:0 14px;color:var(--tx);font-family:var(--mono);font-size:14px;letter-spacing:.1em;outline:none;
+  box-shadow:inset 0 0 18px #0c2a4022}
+.land-gate input:focus{border-color:var(--cyan);box-shadow:inset 0 0 18px #0c2a4044,0 0 14px #34e1ff22}
+.land-gate button,.land-enter{font-family:var(--mono);font-size:13px;letter-spacing:.16em;color:#10202c;font-weight:600;
+  background:linear-gradient(180deg,#7fe9ff,#34c4ea);border:none;border-radius:10px;padding:0 22px;height:42px;cursor:pointer;
+  box-shadow:0 0 22px #34e1ff44}
+.land-enter{position:relative;z-index:2;margin-top:26px}
+.land-gate button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.land-err{position:relative;z-index:2;margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--red)}

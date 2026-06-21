@@ -2,356 +2,344 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./theme.css";
 import {
-  CouncilReport,
-  EvidenceItem,
-  RoastMode,
-  buildSampleReport,
-  sampleBrief,
-} from "./roastEngine";
+  Discussion,
+  DiscussionMode,
+  EvidencePack,
+  Phase,
+  Seat,
+  Turn,
+  ROLE_LABEL,
+  ROLE_COLOR,
+} from "./discussion";
 import { CouncilGraph, GraphPhase, GraphSeat } from "./CouncilGraph";
-import { exportShareImage } from "./shareImage";
+import { Landing } from "./Landing";
 
-const PHASE_INDEX: Record<GraphPhase, number> = {
-  idle: 0,
-  searching: 1,
-  "evidence-ready": 2,
-  debating: 3,
-  validating: 4,
-  verdict: 5,
+const SAMPLE_BRIEF: Record<DiscussionMode, string> = {
+  idea: "一个帮独立开发者把碎片灵感整理成可执行项目的 AI 工作台。",
+  copy: "你的 AI 上线前陪练:粘贴点子,几个不同厂商的模型陪你把它辩成更好的方案。",
 };
 
-type Pack = { items: EvidenceItem[]; sources: string[]; redacted: boolean } | null;
-
-const BLANK: CouncilReport = {
-  verdict: "—", summary: "", confidenceRange: "", vendorSpread: "", dissentLevel: "",
-  hookClarity: "", nextAction: "", fatalAssumption: "", cheapestTest: "",
-  topRisks: [], whatToCut: [], dissentMap: [], copyDiagnosis: "", sevenDayPlan: "",
-  panel: [], debate: [],
-};
-
-function toSeats(report: CouncilReport): GraphSeat[] {
-  return (report.panel || []).map((m) => ({
-    provider: m.provider,
-    roleAngle: m.roleAngle,
-    stance: m.stance,
-    objections: m.objections,
-  }));
-}
-
-function dissentCount(seats: GraphSeat[]): number {
-  let c = 0;
-  for (let i = 0; i < seats.length; i++)
-    for (let j = i + 1; j < seats.length; j++) {
-      if (seats[i].failed || seats[j].failed) continue;
-      const a = seats[i].stance, b = seats[j].stance;
-      if ((a === "Kill" || b === "Kill") && a !== b) c++;
+// 极简 markdown 渲染(## 标题 / - 列表 / 段落)
+function renderMd(md: string): React.ReactNode {
+  const lines = (md || "").split("\n");
+  const out: React.ReactNode[] = [];
+  let list: string[] = [];
+  const flush = (k: number) => {
+    if (list.length) {
+      out.push(<ul key={`u${k}`}>{list.map((li, i) => <li key={i}>{li}</li>)}</ul>);
+      list = [];
     }
-  return c;
+  };
+  lines.forEach((ln, i) => {
+    const t = ln.trim();
+    if (t.startsWith("## ")) { flush(i); out.push(<h4 key={i}>{t.slice(3)}</h4>); }
+    else if (t.startsWith("# ")) { flush(i); out.push(<h4 key={i}>{t.slice(2)}</h4>); }
+    else if (/^[-*]\s/.test(t)) list.push(t.replace(/^[-*]\s/, ""));
+    else if (/^\d+\.\s/.test(t)) list.push(t.replace(/^\d+\.\s/, ""));
+    else if (t) { flush(i); out.push(<p key={i}>{t}</p>); }
+  });
+  flush(lines.length);
+  return out;
 }
 
-// ok 席位 + 失败 provider → 图谱节点
-function toGraphSeats(report: CouncilReport): GraphSeat[] {
-  const failed: GraphSeat[] = (report.live?.failures || []).map((f) => ({
-    provider: f.provider, stance: "Failed", failed: true,
-  }));
-  return [...toSeats(report), ...failed];
-}
-
-// 单个流式席位事件 → 图谱节点(失败不伪造,降级显示)
-function mapSeatEvent(seat: any): GraphSeat {
-  return seat.ok
-    ? { provider: seat.provider, roleAngle: seat.roleAngle, stance: seat.stance, objections: seat.objections }
-    : { provider: seat.provider, stance: "Failed", failed: true };
-}
-
-// 解析一段 SSE(event: / data:)
-function parseSSE(raw: string): { event: string; data: any } | null {
-  let event = "message";
-  const dataLines: string[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+async function streamSSE(
+  path: string,
+  body: unknown,
+  onEvent: (event: string, data: any) => void,
+  isCancelled: () => boolean,
+) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) throw new Error((await res.text().catch(() => "")) || "stream failed");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (isCancelled()) { try { await reader.cancel(); } catch {} return; }
+    buf += dec.decode(value, { stream: true });
+    let i: number;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      let event = "message";
+      const data: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).trim());
+      }
+      if (data.length) {
+        try { onEvent(event, JSON.parse(data.join("\n"))); } catch {}
+      }
+    }
   }
-  if (!dataLines.length) return null;
-  try {
-    return { event, data: JSON.parse(dataLines.join("\n")) };
-  } catch {
-    return null;
-  }
 }
 
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const fmt = (s: number) =>
-  `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+const GRAPH_PHASE: Record<Phase, GraphPhase> = {
+  drafting: "idle",
+  opening: "debating",
+  "awaiting-user": "verdict",
+  responding: "debating",
+  finalizing: "verdict",
+  finalized: "verdict",
+};
 
 function App() {
-  const initialSample = useMemo(() => buildSampleReport(sampleBrief.idea, "idea"), []);
-  const [mode, setMode] = useState<RoastMode>("idea");
-  const [brief, setBrief] = useState(sampleBrief.idea);
-  const [report, setReport] = useState<CouncilReport>(initialSample);
-  const [pack, setPack] = useState<Pack>(null);
-  const [phase, setPhase] = useState<GraphPhase>("verdict");
-  const [revealed, setRevealed] = useState(initialSample.panel.length);
-  const [isRunning, setIsRunning] = useState(false);
+  const [mode, setMode] = useState<DiscussionMode>("idea");
+  const [brief, setBrief] = useState(SAMPLE_BRIEF.idea);
+  const [discussion, setDiscussion] = useState<{ id: string; title: string; seats: Seat[] } | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [pack, setPack] = useState<EvidencePack | null>(null);
+  const [conclusion, setConclusion] = useState("");
+  const [phase, setPhase] = useState<Phase>("drafting");
+  const [userInput, setUserInput] = useState("");
+  const [busy, setBusy] = useState(false);
   const [runError, setRunError] = useState("");
   const [conn, setConn] = useState<{ ok: boolean; text: string }>({ ok: false, text: "检测中" });
-  const [dissentOnly, setDissentOnly] = useState(false);
   const [retrieve, setRetrieve] = useState(true);
+  const [dissentOnly, setDissentOnly] = useState(false);
   const [elapsed, setElapsed] = useState(0);
 
-  const runToken = useRef(0);
-  const elapsedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const token = useRef(0);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
 
-  const [seats, setSeats] = useState<GraphSeat[]>(() => toGraphSeats(initialSample));
+  useEffect(() => {
+    fetch("/api/status").then((r) => r.json()).then((d) => {
+      const c = d.providers?.filter((p: { configured: boolean }) => p.configured) || [];
+      setConn({ ok: c.length >= 2, text: c.length >= 2 ? `已连接 · ${c.length} 家` : `需 ≥2 家 · 当前 ${c.length}` });
+    }).catch(() => setConn({ ok: false, text: "API 离线" }));
+    return () => stopTimer();
+  }, []);
+
+  useEffect(() => {
+    transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
+  }, [turns, conclusion]);
+
+  function stopTimer() { if (timer.current) clearInterval(timer.current); timer.current = null; }
+  function startTimer() {
+    stopTimer();
+    const t0 = Date.now();
+    setElapsed(0);
+    timer.current = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
+  }
+
+  const cancelled = (t: number) => t !== token.current;
+
+  function appendTurn(t: Turn) { setTurns((prev) => [...prev, t]); }
+
+  async function start() {
+    const t = ++token.current;
+    setRunError(""); setBusy(true); setDiscussion(null); setTurns([]); setPack(null); setConclusion("");
+    setPhase("opening"); startTimer();
+    try {
+      await streamSSE("/api/discussion/start", { mode, brief, redacted: !retrieve }, (ev, d) => {
+        if (cancelled(t)) return;
+        if (ev === "board") setPack(d.pack);
+        else if (ev === "discussion") setDiscussion({ id: d.id, title: d.title, seats: d.seats });
+        else if (ev === "turn") appendTurn(d);
+        else if (ev === "round-done") setPhase("awaiting-user");
+        else if (ev === "error") setRunError(d.error);
+      }, () => cancelled(t));
+    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("drafting"); } }
+    finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
+  }
+
+  async function respond(text: string) {
+    if (!discussion) return;
+    const t = ++token.current;
+    setBusy(true); setRunError(""); setPhase("responding"); startTimer();
+    const nextRound = Math.max(0, ...turns.map((x) => x.round)) + 1;
+    if (text) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text, citations: [] });
+    try {
+      await streamSSE(`/api/discussion/${discussion.id}/respond`, { userTurn: text }, (ev, d) => {
+        if (cancelled(t)) return;
+        if (ev === "turn") appendTurn(d);
+        else if (ev === "round-done") setPhase("awaiting-user");
+        else if (ev === "error") setRunError(d.error);
+      }, () => cancelled(t));
+    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
+    finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
+  }
+
+  async function finalize() {
+    if (!discussion) return;
+    const t = ++token.current;
+    setBusy(true); setRunError(""); setPhase("finalizing"); startTimer();
+    try {
+      await streamSSE(`/api/discussion/${discussion.id}/finalize`, {}, (ev, d) => {
+        if (cancelled(t)) return;
+        if (ev === "conclusion") { setConclusion(d.conclusion); setPhase("finalized"); }
+        else if (ev === "error") setRunError(d.error);
+      }, () => cancelled(t));
+    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
+    finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
+  }
+
+  function reset() {
+    token.current++;
+    stopTimer(); setBusy(false);
+    setDiscussion(null); setTurns([]); setPack(null); setConclusion("");
+    setPhase("drafting"); setUserInput(""); setRunError("");
+    setBrief(SAMPLE_BRIEF[mode]);
+  }
+
+  function sendUser() {
+    const text = userInput.trim();
+    if (!text || busy) return;
+    setUserInput("");
+    respond(text);
+  }
+
+  // 图谱席位:讨论席位 + 最近一条发言的引用 → 复用图谱引用连线
+  const graphSeats: GraphSeat[] = useMemo(() => {
+    const seats = discussion?.seats || [];
+    return seats.map((s) => {
+      const last = [...turns].reverse().find((x) => x.speaker === s.label && !x.failed);
+      return {
+        provider: s.label,
+        roleAngle: s.role,
+        stance: "",
+        objections: (last?.citations || []).map((c) => ({ evidenceId: c.evidenceId, valid: c.valid })),
+      };
+    });
+  }, [discussion, turns]);
+
   const evNodes = useMemo(
     () => (pack?.items || []).map((i) => ({ id: i.id, source: i.source, credibility: i.credibility })),
     [pack],
   );
-  const live = report.live;
-  const isSample = Boolean(report.isSample);
-  const isSimulated = isSample || Boolean(live?.simulated);
-  const pIdx = PHASE_INDEX[phase];
 
-  useEffect(() => {
-    fetch("/api/status")
-      .then((r) => r.json())
-      .then((data) => {
-        const configured =
-          data.providers?.filter((p: { configured: boolean }) => p.configured) || [];
-        setConn({
-          ok: configured.length >= 2,
-          text: configured.length >= 2 ? `已连接 · ${configured.length} 家` : `需 ≥2 家 · 当前 ${configured.length}`,
-        });
-      })
-      .catch(() => setConn({ ok: false, text: "API 离线" }));
-    return () => stopElapsed();
-  }, []);
-
-  function stopElapsed() {
-    if (elapsedTimer.current) clearInterval(elapsedTimer.current);
-    elapsedTimer.current = null;
-  }
-  function startElapsed() {
-    stopElapsed();
-    const t0 = Date.now();
-    setElapsed(0);
-    elapsedTimer.current = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
-  }
-
-  async function runRoast() {
-    const token = ++runToken.current;
-    setRunError("");
-    setIsRunning(true);
-    setReport(BLANK);
-    setSeats([]);
-    setRevealed(0);
-    setPack(null);
-    startElapsed();
-    setPhase("searching");
-    const acc: GraphSeat[] = [];
-    try {
-      // SSE 流式:证据 → 逐席位(真实完成顺序)→ 裁决
-      const res = await fetch("/api/roast/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-        body: JSON.stringify({ mode, brief, redacted: !retrieve }),
-      });
-      if (!res.ok || !res.body) {
-        throw new Error((await res.text().catch(() => "")) || "Council stream failed");
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (token !== runToken.current) {
-          try { await reader.cancel(); } catch {}
-          return;
-        }
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const ev = parseSSE(buf.slice(0, idx));
-          buf = buf.slice(idx + 2);
-          if (!ev) continue;
-          if (ev.event === "evidence") {
-            const p = ev.data.pack;
-            setPack({ items: p.items, sources: p.sources, redacted: p.redacted });
-            setPhase("evidence-ready");
-          } else if (ev.event === "seat") {
-            acc.push(mapSeatEvent(ev.data));
-            setSeats([...acc]);
-            setRevealed(acc.length);
-            setPhase("debating");
-          } else if (ev.event === "verdict") {
-            const rep: CouncilReport = ev.data.report;
-            setReport(rep);
-            if (rep.evidence) {
-              setPack({ items: rep.evidence.items, sources: rep.evidence.sources, redacted: rep.evidence.redacted });
-            }
-            const finalSeats = toGraphSeats(rep);
-            setSeats(finalSeats);
-            setRevealed(finalSeats.length);
-            setPhase("validating");
-            await delay(550);
-            if (token !== runToken.current) return;
-            setPhase("verdict");
-          } else if (ev.event === "error") {
-            throw new Error(ev.data?.error || "stream error");
-          }
-        }
-      }
-    } catch (e) {
-      if (token === runToken.current) {
-        setRunError((e as Error)?.message || "Council run failed");
-        setPhase("idle");
-      }
-    } finally {
-      if (token === runToken.current) {
-        setIsRunning(false);
-        stopElapsed();
-      }
-    }
-  }
-
-  function loadSample(nextMode: RoastMode) {
-    runToken.current++;
-    setIsRunning(false);
-    stopElapsed();
-    setMode(nextMode);
-    setBrief(sampleBrief[nextMode]);
-    const s = buildSampleReport(sampleBrief[nextMode], nextMode);
-    setReport(s);
-    setSeats(toGraphSeats(s));
-    setPack(null);
-    setRevealed(s.panel.length);
-    setPhase("verdict");
-    setRunError("");
-  }
-
-  // 派生展示量(全部来自真实数据)
-  const cit = report.citations;
-  const okCount = seats.filter((s) => !s.failed).length;
-  const modelsLive = live?.providerCount ?? okCount;
-  const modelsTotal = live ? live.providerCount + (live.failures?.length || 0) : seats.length;
-  const dCount = dissentCount(seats.slice(0, revealed));
-  const nodes = 1 + revealed + (phase !== "idle" && phase !== "searching" ? evNodes.length : 0);
-  const verdictStance = isRunning ? "议会进行中…" : report.verdict || "—";
-  const isKill = /kill/i.test(verdictStance);
-  const confFrac = isSample ? 0.6 : isSimulated ? 0.2
-    : ({ 2: 0.55, 3: 0.66, 4: 0.74, 5: 0.8 } as Record<number, number>)[modelsLive] ?? 0.5;
-  const ARC = 100;
-  const evCount = pack && !pack.redacted ? pack.items.length : retrieve ? null : 0;
+  const started = phase !== "drafting";
+  const citTotal = turns.reduce((n, t) => n + (t.citations?.filter((c) => c.evidenceId).length || 0), 0);
+  const citValid = turns.reduce((n, t) => n + (t.citations?.filter((c) => c.valid).length || 0), 0);
+  const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
   return (
-    <div className={`app${isSimulated && !isRunning ? " is-simulated" : ""}`}>
+    <div className="app">
       <div className="chrome">
         <div className="dot r" /><div className="dot y" /><div className="dot g" />
-        <div className="title">ROAST · <b>DECISION COUNCIL</b> · 认知界面</div>
+        <div className="title">ROAST · <b>SPARRING COUNCIL</b> · 点子陪练</div>
         <div className="conn" style={{ color: conn.ok ? "var(--green)" : "var(--tx3)" }}>
           <span className="blink" style={{ background: conn.ok ? "#46e6a0" : "#52688a", boxShadow: conn.ok ? "0 0 8px #46e6a0" : "none" }} />
           {conn.text}
         </div>
       </div>
 
-      <div className="grid">
-        {/* LEFT */}
+      <div className="grid discuss">
+        {/* LEFT: 信息板 */}
         <div className="col left">
-          <div className="eyebrow">输入处理器 <span className="live"><span className="blink" />{phase === "idle" ? "待命" : isRunning ? "运行" : "就绪"}</span></div>
-          <div className="reactor-wrap">
-            <svg width="140" height="140" viewBox="0 0 140 140">
-              <circle cx="70" cy="70" r="58" fill="none" stroke="#163a52" strokeWidth="1" />
-              <circle cx="70" cy="70" r="58" fill="none" stroke="#34e1ff" strokeWidth="1.4" strokeDasharray="6 10" opacity=".7" style={{ transformOrigin: "70px 70px", animation: "spin 18s linear infinite" }} />
-              <circle cx="70" cy="70" r="44" fill="none" stroke="#173052" strokeWidth="1" strokeDasharray="2 6" />
-              <circle cx="70" cy="70" r="30" fill="#0c2233" stroke="#34e1ff" strokeWidth="1" opacity=".5" />
-              <circle className={isRunning ? "core" : undefined} cx="70" cy="70" r="15" fill="#34e1ff" opacity={isRunning ? 0.9 : 0.4} style={{ filter: "drop-shadow(0 0 12px #34e1ff)" }} />
-              <circle cx="70" cy="70" r="7" fill="#bfffff" opacity={isRunning ? 1 : 0.5} />
-            </svg>
+          <div className="eyebrow">信息板 · INFO BOARD <span className="live"><span className="blink" />{busy ? "运行" : started ? "就绪" : "待命"}</span></div>
+          <div className="board">
+            {!pack && <div className="board-empty">开场后,这里是供你和 AI 共同引用的真实证据</div>}
+            {pack?.redacted && <div className="board-empty">已关闭检索(redacted)</div>}
+            {pack && !pack.redacted && pack.items.length === 0 && <div className="board-empty">本轮未检索到证据</div>}
+            {(pack?.items || []).map((it) => (
+              <a className={`board-item cred-${it.credibility}`} key={it.id} href={it.url} target="_blank" rel="noreferrer">
+                <div className="bi-head"><span className="bi-id">{it.id}</span><span className="bi-src">{it.source}</span></div>
+                <div className="bi-title">{it.title}</div>
+              </a>
+            ))}
           </div>
-          <div className="stat-row"><span>EVIDENCE</span><b className="amber">{evCount === null ? "—" : evCount}</b></div>
-          <div className="stat-row"><span>SOURCES</span><b>{pack && !pack.redacted ? pack.sources.length : "—"}</b></div>
-          <div className="stat-row"><span>MODELS</span><b>{modelsLive} <span style={{ color: "#52688a" }}>/</span> {modelsTotal}</b></div>
-          <div className="stat-row"><span>CITATIONS</span><b>{cit ? <>{cit.valid} <span style={{ color: "#52688a" }}>/</span> {cit.invalid > 0 ? <span className="red">{cit.invalid}✕</span> : "0"}</> : "—"}</b></div>
           <div className="mode">
-            <button className={mode === "idea" ? "on" : ""} onClick={() => loadSample("idea")}>IDEA</button>
-            <button className={mode === "copy" ? "on" : ""} onClick={() => loadSample("copy")}>COPY</button>
+            <button className={mode === "idea" ? "on" : ""} disabled={started} onClick={() => { setMode("idea"); setBrief(SAMPLE_BRIEF.idea); }}>IDEA</button>
+            <button className={mode === "copy" ? "on" : ""} disabled={started} onClick={() => { setMode("copy"); setBrief(SAMPLE_BRIEF.copy); }}>COPY</button>
           </div>
-          <button className="mode" style={{ marginTop: 8 }} onClick={() => setRetrieve((v) => !v)} title="关闭后不把点子发去检索(P7 隐私)">
-            <span style={{ flex: 1, textAlign: "left", fontFamily: "var(--mono)", fontSize: 10, letterSpacing: ".14em", color: retrieve ? "var(--cyan)" : "var(--tx3)", padding: "8px", border: "1px solid #1d3350", borderRadius: 7, background: "#0a1626" }}>
+          {!started && (
+            <button className="ghost-row" onClick={() => setRetrieve((v) => !v)}>
               检索证据 · {retrieve ? "ON" : "OFF(redacted)"}
-            </span>
-          </button>
-          <div className={`verdict${isSample ? " sample" : isKill ? " kill" : ""}`}>
-            <div className="lbl">{isSample ? "SAMPLE · 示例" : "VERDICT · 裁决"}</div>
-            <div className="v">{verdictStance}</div>
-            {isSample && <div className="note">非真实 run · 点 RUN COUNCIL 获取真裁决</div>}
-            {!isSample && isSimulated && !isRunning && <div className="note">参与不足(&lt;2 家),非完整议会</div>}
-          </div>
+            </button>
+          )}
         </div>
 
-        {/* CENTER */}
+        {/* CENTER: 辩论图谱 */}
         <div className="col center">
           <div className="stage">
-            <span className={`step ${pIdx > 2 ? "done" : pIdx >= 1 ? "now" : ""}`}>检索</span>
-            <span className={`step ${pIdx > 3 ? "done" : pIdx === 3 ? "now" : ""}`}>整理</span>
-            <span className={`step ${pIdx > 4 ? "done" : pIdx === 3 || pIdx === 4 ? "now" : ""}`}>对线</span>
-            <span className={`step ${pIdx === 5 ? "now" : ""}`}>综合</span>
+            <span className={`step ${started ? "done" : "now"}`}>{discussion?.title ? discussion.title.slice(0, 22) : "点子"}</span>
+            <span className={`step ${phase === "opening" || phase === "responding" ? "now" : turns.length ? "done" : ""}`}>对线</span>
+            <span className={`step ${phase === "finalizing" ? "now" : phase === "finalized" ? "done" : ""}`}>收敛</span>
           </div>
           <div className="scene">
-            <CouncilGraph seats={seats} evidence={evNodes} phase={phase} revealed={revealed} showDissentOnly={dissentOnly} />
+            <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} />
             <div className="legend">
-              <div><span className="lg" style={{ background: "#34e1ff" }} />模型席位</div>
+              <div><span className="lg" style={{ background: "#34e1ff" }} />辩手席位</div>
               <div><span className="lg" style={{ background: "#ffb44d" }} />证据(带链接)</div>
-              <div><span className="lg" style={{ background: "#ff5c6a" }} />分歧 / Kill</div>
+              <div><span className="lg" style={{ background: "#ff5c6a" }} />魔鬼代言人</div>
             </div>
             <div className="controls">
-              <button onClick={() => loadSample(mode)}>重置</button>
-              <button className={dissentOnly ? "on" : ""} onClick={() => setDissentOnly((v) => !v)}>只看分歧</button>
-              {!isSample && !isRunning && (report.panel?.length || 0) > 0 && (
-                <button onClick={() => exportShareImage(brief, report, new Date().toLocaleDateString())}>导出图</button>
-              )}
+              {started && <button onClick={reset}>新讨论</button>}
+              <button className={dissentOnly ? "on" : ""} onClick={() => setDissentOnly((v) => !v)}>只看引用</button>
             </div>
           </div>
         </div>
 
-        {/* RIGHT */}
-        <div className="col right">
-          <div className="eyebrow">遥测 · TELEMETRY</div>
-          <div className="tel"><span className="k">节点</span><span className="val cyan">{nodes}</span></div>
-          <div className="tel"><span className="k">分歧</span><span className={`val ${isSimulated ? "" : dCount > 0 ? "red" : "green"}`}>{isSimulated && !isRunning ? "INCOMPLETE" : (report.dissentLevel || "—").toUpperCase()}</span></div>
-          <div className="tel"><span className="k">引用有效率</span><span className={`val ${cit?.rate != null ? (cit.rate >= 60 ? "green" : "amber") : ""}`}>{cit?.rate != null ? `${cit.rate}%` : "—"}</span></div>
-          <div className="tel"><span className="k">证据 / 来源</span><span className="val amber">{pack && !pack.redacted ? `${pack.items.length}/${pack.sources.length}` : "—"}</span></div>
-          <div className="tel"><span className="k">耗时</span><span className="val">{fmt(elapsed)}</span></div>
-          <div className="ticks">
-            <div className="eyebrow" style={{ margin: "14px 0 8px" }}>流水线 · TICK</div>
-            <div className={`tick ${pIdx > 2 ? "done" : pIdx >= 1 ? "now" : ""}`}><i />事实侦察</div>
-            <div className={`tick ${pIdx > 3 ? "done" : ""}`}><i />主脑整理</div>
-            <div className={`tick ${pIdx > 3 ? "done" : pIdx === 3 ? "now" : ""}`}><i />反方对线</div>
-            <div className={`tick ${pIdx > 4 ? "done" : pIdx === 4 ? "now" : ""}`}><i />引用校验</div>
-            <div className={`tick ${pIdx === 5 ? "now" : ""}`}><i />综合裁决</div>
-          </div>
-          <div className="arc-wrap">
-            <svg width="120" height="78" viewBox="0 0 120 78">
-              <path d="M14 70 A46 46 0 0 1 106 70" fill="none" stroke="#15314c" strokeWidth="6" strokeLinecap="round" />
-              <path d="M14 70 A46 46 0 0 1 106 70" fill="none" stroke={isKill ? "#ff5c6a" : "#34e1ff"} strokeWidth="6" strokeLinecap="round" pathLength={ARC} strokeDasharray={ARC} strokeDashoffset={ARC * (1 - confFrac)} style={{ filter: "drop-shadow(0 0 6px #34e1ff88)", transition: "stroke-dashoffset .8s ease" }} />
-              <text x="60" y="62" textAnchor="middle" fontFamily="ui-monospace,Menlo,monospace" fontSize="15" fill="#dcecf6">{Math.round(confFrac * 100)}</text>
-              <text x="60" y="75" textAnchor="middle" fontFamily="ui-monospace,Menlo,monospace" fontSize="8" fill="#6f88a4">CONFIDENCE · 主观</text>
-            </svg>
+        {/* RIGHT: 发言时间线 */}
+        <div className="col right discuss-right">
+          <div className="eyebrow">讨论 · TRANSCRIPT <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{started ? `引用 ${citValid}/${citTotal} · ${fmt(elapsed)}` : ""}</span></div>
+          <div className="transcript" ref={transcriptRef}>
+            {!started && <div className="board-empty" style={{ padding: 20 }}>贴一个点子或文案,点「开场」——几个不同厂商的 AI 会和你一起把它辩成更好的方案。</div>}
+            {turns.map((t, i) => (
+              <div className={`turn-item${t.role === "user" ? " user" : ""}${t.failed ? " failed" : ""}`} key={t.id || i}>
+                <div className="turn-head">
+                  <span className="turn-role" style={{ color: t.failed ? "#6a7891" : ROLE_COLOR[t.role] || "#7fd6ee" }}>
+                    {t.failed ? `${t.speaker} ✕` : `${t.speaker}`}
+                    <span className="turn-rolelabel">{ROLE_LABEL[t.role] || t.role}</span>
+                  </span>
+                </div>
+                {t.failed ? (
+                  <div className="turn-body fail">本轮未响应(已降级,不伪造):{(t.error || "").slice(0, 60)}</div>
+                ) : (
+                  <>
+                    <div className="turn-body">{t.body}</div>
+                    {!!(t.citations && t.citations.length) && (
+                      <div className="cites">
+                        {t.citations.map((c, k) => (
+                          <span className={`cite-chip ${c.valid ? "ok" : "bad"}`} key={k}>{c.evidenceId}{c.valid ? "" : "✗"}</span>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            ))}
+            {busy && <div className="thinking"><span className="blink" /> {phase === "opening" ? "开场中…" : phase === "responding" ? "对线中…" : phase === "finalizing" ? "收敛中…" : "…"}</div>}
+            {conclusion && (
+              <div className="conclusion">
+                <div className="conc-head">✦ 打磨后的方案</div>
+                <div className="conc-body">{renderMd(conclusion)}</div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {runError && <div className="err">运行失败:{runError}</div>}
+      {runError && <div className="err">出错:{runError}</div>}
 
+      {/* BOTTOM: 双态输入 */}
       <div className="bar">
-        <div className="field">
-          <i>›</i>
-          <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="粘贴你的点子或文案(纯文本)…" />
-        </div>
-        <button className="run" onClick={runRoast} disabled={!brief.trim() || isRunning}>
-          {isRunning ? "CONVENING…" : "RUN COUNCIL"}
-        </button>
+        {!started ? (
+          <>
+            <div className="field">
+              <i>›</i>
+              <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="粘贴你的点子或文案(纯文本)…" onKeyDown={(e) => { if (e.key === "Enter" && brief.trim()) start(); }} />
+            </div>
+            <button className="run" onClick={start} disabled={!brief.trim() || busy}>{busy ? "OPENING…" : "开场 START"}</button>
+          </>
+        ) : (
+          <>
+            <div className="field">
+              <i>›</i>
+              <input value={userInput} onChange={(e) => setUserInput(e.target.value)} placeholder={phase === "finalized" ? "已收敛 · 点「新讨论」重开" : "插一句:回应、辩护、或给个新角度…"} disabled={busy || phase === "finalized"} onKeyDown={(e) => { if (e.key === "Enter") sendUser(); }} />
+            </div>
+            <button className="secondary" onClick={() => respond("")} disabled={busy || phase === "finalized"} title="让 agents 不带你的话再辩一轮">再辩一轮</button>
+            <button className="secondary" onClick={sendUser} disabled={busy || phase === "finalized" || !userInput.trim()}>发送</button>
+            <button className="run" onClick={finalize} disabled={busy || phase === "finalized" || turns.length === 0}>{phase === "finalizing" ? "收敛中…" : "收敛成方案"}</button>
+          </>
+        )}
       </div>
       <div className="corner c-tl" /><div className="corner c-tr" />
       <div className="corner c-bl" /><div className="corner c-br" />
@@ -359,4 +347,26 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+// 门控:先启动页/密码门,解锁后进陪练台。session 内记住解锁态。
+function Root() {
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem("roast_auth") === "1");
+  const [authRequired, setAuthRequired] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetch("/api/status")
+      .then((r) => r.json())
+      .then((d) => setAuthRequired(Boolean(d.authRequired)))
+      .catch(() => setAuthRequired(false));
+  }, []);
+  if (authRequired === null) return <div className="boot" />;
+  if (!authed) {
+    return (
+      <Landing
+        authRequired={authRequired}
+        onUnlock={() => { sessionStorage.setItem("roast_auth", "1"); setAuthed(true); }}
+      />
+    );
+  }
+  return <App />;
+}
+
+createRoot(document.getElementById("root")!).render(<Root />);
