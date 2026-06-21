@@ -80,6 +80,27 @@ async function streamSSE(
   }
 }
 
+// 讨论区固定排序:赞成方在前、反对方在后。
+// 你的话 → 主大脑(主持)→ 建设者 → 反对者(需求/可行性/魔鬼,依次)。
+const ROLE_ORDER: Record<string, number> = {
+  user: -1,
+  host: 0,
+  builder: 1,
+  "demand-skeptic": 2,
+  feasibility: 3,
+  "devils-advocate": 4,
+  system: 9,
+};
+function sortTurns(turns: Turn[]): Turn[] {
+  return [...turns].sort((a, b) => {
+    if (a.round !== b.round) return a.round - b.round; // 轮次先后不变
+    const ra = ROLE_ORDER[a.role] ?? 8;
+    const rb = ROLE_ORDER[b.role] ?? 8;
+    if (ra !== rb) return ra - rb; // 同一轮内按角色:赞成在前、反对在后
+    return (a.seq ?? 0) - (b.seq ?? 0);
+  });
+}
+
 const GRAPH_PHASE: Record<Phase, GraphPhase> = {
   drafting: "idle",
   opening: "debating",
@@ -225,6 +246,7 @@ function App() {
     () => (pack?.items || []).map((i) => ({ id: i.id, source: i.source, credibility: i.credibility })),
     [pack],
   );
+  const orderedTurns = useMemo(() => sortTurns(turns), [turns]);
 
   // 当前发言者(最近一条非失败的 agent 发言),运行中高光对应节点
   const speaking = useMemo(() => {
@@ -308,7 +330,7 @@ function App() {
           <div className="eyebrow">讨论 · TRANSCRIPT <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{started ? `引用 ${citValid}/${citTotal} · ${fmt(elapsed)}` : ""}</span></div>
           <div className="transcript" ref={transcriptRef}>
             {!started && <div className="board-empty" style={{ padding: 20 }}>贴一个点子或文案,点「开场」——几个不同厂商的 AI 会和你一起把它辩成更好的方案。</div>}
-            {turns.map((t, i) => (
+            {orderedTurns.map((t, i) => (
               <div className={`turn-item${t.role === "user" ? " user" : ""}${t.failed ? " failed" : ""}`} key={t.id || i}>
                 <div className="turn-head">
                   <span className="turn-role" style={{ color: t.failed ? "#6a7891" : ROLE_COLOR[t.role] || "#7fd6ee" }}>
