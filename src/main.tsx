@@ -369,6 +369,35 @@ function App() {
   );
 }
 
+// 登录后的 JARVIS 语音:浏览器 TTS,挑深沉男声、压低音调做贾维斯感。
+// 由解锁点击(用户手势)触发,允许发声。要真·音色可换录音文件。
+function speakWelcome() {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const u = new SpeechSynthesisUtterance("Welcome to a new world.");
+    u.lang = "en-GB";
+    u.rate = 0.84;
+    u.pitch = 0.7;
+    u.volume = 1;
+    const pick = () => {
+      const vs = synth.getVoices();
+      const v =
+        vs.find((x) => /daniel|arthur|google uk english male|microsoft (ryan|george|guy)/i.test(x.name)) ||
+        vs.find((x) => /en-GB/i.test(x.lang) && /male/i.test(x.name)) ||
+        vs.find((x) => /en-GB/i.test(x.lang)) ||
+        vs.find((x) => /^en/i.test(x.lang));
+      if (v) u.voice = v;
+      synth.cancel();
+      synth.speak(u);
+    };
+    if (synth.getVoices().length) pick();
+    else synth.addEventListener("voiceschanged", pick, { once: true });
+  } catch {
+    /* 忽略:不支持 TTS 不影响登录 */
+  }
+}
+
 // 门控:先启动页/密码门,解锁后进陪练台。session 内记住解锁态。
 function Root() {
   const [authed, setAuthed] = useState(() => sessionStorage.getItem("roast_auth") === "1");
@@ -384,7 +413,7 @@ function Root() {
     return (
       <Landing
         authRequired={authRequired}
-        onUnlock={() => { sessionStorage.setItem("roast_auth", "1"); setAuthed(true); }}
+        onUnlock={() => { sessionStorage.setItem("roast_auth", "1"); speakWelcome(); setAuthed(true); }}
       />
     );
   }

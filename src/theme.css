@@ -16,7 +16,7 @@ body{
   background:radial-gradient(1200px 700px at 50% 38%, #0a1326 0%, #060a14 55%, #03060d 100%);
   font-family:var(--sans); color:var(--tx);
   display:flex; align-items:center; justify-content:center;
-  min-height:100vh; padding:24px; -webkit-font-smoothing:antialiased;
+  min-height:100vh; padding:0; -webkit-font-smoothing:antialiased;
 }
 /* scanlines + 暗角 */
 body::before{
@@ -28,10 +28,10 @@ body::before{
 }
 
 .app{
-  width:min(1180px, 100%); height:min(760px, calc(100vh - 48px)); position:relative;
+  width:100vw; height:100vh; position:relative;
   background:linear-gradient(180deg,#070c18 0%,#050810 100%);
-  border:1px solid #16314e; border-radius:16px;
-  box-shadow:0 0 0 1px #0a1830, 0 30px 80px #000a, 0 0 120px #0e3a5533 inset;
+  border:0; border-radius:0;
+  box-shadow:0 0 160px #0e3a5522 inset;
   display:flex; flex-direction:column; overflow:hidden;
 }
 .app.is-simulated{ filter:saturate(.45) brightness(.92); }
