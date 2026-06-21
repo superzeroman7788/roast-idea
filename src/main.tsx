@@ -13,6 +13,7 @@ import {
 } from "./discussion";
 import { CouncilGraph, GraphPhase, GraphSeat } from "./CouncilGraph";
 import { Landing } from "./Landing";
+import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
 
 const SAMPLE_BRIEF: Record<DiscussionMode, string> = {
   idea: "一个帮独立开发者把碎片灵感整理成可执行项目的 AI 工作台。",
@@ -214,7 +215,17 @@ function App() {
     [pack],
   );
 
+  // 当前发言者(最近一条非失败的 agent 发言),运行中高光对应节点
+  const speaking = useMemo(() => {
+    if (!busy) return "";
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (!turns[i].failed && turns[i].role !== "user") return turns[i].speaker;
+    }
+    return "";
+  }, [turns, busy]);
+
   const started = phase !== "drafting";
+  const exportPayload = () => ({ title: discussion?.title || "Roast 方案", conclusion, evidence: pack?.items || [] });
   const citTotal = turns.reduce((n, t) => n + (t.citations?.filter((c) => c.evidenceId).length || 0), 0);
   const citValid = turns.reduce((n, t) => n + (t.citations?.filter((c) => c.valid).length || 0), 0);
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -238,12 +249,16 @@ function App() {
             {!pack && <div className="board-empty">开场后,这里是供你和 AI 共同引用的真实证据</div>}
             {pack?.redacted && <div className="board-empty">已关闭检索(redacted)</div>}
             {pack && !pack.redacted && pack.items.length === 0 && <div className="board-empty">本轮未检索到证据</div>}
-            {(pack?.items || []).map((it) => (
-              <a className={`board-item cred-${it.credibility}`} key={it.id} href={it.url} target="_blank" rel="noreferrer">
-                <div className="bi-head"><span className="bi-id">{it.id}</span><span className="bi-src">{it.source}</span></div>
-                <div className="bi-title">{it.title}</div>
-              </a>
-            ))}
+            {(pack?.items || []).map((it) => {
+              const bt = pack?.byTheme;
+              const theme = bt?.competitors?.includes(it.id) ? "竞品" : bt?.demandSignals?.includes(it.id) ? "需求" : bt?.pricing?.includes(it.id) ? "定价" : "";
+              return (
+                <a className={`board-item cred-${it.credibility}`} key={it.id} href={it.url} target="_blank" rel="noreferrer">
+                  <div className="bi-head"><span className="bi-id">{it.id}</span>{theme && <span className="bi-theme">{theme}</span>}<span className="bi-src">{it.source}</span></div>
+                  <div className="bi-title">{it.title}</div>
+                </a>
+              );
+            })}
           </div>
           <div className="mode">
             <button className={mode === "idea" ? "on" : ""} disabled={started} onClick={() => { setMode("idea"); setBrief(SAMPLE_BRIEF.idea); }}>IDEA</button>
@@ -264,7 +279,7 @@ function App() {
             <span className={`step ${phase === "finalizing" ? "now" : phase === "finalized" ? "done" : ""}`}>收敛</span>
           </div>
           <div className="scene">
-            <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} />
+            <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} speaking={speaking} />
             <div className="legend">
               <div><span className="lg" style={{ background: "#34e1ff" }} />辩手席位</div>
               <div><span className="lg" style={{ background: "#ffb44d" }} />证据(带链接)</div>
@@ -311,6 +326,13 @@ function App() {
               <div className="conclusion">
                 <div className="conc-head">✦ 打磨后的方案</div>
                 <div className="conc-body">{renderMd(conclusion)}</div>
+                <div className="conc-export">
+                  <span className="ce-label">导出</span>
+                  <button onClick={() => exportMarkdown(exportPayload())}>MD</button>
+                  <button onClick={() => exportPng(exportPayload())}>图片</button>
+                  <button onClick={() => exportDocx(exportPayload())}>Word</button>
+                  <button onClick={() => exportPptx(exportPayload())}>PPT</button>
+                </div>
               </div>
             )}
           </div>

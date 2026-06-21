@@ -35,6 +35,23 @@ const STANCE_FILL: Record<string, string> = {
 };
 const stanceColor = (s: string) => STANCE_FILL[s] || "#34e1ff";
 
+// 讨论模式:节点按角色着色
+const ROLE_FILL: Record<string, string> = {
+  host: "#34e1ff",
+  builder: "#46e6a0",
+  "devils-advocate": "#ff5c6a",
+  "demand-skeptic": "#ffb44d",
+  feasibility: "#c9a0ff",
+  synthesizer: "#34e1ff",
+};
+const ROLE_LABEL: Record<string, string> = {
+  host: "主持",
+  builder: "建设者",
+  "devils-advocate": "魔鬼",
+  "demand-skeptic": "需求",
+  feasibility: "可行性",
+};
+
 function ringPos(i: number, n: number, r: number, offset = 0) {
   const a = (-90 + ((i + offset) * 360) / Math.max(1, n)) * (Math.PI / 180);
   return { x: C + r * Math.cos(a), y: C + r * Math.sin(a) };
@@ -46,12 +63,14 @@ export function CouncilGraph({
   phase,
   revealed,
   showDissentOnly = false,
+  speaking = "",
 }: {
   seats: GraphSeat[];
   evidence?: EvidenceNode[];
   phase: GraphPhase;
   revealed: number;
   showDissentOnly?: boolean;
+  speaking?: string; // 当前/最近发言的 provider label,高光
 }) {
   const n = seats.length;
   const m = Math.min(evidence.length, 10);
@@ -174,30 +193,34 @@ export function CouncilGraph({
         if (i >= revealed) return null;
         const p = seatPositions[i];
         const failed = Boolean(seat.failed);
-        const isDevil = seat.roleAngle === "devils-advocate";
-        const stroke = failed ? "#3a4658" : isDevil ? "#ff5c6a" : "#34e1ff";
+        const role = seat.roleAngle || "";
+        const isDevil = role === "devils-advocate";
+        const roleColor = ROLE_FILL[role] || "#34e1ff";
+        const speakingNow = !failed && !!speaking && seat.provider === speaking;
+        const stroke = failed ? "#3a4658" : roleColor;
         const fill = failed ? "#0b0e15" : isDevil ? "#241018" : "#0c2536";
-        const glow = failed ? null : isDevil ? "#ff5c6a88" : "#34e1ff88";
         const above = p.y < C;
+        const bottom = failed ? "FAILED" : seat.stance ? seat.stance.toUpperCase() : ROLE_LABEL[role] || role;
         return (
           <g key={`m${i}`} className="node-appear" style={{ transformOrigin: `${p.x}px ${p.y}px`, opacity: failed ? 0.7 : 1 }}>
-            <circle className={!failed && debating ? "pulse" : undefined} cx={p.x} cy={p.y} r="11"
-              fill={fill} stroke={stroke} strokeWidth={failed ? 1.2 : 1.6}
+            <circle className={!failed && (debating || speakingNow) ? "pulse" : undefined} cx={p.x} cy={p.y}
+              r={speakingNow ? 12.5 : 11} fill={fill} stroke={stroke}
+              strokeWidth={failed ? 1.2 : speakingNow ? 2.4 : 1.6}
               strokeDasharray={failed ? "3 3" : undefined}
-              style={{ filter: glow ? `drop-shadow(0 0 10px ${glow})` : "none" }} />
+              style={{ filter: failed ? "none" : `drop-shadow(0 0 ${speakingNow ? 16 : 10}px ${roleColor}${speakingNow ? "" : "88"})` }} />
             {failed && (
               <text x={p.x} y={p.y + 3.5} textAnchor="middle" fontFamily="ui-monospace,Menlo,monospace"
                 fontSize="11" fill="#6a7891">✕</text>
             )}
             <text x={p.x} y={above ? p.y - 18 : p.y - 16} textAnchor="middle"
               fontFamily="ui-monospace,Menlo,monospace" fontSize="10"
-              fill={failed ? "#5a6a80" : isDevil ? "#ff9aa3" : "#7fd6ee"}>
-              {isDevil ? "Devil's Adv." : seat.provider}
+              fill={failed ? "#5a6a80" : isDevil ? "#ff9aa3" : "#9fdcef"}>
+              {seat.provider}
             </text>
             <text x={p.x} y={above ? p.y + 26 : p.y + 28} textAnchor="middle"
               fontFamily="ui-monospace,Menlo,monospace" fontSize="9"
-              fill={failed ? "#6a7891" : stanceColor(seat.stance)}>
-              {failed ? "FAILED" : seat.stance.toUpperCase()}
+              fill={failed ? "#6a7891" : roleColor}>
+              {bottom}
             </text>
           </g>
         );
