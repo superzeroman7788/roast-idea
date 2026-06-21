@@ -24,3 +24,7 @@ data/
 
 # --- 本地编辑器/预览配置(含机器绝对路径,不进库) ---
 .claude/
+
+# --- 启动动画的本地交接材料(app 实际用的副本在 public/launch/)---
+*.zip
+design_handoff_roast_idea_video/
