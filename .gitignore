@@ -28,3 +28,7 @@ data/
 # --- 启动动画的本地交接材料(app 实际用的副本在 public/launch/)---
 *.zip
 design_handoff_roast_idea_video/
+
+# --- 本地设计/音频源材料(app 实际用的在 public/:welcome.mp3 等)---
+ROAST Council UI - Redesign (standalone).html
+JARVIS_Wish_from_GitHub_18s.mp3

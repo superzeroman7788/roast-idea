@@ -369,9 +369,19 @@ function App() {
   );
 }
 
-// 登录后的 JARVIS 语音:浏览器 TTS,挑深沉男声、压低音调做贾维斯感。
-// 由解锁点击(用户手势)触发,允许发声。要真·音色可换录音文件。
+// 登录后的 JARVIS 语音:播作者提供的录音(public/welcome.mp3,真音色)。
+// 由解锁点击(用户手势)触发,允许发声。录音失败则回落浏览器 TTS。
 function speakWelcome() {
+  try {
+    const a = new Audio("/welcome.mp3");
+    a.volume = 0.9;
+    a.play().catch(() => speakWelcomeTTS());
+  } catch {
+    speakWelcomeTTS();
+  }
+}
+
+function speakWelcomeTTS() {
   try {
     const synth = window.speechSynthesis;
     if (!synth) return;
@@ -379,12 +389,10 @@ function speakWelcome() {
     u.lang = "en-GB";
     u.rate = 0.84;
     u.pitch = 0.7;
-    u.volume = 1;
     const pick = () => {
       const vs = synth.getVoices();
       const v =
         vs.find((x) => /daniel|arthur|google uk english male|microsoft (ryan|george|guy)/i.test(x.name)) ||
-        vs.find((x) => /en-GB/i.test(x.lang) && /male/i.test(x.name)) ||
         vs.find((x) => /en-GB/i.test(x.lang)) ||
         vs.find((x) => /^en/i.test(x.lang));
       if (v) u.voice = v;
@@ -394,7 +402,7 @@ function speakWelcome() {
     if (synth.getVoices().length) pick();
     else synth.addEventListener("voiceschanged", pick, { once: true });
   } catch {
-    /* 忽略:不支持 TTS 不影响登录 */
+    /* 忽略 */
   }
 }
 

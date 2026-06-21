@@ -28,21 +28,21 @@ const R_SEAT = 150;
 const R_EV = 212;
 
 const STANCE_FILL: Record<string, string> = {
-  Kill: "#ff5c6a",
-  Fix: "#ffb44d",
-  Ship: "#46e6a0",
+  Kill: "#ff5d6e",
+  Fix: "#ffb158",
+  Ship: "#3fe3a0",
   Pause: "#1b9fc4",
 };
-const stanceColor = (s: string) => STANCE_FILL[s] || "#34e1ff";
+const stanceColor = (s: string) => STANCE_FILL[s] || "#48dcff";
 
 // 讨论模式:节点按角色着色
 const ROLE_FILL: Record<string, string> = {
-  host: "#34e1ff",
-  builder: "#46e6a0",
-  "devils-advocate": "#ff5c6a",
-  "demand-skeptic": "#ffb44d",
+  host: "#48dcff",
+  builder: "#3fe3a0",
+  "devils-advocate": "#ff5d6e",
+  "demand-skeptic": "#ffb158",
   feasibility: "#c9a0ff",
-  synthesizer: "#34e1ff",
+  synthesizer: "#48dcff",
 };
 const ROLE_LABEL: Record<string, string> = {
   host: "主持",
@@ -121,14 +121,14 @@ export function CouncilGraph({
         <circle cx={C} cy={C} r="120" stroke="#12253a" />
       </g>
       <circle className="spin" style={{ transformOrigin: "260px 260px" }} cx={C} cy={C} r="232"
-        fill="none" stroke="#34e1ff" strokeWidth="1" strokeDasharray="2 16" opacity=".5" />
+        fill="none" stroke="#48dcff" strokeWidth="1" strokeDasharray="2 16" opacity=".5" />
       <circle className="spin-r" style={{ transformOrigin: "260px 260px" }} cx={C} cy={C} r="186"
-        fill="none" stroke="#34e1ff" strokeWidth="1" strokeDasharray="1 22" opacity=".38" />
+        fill="none" stroke="#48dcff" strokeWidth="1" strokeDasharray="1 22" opacity=".38" />
       <g stroke="#2a4a6a" strokeWidth="1">
         <line x1="260" y1="22" x2="260" y2="34" /><line x1="260" y1="486" x2="260" y2="498" />
         <line x1="22" y1="260" x2="34" y2="260" /><line x1="486" y1="260" x2="498" y2="260" />
       </g>
-      <g stroke="#34e1ff22" strokeWidth="1">
+      <g stroke="#48dcff22" strokeWidth="1">
         <line x1="40" y1="260" x2="480" y2="260" /><line x1="260" y1="40" x2="260" y2="480" />
       </g>
 
@@ -137,14 +137,14 @@ export function CouncilGraph({
         evPositions.map((p, i) =>
           citedEv.has(i) ? (
             <line key={`ec${i}`} className="edge-appear" x1={p.x} y1={p.y} x2={C} y2={C}
-              stroke="#ffb44d" strokeWidth="1.1" style={{ ["--edge-o" as any]: ".4" }} opacity=".4" />
+              stroke="#ffb158" strokeWidth="1.1" style={{ ["--edge-o" as any]: ".4" }} opacity=".4" />
           ) : null,
         )}
 
       {/* 模型 → 证据(青色引用线) */}
       {citeEdges.map((ce, k) => (
         <line key={`ci${k}`} className="edge-appear" x1={seatPositions[ce.s].x} y1={seatPositions[ce.s].y}
-          x2={evPositions[ce.e].x} y2={evPositions[ce.e].y} stroke="#34e1ff" strokeWidth="1"
+          x2={evPositions[ce.e].x} y2={evPositions[ce.e].y} stroke="#48dcff" strokeWidth="1"
           style={{ ["--edge-o" as any]: ".5" }} opacity=".5" />
       ))}
 
@@ -153,14 +153,14 @@ export function CouncilGraph({
         seatPositions.map((p, i) =>
           i < revealed && !seats[i].failed ? (
             <line key={`c${i}`} className="edge-appear" x1={C} y1={C} x2={p.x} y2={p.y}
-              stroke="#34e1ff" strokeWidth="1.2" style={{ ["--edge-o" as any]: ".4" }} opacity=".4" />
+              stroke="#48dcff" strokeWidth="1.2" style={{ ["--edge-o" as any]: ".4" }} opacity=".4" />
           ) : null,
         )}
 
       {/* 模型 ↔ 模型 分歧(红虚线) */}
       {dissentEdges.map(([i, j], k) => (
         <line key={`d${k}`} className="edge-appear" x1={seatPositions[i].x} y1={seatPositions[i].y}
-          x2={seatPositions[j].x} y2={seatPositions[j].y} stroke="#ff5c6a" strokeWidth="1.3"
+          x2={seatPositions[j].x} y2={seatPositions[j].y} stroke="#ff5d6e" strokeWidth="1.3"
           strokeDasharray="4 5" style={{ ["--edge-o" as any]: ".7" }} opacity=".7" />
       ))}
 
@@ -171,8 +171,8 @@ export function CouncilGraph({
           const cited = citedEv.has(i);
           return (
             <g key={`e${i}`} className="node-appear" style={{ transformOrigin: `${p.x}px ${p.y}px` }}>
-              <circle cx={p.x} cy={p.y} r={cited ? 5.5 : 4} fill="#ffb44d" opacity={cited ? 0.95 : 0.55}
-                style={{ filter: cited ? "drop-shadow(0 0 6px #ffb44d)" : "none" }} />
+              <circle cx={p.x} cy={p.y} r={cited ? 5.5 : 4} fill="#ffb158" opacity={cited ? 0.95 : 0.55}
+                style={{ filter: cited ? "drop-shadow(0 0 6px #ffb158)" : "none" }} />
               <text x={p.x} y={p.y < C ? p.y - 8 : p.y + 14} textAnchor="middle"
                 fontFamily="ui-monospace,Menlo,monospace" fontSize="8" fill={cited ? "#ffce93" : "#8a6a3a"}>
                 {e.id}·{e.source}
@@ -182,8 +182,8 @@ export function CouncilGraph({
         })}
 
       {/* 中心点子核 */}
-      <circle className="core" cx={C} cy={C} r="16" fill="#34e1ff" opacity=".9"
-        style={{ filter: "drop-shadow(0 0 16px #34e1ff)" }} />
+      <circle className="core" cx={C} cy={C} r="16" fill="#48dcff" opacity=".9"
+        style={{ filter: "drop-shadow(0 0 16px #48dcff)" }} />
       <circle cx={C} cy={C} r="8" fill="#dffaff" />
       <text x={C} y="296" textAnchor="middle" fontFamily="ui-monospace,Menlo,monospace"
         fontSize="9" fill="#9fdcef">IDEA · 核心</text>
@@ -195,7 +195,7 @@ export function CouncilGraph({
         const failed = Boolean(seat.failed);
         const role = seat.roleAngle || "";
         const isDevil = role === "devils-advocate";
-        const roleColor = ROLE_FILL[role] || "#34e1ff";
+        const roleColor = ROLE_FILL[role] || "#48dcff";
         const speakingNow = !failed && !!speaking && seat.provider === speaking;
         const stroke = failed ? "#3a4658" : roleColor;
         const fill = failed ? "#0b0e15" : isDevil ? "#241018" : "#0c2536";
