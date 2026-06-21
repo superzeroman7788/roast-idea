@@ -18,7 +18,7 @@ body{
   background:radial-gradient(1200px 700px at 50% 38%, #0a1326 0%, #060a14 55%, #03060d 100%);
   font-family:var(--sans); color:var(--tx);
   display:flex; align-items:center; justify-content:center;
-  min-height:100vh; padding:0; -webkit-font-smoothing:antialiased;
+  min-height:100vh; padding:0; overflow:hidden; -webkit-font-smoothing:antialiased;
 }
 /* scanlines + 暗角 */
 body::before{
@@ -29,11 +29,13 @@ body::before{
   mix-blend-mode:overlay; opacity:.5;
 }
 
+/* 固定设计画布(对齐 redesign 的 1680×922),由 JS 算 --app-scale 缩放适配视口、居中 letterbox */
 .app{
-  width:100vw; height:100vh; position:relative;
+  width:1680px; height:922px; flex-shrink:0; position:relative;
+  transform:scale(var(--app-scale,1)); transform-origin:center center;
   background:linear-gradient(180deg,#070c18 0%,#050810 100%);
-  border:0; border-radius:0;
-  box-shadow:0 0 160px #0e3a5522 inset;
+  border:1px solid #16314e; border-radius:16px;
+  box-shadow:0 0 160px #0e3a5522 inset, 0 30px 90px #0009;
   display:flex; flex-direction:column; overflow:hidden;
 }
 .app.is-simulated{ filter:saturate(.45) brightness(.92); }
@@ -156,7 +158,7 @@ body::before{
   border:1px solid #3a1d22;border-radius:8px;padding:7px 12px;letter-spacing:.06em}
 
 /* ===== 讨论台(讨论重构) ===== */
-.grid.discuss{grid-template-columns:240px 1fr 392px}
+.grid.discuss{grid-template-columns:264px 1fr 412px}
 .board{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;min-height:0;margin-bottom:10px}
 .board-empty{font-family:var(--sans);font-size:11px;color:var(--tx3);line-height:1.5;padding:4px 0}
 .board-item{display:block;text-decoration:none;border:1px solid #112540;border-left:2px solid #2a4a6a;

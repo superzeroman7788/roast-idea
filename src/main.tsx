@@ -117,6 +117,17 @@ function App() {
     return () => stopTimer();
   }, []);
 
+  // 固定设计画布(1680×922)缩放适配视口,保持与 redesign 一致的比例
+  useEffect(() => {
+    const fit = () => {
+      const s = Math.min(window.innerWidth / 1680, window.innerHeight / 922);
+      document.documentElement.style.setProperty("--app-scale", String(s));
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [turns, conclusion]);
