@@ -352,27 +352,40 @@ function App() {
 
       {runError && <div className="err">出错:{runError}</div>}
 
-      {/* BOTTOM: 双态输入 */}
+      {/* BOTTOM: 大多行输入(左) + 竖排按钮列(右),对齐 redesign */}
       <div className="bar">
-        {!started ? (
-          <>
-            <div className="field">
-              <i>›</i>
-              <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="粘贴你的点子或文案(纯文本)…" onKeyDown={(e) => { if (e.key === "Enter" && brief.trim()) start(); }} />
-            </div>
-            <button className="run" onClick={start} disabled={!brief.trim() || busy}>{busy ? "OPENING…" : "开场 START"}</button>
-          </>
-        ) : (
-          <>
-            <div className="field">
-              <i>›</i>
-              <input value={userInput} onChange={(e) => setUserInput(e.target.value)} placeholder={phase === "finalized" ? "已收敛 · 点「新讨论」重开" : "插一句:回应、辩护、或给个新角度…"} disabled={busy || phase === "finalized"} onKeyDown={(e) => { if (e.key === "Enter") sendUser(); }} />
-            </div>
-            <button className="secondary" onClick={() => respond("")} disabled={busy || phase === "finalized"} title="让 agents 不带你的话再辩一轮">再辩一轮</button>
-            <button className="secondary" onClick={sendUser} disabled={busy || phase === "finalized" || !userInput.trim()}>发送</button>
-            <button className="run" onClick={finalize} disabled={busy || phase === "finalized" || turns.length === 0}>{phase === "finalizing" ? "收敛中…" : "收敛成方案"}</button>
-          </>
-        )}
+        <div className="composer">
+          <i className="composer-prefix">›</i>
+          {!started ? (
+            <textarea
+              className="composer-input"
+              value={brief}
+              onChange={(e) => setBrief(e.target.value)}
+              placeholder={"描述你的点子或文案,点「开场」——\n支持多行 —— 写得越细,议会挑得越准。"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (brief.trim()) start(); } }}
+            />
+          ) : (
+            <textarea
+              className="composer-input"
+              value={userInput}
+              onChange={(e) => setUserInput(e.target.value)}
+              disabled={busy || phase === "finalized"}
+              placeholder={phase === "finalized" ? "已收敛 · 点「新讨论」重开" : "插一句:回应、辩护、给个新角度…\n支持多行 —— 写得越细,议会挑得越准。"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendUser(); } }}
+            />
+          )}
+        </div>
+        <div className="btncol">
+          {!started ? (
+            <button className="btn primary" onClick={start} disabled={!brief.trim() || busy}>{busy ? "OPENING…" : "开场 START"}</button>
+          ) : (
+            <>
+              <button className="btn ghost" onClick={() => respond("")} disabled={busy || phase === "finalized"} title="让 agents 不带你的话再辩一轮">再辩一轮</button>
+              <button className="btn ghost" onClick={sendUser} disabled={busy || phase === "finalized" || !userInput.trim()}>发送</button>
+              <button className="btn primary" onClick={finalize} disabled={busy || phase === "finalized" || turns.length === 0}>{phase === "finalizing" ? "收敛中…" : "收敛成方案"}</button>
+            </>
+          )}
+        </div>
       </div>
       <div className="corner c-tl" /><div className="corner c-tr" />
       <div className="corner c-bl" /><div className="corner c-br" />
