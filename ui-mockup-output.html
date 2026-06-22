@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Roast · 收敛结果</title>
+<style>
+  :root{--cyan:#34e1ff;--amber:#ffb44d;--red:#ff5c6a;--green:#46e6a0;--gray:#5a708a;
+    --tx:#dcecf6;--tx2:#7f97b0;--tx3:#52688a;--mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:-apple-system,system-ui,sans-serif}
+  *{box-sizing:border-box;margin:0;padding:0}html,body{height:100%}
+  body{background:radial-gradient(1100px 640px at 50% 38%,#0a1326,#060a14 60%,#03060d);font-family:var(--sans);color:var(--tx);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;-webkit-font-smoothing:antialiased}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:9;background:repeating-linear-gradient(0deg,#ffffff04 0 1px,transparent 1px 3px);mix-blend-mode:overlay;opacity:.4}
+  .app{width:1100px;height:730px;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(180deg,#070c16,#04070f);border:1px solid #143052;border-radius:16px;box-shadow:0 26px 70px #000a}
+  .chrome{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #0f2138;background:#060a14}
+  .dot{width:11px;height:11px;border-radius:50%}.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .ctitle{flex:1;text-align:center;font-family:var(--mono);font-size:12px;letter-spacing:.28em;color:#5f7a98}.ctitle b{color:var(--cyan);font-weight:500}
+  .topbar{padding:12px 18px;border-bottom:1px solid #0d1c30;display:flex;align-items:center;gap:14px}
+  .idea{flex:1;font-size:13px;color:#cfe2ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .idea span{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:#5f7a98;margin-right:9px}
+  .vote{font-family:var(--mono);font-size:10px;color:#9fb1c4;background:#0c1828;border:1px solid #1a3350;border-radius:6px;padding:5px 10px;white-space:nowrap}
+  .vote b{color:var(--amber)}
+  .share{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:#10202c;background:linear-gradient(180deg,#ffce7a,#f2a23a);border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:600}
+  .grid{flex:1;display:grid;grid-template-columns:1fr 270px;min-height:0}
+  .main{overflow:auto;padding:16px 20px}
+  .right{border-left:1px solid #0d1c30;padding:15px 14px;display:flex;flex-direction:column}
+  .h{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:#7f97b0;text-transform:uppercase;display:flex;align-items:center;gap:8px;margin:18px 0 9px}
+  .h:first-child{margin-top:0}.h .ln{flex:1;height:1px;background:#0e2034}
+  .clar{background:#0a1626;border:1px solid #14304a;border-radius:11px;padding:14px 16px;font-size:15px;color:#e6f1f8;line-height:1.6}
+  .clar b{color:var(--cyan);font-weight:500}
+  .kill{background:#160d10;border:1px solid #4a1c22;border-left:3px solid var(--red);border-radius:11px;padding:13px 15px}
+  .kill .lab{font-family:var(--mono);font-size:9px;letter-spacing:.12em;color:#ff7884;margin-bottom:6px}
+  .kill p{font-size:13.5px;color:#ffd2d6;line-height:1.55}
+  .item{background:#0a1322;border:1px solid #122742;border-radius:10px;padding:11px 13px;margin-bottom:8px}
+  .item .risk{font-size:13px;color:#dceaf4;font-weight:500;display:flex;gap:8px;align-items:flex-start}
+  .item .risk .b{font-family:var(--mono);font-size:9px;background:#0e2a36;color:#7fd0ec;border-radius:4px;padding:2px 6px;flex:none;margin-top:1px}
+  .item .resp{font-size:12.5px;color:#a9c0d2;line-height:1.5;margin-top:7px;padding-left:10px;border-left:1px solid #173a52}
+  .item .resp b{font-family:var(--mono);font-size:9px;color:#5f9c86;letter-spacing:.08em;margin-right:6px}
+  .q{font-size:13px;color:#cdddea;line-height:1.5;padding:6px 0 6px 12px;border-left:1px solid #1a3a52;margin-bottom:5px;list-style:none}
+  .test{font-size:13px;color:#cdddea;line-height:1.5;padding:7px 0 7px 12px;border-left:1px solid #2a4a2e;margin-bottom:5px;list-style:none}
+  .test b{font-family:var(--mono);font-size:9px;color:#7fc99a;margin-right:7px}
+  .aside{font-size:12px;color:#8198ad;line-height:1.5;padding:5px 0 5px 12px;border-left:1px solid #243240;list-style:none}
+  .aitake{background:#0b0f1a;border:1px dashed #243a52;border-radius:10px;padding:11px 13px;font-size:12.5px;color:#a9c0d2;line-height:1.55}
+  .aitake .lab{font-family:var(--mono);font-size:9px;color:#7f97b0;letter-spacing:.1em;margin-bottom:5px}
+  .aitake .warn{color:#cf9a5a}
+  /* right rail */
+  .mini{display:flex;justify-content:center;margin-bottom:12px}
+  .recap{font-family:var(--mono);font-size:11px}
+  .recap .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #0c1c2e}
+  .recap .row span{color:#6f88a4;letter-spacing:.08em}.recap .row b{font-weight:500}.recap .c{color:var(--cyan)}.recap .a{color:var(--amber)}.recap .g{color:#8198ad}
+  .acts{margin-top:auto;display:flex;flex-direction:column;gap:8px}
+  .ghost{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:#7f97b0;background:#0a1626;border:1px solid #173052;border-radius:8px;padding:10px;cursor:pointer}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="chrome"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+      <div class="ctitle">ROAST · <b>你想明白了什么</b> · OUTCOME</div></div>
+    <div class="topbar">
+      <div class="idea"><span>点子</span>一个跨厂商、有证据的反方 AI 议会,帮创业者在动工前反驳自己的点子</div>
+      <div class="vote">投票 <b>Fix 2</b> · Kill 1 · Ship 1 <span style="color:#52688a">· 仅参考</span></div>
+      <button class="share">生成分享图</button>
+    </div>
+
+    <div class="grid">
+      <div class="main">
+        <div class="h">你现在更清楚了什么</div>
+        <div class="clar">这个点子的成败**不在"多模型"机制**(已被 Fusion 商品化),而在 <b>白箱 + 人在环中 + 反共识</b> 能否做成别人抄不动的体验。你已认定:**先证明"反谄媚 + 证据"带来的增量价值,再谈付费**。</div>
+
+        <div class="h" style="color:#ff7884">不可静音 · 最硬的一条</div>
+        <div class="kill"><div class="lab">魔鬼代言人 · 即使你想跳过</div>
+          <p>"多模型对抗"本身一周可被复刻,若不能在 30 天内拿出"证据接地 + 人策展"的可感差异,会被免费工具与 Fusion 直接淹没。</p></div>
+
+        <div class="h">你认领要处理的(逐条应对)</div>
+        <div class="item"><div class="risk"><span class="b">投资人</span>个人付费意愿低、免费替代多,不是"真生意"。</div>
+          <div class="resp"><b>应对</b>先不做个人免费层,锁定"已在为决策付费"的人群(创始人/PM),用证据+对抗的增量价值收费。</div></div>
+        <div class="item"><div class="risk"><span class="b">增长·分发</span>做出来没人知道,获客是头号隐形杀手。</div>
+          <div class="resp"><b>应对</b>把"带 receipts 的分歧截图"做成天然分享物,build-in-public 当分发引擎。</div></div>
+
+        <div class="h">还没验证的关键问题</div>
+        <ul><li class="q">"反谄媚 + 证据"是否真带来用户愿付费的增量,而不仅是"读一次很爽"?</li>
+          <li class="q">人策展的操作成本会不会高到没人用?</li></ul>
+
+        <div class="h">最便宜的验证 · 7 天</div>
+        <ul><li class="test"><b>D1-2</b>手动对 10 个真实点子跑一遍议会,给创始人看分歧图</li>
+          <li class="test"><b>D3-5</b>问他们愿不愿为"更深一轮 + 证据包"付 $X</li>
+          <li class="test"><b>D6-7</b>只保留真的让人改了决定的输出形态</li></ul>
+
+        <div class="h" style="color:#8198ad">你搁置了什么(留痕)</div>
+        <ul><li class="aside">主持(OpenAI):个性化与伦理挑战 —— 你判断当前阶段非关键,已搁置。</li></ul>
+
+        <div class="h">一个 AI 视角</div>
+        <div class="aitake"><div class="lab">AI take</div>方向成立,但护城河取决于执行速度与体验,而非模型。<span class="warn">—— 这只是一个意见,不是答案。</span></div>
+      </div>
+
+      <div class="right">
+        <div class="mini">
+          <svg width="150" height="150" viewBox="0 0 150 150">
+            <circle cx="75" cy="75" r="60" fill="none" stroke="#13283e"/>
+            <circle cx="75" cy="75" r="38" fill="none" stroke="#11223a" stroke-dasharray="2 7"/>
+            <line x1="75" y1="75" x2="75" y2="20" stroke="#2a9fc4" opacity=".4"/><line x1="75" y1="75" x2="130" y2="75" stroke="#2a9fc4" opacity=".4"/>
+            <line x1="75" y1="75" x2="75" y2="130" stroke="#2a9fc4" opacity=".4"/><line x1="75" y1="75" x2="20" y2="75" stroke="#2a9fc4" opacity=".4"/>
+            <line x1="20" y1="75" x2="75" y2="130" stroke="#ff5c6a" stroke-dasharray="3 4" opacity=".7"/>
+            <circle cx="75" cy="75" r="5" fill="#bfefff"/>
+            <circle cx="75" cy="20" r="6" fill="#08151f" stroke="#34e1ff"/><circle cx="130" cy="75" r="6" fill="#08151f" stroke="#34e1ff"/>
+            <circle cx="75" cy="130" r="7" fill="#0c2536" stroke="#34e1ff" stroke-width="2"/>
+            <circle cx="20" cy="75" r="7" fill="#1a0d12" stroke="#ff5c6a" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <div class="recap">
+          <div class="row"><span>认领处理</span><b class="c">2</b></div>
+          <div class="row"><span>钉死</span><b class="a">1</b></div>
+          <div class="row"><span>搁置</span><b class="g">1</b></div>
+          <div class="row"><span>不可静音</span><b style="color:#ff9aa3">1</b></div>
+          <div class="row"><span>有效引用</span><b style="color:#46e6a0">82%</b></div>
+        </div>
+        <div class="acts">
+          <button class="ghost">再辩一轮(针对钉死)</button>
+          <button class="ghost">改策展后重新收敛</button>
+          <button class="ghost">导出报告(带链接)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

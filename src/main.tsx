@@ -10,15 +10,57 @@ import {
   Turn,
   ROLE_LABEL,
   ROLE_COLOR,
+  Artifact,
+  ArtifactType,
+  ARTIFACT_TYPE_LABEL,
+  Viewpoint,
+  Deliberation,
+  STANCE_COLOR,
+  ANGLE_LABEL,
+  HumanSignal,
+  CurationStatus,
+  ConvergedOutput,
+  ClarifyOutput,
+  Posture,
+  POSTURE_LABEL,
+  POSTURE_HINT,
+  RunConfig,
+  PersonaInfo,
 } from "./discussion";
 import { CouncilGraph, GraphPhase, GraphSeat } from "./CouncilGraph";
 import { Landing } from "./Landing";
 import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
 
+interface AttachFile { kind: "image" | "text"; dataUrl?: string; text?: string; name: string; }
+
+async function readFileAsAttach(f: File): Promise<AttachFile> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    if (f.type.startsWith("image/")) {
+      r.onload = () => resolve({ kind: "image", dataUrl: r.result as string, name: f.name });
+      r.onerror = reject;
+      r.readAsDataURL(f);
+    } else {
+      r.onload = () => resolve({ kind: "text", text: r.result as string, name: f.name });
+      r.onerror = reject;
+      r.readAsText(f);
+    }
+  });
+}
+
 const SAMPLE_BRIEF: Record<DiscussionMode, string> = {
   idea: "一个帮独立开发者把碎片灵感整理成可执行项目的 AI 工作台。",
   copy: "你的 AI 上线前陪练:粘贴点子,几个不同厂商的模型陪你把它辩成更好的方案。",
 };
+
+// 选角默认配置(§2.1):3 反方 + 魔鬼(locked)
+const DEFAULT_CRITICS: Record<DiscussionMode, string[]> = {
+  idea: ["investor", "growth", "feasibility", "devils-advocate"],
+  copy: ["comms-editor", "target-reader", "skeptic-reader", "devils-advocate"],
+};
+function defaultRunConfig(m: DiscussionMode): RunConfig {
+  return { mode: m, seats: DEFAULT_CRITICS[m].map((personaId) => ({ personaId })), functional: {}, autoRecruitDomain: false, posture: "clarify" };
+}
 
 // 极简 markdown 渲染(## 标题 / - 列表 / 段落)
 function renderMd(md: string): React.ReactNode {
@@ -126,29 +168,65 @@ function App() {
   const [solo, setSolo] = useState(true); // 只和主大脑讨论;需要时再引入辩论者
   const [dissentOnly, setDissentOnly] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set());
+  const [reconActive, setReconActive] = useState(false); // 事实侦察雷达页(议会前的证据预览,可逐条排除)
+  const [reconElapsed, setReconElapsed] = useState(0); // 侦察用时(秒)
+
+  const [attachments, setAttachments] = useState<AttachFile[]>([]);
+
+  type HistItem = { id: string; mode: DiscussionMode; title: string; status: string; created_at: string; updated_at: string };
+  const [history, setHistory] = useState<HistItem[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // 产出层(交付物)
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [produceType, setProduceType] = useState<ArtifactType>("copy");
+  const [produceProviders, setProduceProviders] = useState<{ id: string; label: string; image: boolean }[]>([]);
+  const [producing, setProducing] = useState(false);
+  const [refineFor, setRefineFor] = useState<Artifact | null>(null);
+  const [refineText, setRefineText] = useState("");
+
+  // 审议引擎(白箱)
+  const [viewpoints, setViewpoints] = useState<Viewpoint[]>([]);
+  const [deliberation, setDeliberation] = useState<Deliberation | null>(null);
+  const [deliberating, setDeliberating] = useState(false);
+  const [delibFails, setDelibFails] = useState<{ seat: string; roleAngle: string; error: string }[]>([]);
+  // 人策展:viewpointId → {status, replies}
+  const [curation, setCuration] = useState<Record<string, { status: CurationStatus; replies: { note: string; at?: string }[] }>>({});
+  const [replyOpen, setReplyOpen] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [converged, setConverged] = useState<ConvergedOutput | null>(null);
+  const [clarify, setClarify] = useState<ClarifyOutput | null>(null); // 想清楚(clarify)结构化产出
+  // 选角配置(§2.1)
+  const [showSeatConfig, setShowSeatConfig] = useState(false);
+  const [personaLib, setPersonaLib] = useState<{ functional: PersonaInfo[]; opinionated: { idea: PersonaInfo[]; copy: PersonaInfo[] }; providers: { id: string; label: string }[] } | null>(null);
+  const [runConfig, setRunConfig] = useState<RunConfig | null>(null);
 
   const token = useRef(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/status").then((r) => r.json()).then((d) => {
       const c = d.providers?.filter((p: { configured: boolean }) => p.configured) || [];
       setConn({ ok: c.length >= 2, text: c.length >= 2 ? `已连接 · ${c.length} 家` : `需 ≥2 家 · 当前 ${c.length}` });
     }).catch(() => setConn({ ok: false, text: "API 离线" }));
+    refreshHistory();
+    fetch("/api/produce-providers").then((r) => r.json()).then((d) => { if (d.ok) setProduceProviders(d.providers || []); }).catch(() => {});
+    fetch("/api/personas").then((r) => r.json()).then((d) => { if (d.ok) setPersonaLib({ functional: d.functional, opinionated: d.opinionated, providers: d.providers || [] }); }).catch(() => {});
     return () => stopTimer();
   }, []);
 
-  // 固定设计画布(1680×922)缩放适配视口,保持与 redesign 一致的比例
+  // 模式切换 → 从 DB 载该模式的已存配置(回落默认)
   useEffect(() => {
-    const fit = () => {
-      const s = Math.min(window.innerWidth / 1680, window.innerHeight / 922);
-      document.documentElement.style.setProperty("--app-scale", String(s));
-    };
-    fit();
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
-  }, []);
+    let off = false;
+    fetch(`/api/run-config?mode=${mode}`).then((r) => r.json()).then((d) => {
+      if (off) return;
+      setRunConfig(d.ok && d.runConfig ? { ...defaultRunConfig(mode), ...d.runConfig, mode } : defaultRunConfig(mode));
+    }).catch(() => { if (!off) setRunConfig(defaultRunConfig(mode)); });
+    return () => { off = true; };
+  }, [mode]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
@@ -166,31 +244,109 @@ function App() {
 
   function appendTurn(t: Turn) { setTurns((prev) => [...prev, t]); }
 
-  async function start() {
-    const t = ++token.current;
-    setRunError(""); setBusy(true); setDiscussion(null); setTurns([]); setPack(null); setConclusion("");
-    setPhase("opening"); startTimer();
-    try {
-      await streamSSE("/api/discussion/start", { mode, brief, redacted: !retrieve, solo }, (ev, d) => {
-        if (cancelled(t)) return;
-        if (ev === "board") setPack(d.pack);
-        else if (ev === "discussion") setDiscussion({ id: d.id, title: d.title, seats: d.seats });
-        else if (ev === "turn") appendTurn(d);
-        else if (ev === "round-done") setPhase("awaiting-user");
-        else if (ev === "error") setRunError(d.error);
-      }, () => cancelled(t));
-    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("drafting"); } }
-    finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
+  async function addAttachFiles(files: FileList | null) {
+    if (!files || !files.length) return;
+    const newAtts = await Promise.all(Array.from(files).map(readFileAsAttach));
+    setAttachments((prev) => [...prev, ...newAtts]);
   }
 
-  async function respond(text: string, soloVal: boolean = solo) {
+  function removeAttach(i: number) {
+    setAttachments((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  // 事实侦察(议会前):/api/discussion/start 只建讨论 + 检索证据(不审议),进雷达页;审完证据再开议会。
+  // 证据 id 在这一次建讨论时定稿(E1..En 稳定),雷达上的逐条排除经 excludedIds 传给后续 /deliberate 精确生效。
+  async function scout() {
+    const toSend = attachments.slice();
+    const t = ++token.current;
+    setRunError(""); setBusy(true); setReconActive(true);
+    setPack(null); setExcludedIds(new Set());
+    setDiscussion(null); setTurns([]); setConclusion(""); setConverged(null);
+    setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    setAttachments([]); setPhase("opening"); setReconElapsed(0);
+    const t0 = Date.now();
+    const tick = setInterval(() => { if (!cancelled(t)) setReconElapsed(Math.round((Date.now() - t0) / 1000)); }, 250);
+    let serverErr = "";
+    try {
+      await streamSSE(
+        "/api/discussion/start",
+        { mode, brief, redacted: false, skipOpening: true, attachments: toSend, excludedIds: [], runConfig: runConfig || undefined },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "board") setPack(d.pack);
+          else if (ev === "discussion") setDiscussion({ id: d.id, title: d.title, seats: d.seats });
+          else if (ev === "error") { serverErr = d.error; setRunError(d.error); }
+        },
+        () => cancelled(t),
+      );
+      if (!cancelled(t) && serverErr) throw new Error(serverErr);
+    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
+    finally { clearInterval(tick); if (!cancelled(t)) setBusy(false); }
+  }
+
+  // 雷达页 →「开议会(基于证据)」:复用现有 discussion(scout 已建)直接审议,带上排除的证据。
+  function proceedFromRecon() { setReconActive(false); deliberate(); }
+
+  // 顶部姿态段控:切 posture;已有讨论则按新姿态即时重跑(随时切共创↔对抗)
+  function switchPosture(p: Posture) {
+    if (p === posture) return;
+    setRunConfig((rc) => (rc ? { ...rc, posture: p } : rc));
+    if (discussion && started && !busy && !deliberating) { setReconActive(false); deliberate(p); }
+  }
+
+  // 议会主屏:开场 → 建讨论(跳过对话开场)→ 直接白箱审议(R1/R2/Verifier/综述),一个 token 串起来。
+  // redactedOverride:不检索直接开议会传 true(onClick 直连收到的是事件对象,非 boolean → 回落 !retrieve)。
+  async function openCouncil(redactedOverride?: boolean) {
+    const redacted = typeof redactedOverride === "boolean" ? redactedOverride : !retrieve;
+    const toSend = attachments.slice();
+    const t = ++token.current;
+    setReconActive(false);
+    setRunError(""); setBusy(true); setDeliberating(true); setDiscussion(null); setTurns([]); setPack(null); setConclusion(""); setConverged(null);
+    setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    setAttachments([]); setPhase("opening"); startTimer();
+    let newId: string | null = null;
+    let serverErr = "";
+    try {
+      await streamSSE(
+        "/api/discussion/start",
+        { mode, brief, redacted, skipOpening: true, attachments: toSend, excludedIds: [...excludedIds], runConfig: runConfig || undefined },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "board") setPack(d.pack);
+          else if (ev === "discussion") { newId = d.id; setDiscussion({ id: d.id, title: d.title, seats: d.seats }); }
+          else if (ev === "error") { serverErr = d.error; setRunError(d.error); }
+        },
+        () => cancelled(t),
+      );
+      if (cancelled(t) || !newId) throw new Error(serverErr || "未能建立讨论");
+      setPhase("responding");
+      await streamSSE(
+        `/api/discussion/${newId}/deliberate`,
+        { runConfig: runConfig || undefined, posture: runConfig?.posture || "clarify" },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "viewpoint") setViewpoints((p) => [...p, d as Viewpoint]);
+          else if (ev === "verification") setViewpoints((p) => p.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v)));
+          else if (ev === "deliberation") setDeliberation(d as Deliberation);
+          else if (ev === "clarify") setClarify(d as ClarifyOutput);
+          else if (ev === "seat-failed") setDelibFails((p) => [...p, { seat: d.seat, roleAngle: d.roleAngle, error: d.error || "" }]);
+          else if (ev === "error") setRunError(d.error);
+        },
+        () => cancelled(t),
+      );
+      if (!cancelled(t)) setPhase("awaiting-user");
+    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("drafting"); } }
+    finally { if (!cancelled(t)) { setBusy(false); setDeliberating(false); stopTimer(); } }
+  }
+
+  async function respond(text: string, soloVal: boolean = solo, atts: AttachFile[] = []) {
     if (!discussion) return;
     const t = ++token.current;
     setBusy(true); setRunError(""); setPhase("responding"); startTimer();
     const nextRound = Math.max(0, ...turns.map((x) => x.round)) + 1;
     if (text) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text, citations: [] });
     try {
-      await streamSSE(`/api/discussion/${discussion.id}/respond`, { userTurn: text, solo: soloVal }, (ev, d) => {
+      await streamSSE(`/api/discussion/${discussion.id}/respond`, { userTurn: text, solo: soloVal, attachments: atts }, (ev, d) => {
         if (cancelled(t)) return;
         if (ev === "turn") appendTurn(d);
         else if (ev === "round-done") setPhase("awaiting-user");
@@ -207,26 +363,210 @@ function App() {
     try {
       await streamSSE(`/api/discussion/${discussion.id}/finalize`, {}, (ev, d) => {
         if (cancelled(t)) return;
-        if (ev === "conclusion") { setConclusion(d.conclusion); setPhase("finalized"); }
+        if (ev === "conclusion") { setConclusion(d.conclusion); setPhase("finalized"); refreshHistory(); }
         else if (ev === "error") setRunError(d.error);
       }, () => cancelled(t));
     } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
     finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
   }
 
+  // 人-steered 收敛:只吃人策展集合 → ConvergedOutput(白箱,非裁决)
+  async function converge() {
+    if (!discussion) return;
+    const t = ++token.current;
+    setBusy(true); setRunError(""); setPhase("finalizing"); startTimer();
+    try {
+      await streamSSE(`/api/discussion/${discussion.id}/converge`, {}, (ev, d) => {
+        if (cancelled(t)) return;
+        if (ev === "converged") { setConverged(d.converged); setConclusion(d.conclusion); setPhase("finalized"); refreshHistory(); }
+        else if (ev === "error") setRunError(d.error);
+      }, () => cancelled(t));
+    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
+    finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
+  }
+
+  // 收敛分流:有审议观点 → steered 收敛(吃人策展);否则 → 老 finalize(对话路径,不破坏)
+  function doConverge() { if (viewpoints.length > 0) converge(); else finalize(); }
+
+  // ---- 选角配置 ----
+  const personasForMode = personaLib ? (mode === "copy" ? personaLib.opinionated.copy : personaLib.opinionated.idea) : [];
+  const maxSeats = personaLib?.providers.length || 6;
+  const seatInUse = (pid: string) => !!runConfig?.seats.some((s) => s.personaId === pid);
+  function addCritic(pid: string) { setRunConfig((rc) => (rc && rc.seats.length < maxSeats && !rc.seats.some((s) => s.personaId === pid)) ? { ...rc, seats: [...rc.seats, { personaId: pid }] } : rc); }
+  function removeCritic(i: number) { setRunConfig((rc) => (!rc || rc.seats[i]?.personaId === "devils-advocate") ? rc : { ...rc, seats: rc.seats.filter((_, idx) => idx !== i) }); }
+  function setSeatModel(i: number, modelId: string) { setRunConfig((rc) => rc ? { ...rc, seats: rc.seats.map((s, idx) => idx === i ? { ...s, modelId: modelId || undefined } : s) } : rc); }
+  function setFuncModel(role: "organizer" | "verifier" | "chairman", modelId: string) { setRunConfig((rc) => rc ? { ...rc, functional: { ...rc.functional, [role]: modelId || undefined } } : rc); }
+
   function reset() {
     token.current++;
-    stopTimer(); setBusy(false);
-    setDiscussion(null); setTurns([]); setPack(null); setConclusion("");
-    setPhase("drafting"); setUserInput(""); setRunError("");
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false);
+    setDiscussion(null); setTurns([]); setPack(null); setConclusion(""); setConverged(null);
+    setPhase("drafting"); setUserInput(""); setRunError(""); setAttachments([]); setExcludedIds(new Set());
+    setArtifacts([]); setRefineFor(null); setRefineText(""); setProduceType("copy");
+    setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]);
+    setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
+  }
+
+  async function refreshHistory() {
+    try {
+      const r = await fetch("/api/discussions");
+      const d = await r.json();
+      if (d.ok) setHistory(d.discussions || []);
+    } catch {}
+  }
+
+  // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
+  async function loadDiscussion(id: string) {
+    token.current++;
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set());
+    try {
+      const r = await fetch(`/api/discussion/${id}`);
+      const d = await r.json();
+      if (!d.ok || !d.discussion) throw new Error("加载失败");
+      const dis = d.discussion;
+      setMode(dis.mode);
+      setBrief(dis.brief || "");
+      setDiscussion({ id: dis.id, title: dis.title, seats: dis.roles || [] });
+      setTurns(dis.turns || []);
+      setPack(dis.evidencePack || null);
+      setConclusion(dis.conclusion || "");
+      setConverged(dis.converged || null);
+      setArtifacts(dis.artifacts || []); setRefineFor(null); setRefineText("");
+      setViewpoints(dis.viewpoints || []); setDeliberation(dis.deliberation || null); setClarify(dis.clarify || null); setDelibFails([]);
+      setCuration(deriveCuration(dis.humanSignals || [])); setReplyOpen(null); setReplyText("");
+      setPhase(dis.status === "finalized" ? "finalized" : "awaiting-user");
+      setShowHistory(false);
+    } catch (e) {
+      setRunError((e as Error).message);
+    }
+  }
+
+  async function removeDiscussion(id: string) {
+    if (!window.confirm("删除这场讨论?本地记录将不可恢复。")) return;
+    try { await fetch(`/api/discussion/${id}`, { method: "DELETE" }); } catch {}
+    setHistory((prev) => prev.filter((h) => h.id !== id));
+    if (discussion?.id === id) reset();
+  }
+
+  // ---- 产出层(交付物)----
+  // fromArtifactId 在 = 改稿(纵向);否则 = 出一版/换一家(横向比稿)
+  async function produce(type: ArtifactType, providerId: string, fromArtifactId?: string, instruction?: string) {
+    if (!discussion || producing) return;
+    const t = ++token.current;
+    setProducing(true); setRunError("");
+    setRefineFor(null); setRefineText("");
+    try {
+      await streamSSE(
+        `/api/discussion/${discussion.id}/produce`,
+        { type, provider: providerId, fromArtifactId, instruction },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
+          else if (ev === "error") setRunError(d.error);
+        },
+        () => cancelled(t),
+      );
+    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
+    finally { if (!cancelled(t)) setProducing(false); }
+  }
+
+  async function chooseArt(id: string, type: ArtifactType) {
+    try {
+      const r = await fetch(`/api/artifact/${id}/choose`, { method: "POST" });
+      const d = await r.json();
+      if (d.ok) setArtifacts((prev) => prev.map((a) => (a.type === type ? { ...a, status: a.id === id ? "chosen" : "candidate" } : a)));
+    } catch {}
+  }
+
+  async function removeArt(id: string) {
+    try { await fetch(`/api/artifact/${id}`, { method: "DELETE" }); } catch {}
+    setArtifacts((prev) => prev.filter((a) => a.id !== id));
+    setRefineFor((cur) => (cur?.id === id ? null : cur));
+  }
+
+  function exportArtifact(a: Artifact, fmt: "md" | "docx") {
+    const payload = { title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] };
+    if (fmt === "md") exportMarkdown(payload); else exportDocx(payload);
+  }
+
+  // ---- 审议引擎(白箱):结构化观点 + 审议综述 ----
+  async function deliberate(postureOverride?: Posture) {
+    if (!discussion || deliberating) return;
+    const usePosture = postureOverride || runConfig?.posture || "clarify";
+    const t = ++token.current;
+    setDeliberating(true); setPhase("responding"); startTimer(); setRunError(""); setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    try {
+      await streamSSE(
+        `/api/discussion/${discussion.id}/deliberate`,
+        { runConfig: runConfig || undefined, posture: usePosture, excludedIds: [...excludedIds] },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "viewpoint") setViewpoints((prev) => [...prev, d as Viewpoint]);
+          else if (ev === "verification") setViewpoints((prev) => prev.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v)));
+          else if (ev === "deliberation") setDeliberation(d as Deliberation);
+          else if (ev === "clarify") setClarify(d as ClarifyOutput);
+          else if (ev === "seat-failed") setDelibFails((prev) => [...prev, { seat: d.seat, roleAngle: d.roleAngle, error: d.error || "" }]);
+          else if (ev === "error") setRunError(d.error);
+        },
+        () => cancelled(t),
+      );
+      if (!cancelled(t)) setPhase("awaiting-user");
+    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
+    finally { if (!cancelled(t)) { setDeliberating(false); stopTimer(); } }
+  }
+
+  // 从 append-only 信号日志重建当前策展态(最新状态信号胜出;reply 累积)
+  function deriveCuration(signals: HumanSignal[]) {
+    const m: Record<string, { status: CurationStatus; replies: { note: string; at?: string }[] }> = {};
+    for (const s of signals || []) {
+      const c = m[s.viewpointId] || (m[s.viewpointId] = { status: "none", replies: [] });
+      if (s.action === "reply") c.replies.push({ note: s.note, at: s.createdAt });
+      else if (s.action === "clear") c.status = "none";
+      else c.status = s.action as CurationStatus;
+    }
+    return m;
+  }
+
+  async function postSignal(viewpointId: string, action: string, note?: string) {
+    if (!discussion) return;
+    try {
+      await fetch(`/api/discussion/${discussion.id}/signal`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ viewpointId, action, note }),
+      });
+    } catch {}
+  }
+
+  // 认领/搁置/钉死:点已激活的再点 = 取消(toggle)。乐观更新 + 落库。
+  function curate(vpId: string, action: "endorse" | "setAside" | "pin") {
+    if (phase === "finalized") return; // 收敛已定稿,策展锁定(避免 recap 与收敛快照打架)
+    const cur = curation[vpId]?.status || "none";
+    const off = cur === action;
+    setCuration((prev) => {
+      const c = prev[vpId] || { status: "none", replies: [] };
+      return { ...prev, [vpId]: { ...c, status: off ? "none" : action } };
+    });
+    postSignal(vpId, off ? "clear" : action);
+  }
+
+  function replyTo(vpId: string, note: string) {
+    if (phase === "finalized" || !note.trim()) return;
+    setCuration((prev) => {
+      const c = prev[vpId] || { status: "none", replies: [] };
+      return { ...prev, [vpId]: { ...c, replies: [...c.replies, { note }] } };
+    });
+    postSignal(vpId, "reply", note);
+    setReplyOpen(null); setReplyText("");
   }
 
   function sendUser() {
     const text = userInput.trim();
-    if (!text || busy) return;
+    if ((!text && !attachments.length) || busy) return;
+    const toSend = attachments.slice();
     setUserInput("");
-    respond(text);
+    setAttachments([]);
+    respond(text, solo, toSend);
   }
 
   // 图谱席位:讨论席位 + 最近一条发言的引用 → 复用图谱引用连线
@@ -260,13 +600,248 @@ function App() {
   }, [turns, busy]);
 
   const started = phase !== "drafting";
+  // 议会主屏:有审议观点(或审议中)→ 整屏切到白箱人策展专屏(综述左/分歧图中/人策展卡右)
+  const posture: Posture = (runConfig?.posture as Posture) || "clarify";
+  // 想清楚:只跑主脑出结构化面板;议会(council/roast):多席 orb/人策展
+  const clarifyMode = started && posture === "clarify" && !reconActive && (clarify !== null || deliberating);
+  const delibMode = started && posture !== "clarify" && (viewpoints.length > 0 || deliberating);
+  // 单 key 时一个厂商可兼多 persona,故策展状态按「席位 = 厂商+角色」聚合,不按厂商折叠
+  const personaStatus = (seat: string, roleAngle: string): CurationStatus => {
+    const sv = viewpoints.filter((x) => x.seat === seat && x.roleAngle === roleAngle);
+    let st: CurationStatus = "none";
+    for (const x of sv) { const c = x.id ? curation[x.id]?.status : undefined; if (c === "pin") return "pin"; if (c === "endorse") st = "endorse"; else if (c === "setAside" && st === "none") st = "setAside"; }
+    return st;
+  };
+  // 分歧图谱 orb(对照 council mockup + §4/§5 HUD 动效):旋转虚线环 + 呼吸辉光核 + 节点辉光 + Kill↔Ship 红虚线分歧边
+  const councilOrb = () => {
+    const seen = new Set<string>();
+    const seats = viewpoints
+      .filter((v) => { const k = `${v.seat}|${v.roleAngle}`; return !seen.has(k) && seen.add(k); })
+      .map((v) => {
+        const sv = viewpoints.filter((x) => x.seat === v.seat && x.roleAngle === v.roleAngle);
+        const counts: Record<string, number> = {};
+        sv.forEach((x) => { if (x.stance) counts[x.stance] = (counts[x.stance] || 0) + 1; });
+        const stance = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+        return { seat: v.seat, cn: ANGLE_LABEL[v.roleAngle] || v.roleAngle, devil: v.roleAngle === "devils-advocate", status: personaStatus(v.seat, v.roleAngle), stance };
+      });
+    if (!seats.length) return null;
+    const C = 260, R = 172;
+    const pos = seats.map((_, i) => { const a = (-90 + (i * 360) / seats.length) * (Math.PI / 180); return { x: C + R * Math.cos(a), y: C + R * Math.sin(a) }; });
+    const dis: [number, number][] = [];
+    seats.forEach((s, i) => { if (s.stance === "Kill") seats.forEach((t, j) => { if (t.stance === "Ship") dis.push([i, j]); }); });
+    return (
+      <svg className="orb" viewBox="0 0 520 520" preserveAspectRatio="xMidYMid meet">
+        {/* 同心 HUD 环 + 旋转虚线环(§4) */}
+        <circle cx={C} cy={C} r={R} fill="none" stroke="#13283e" />
+        {/* SMIL animateTransform 绕用户坐标圆心旋转,避开 transform-box:fill-box 的旧 Safari 兼容坑 */}
+        <circle cx={C} cy={C} r={R} fill="none" stroke="#2a9fc4" strokeWidth="1" strokeDasharray="2 20" opacity="0.35">
+          <animateTransform attributeName="transform" type="rotate" from="0 260 260" to="360 260 260" dur="26s" repeatCount="indefinite" />
+        </circle>
+        <circle cx={C} cy={C} r="132" fill="none" stroke="#1b6f8c" strokeWidth="1" strokeDasharray="2 14" opacity="0.22">
+          <animateTransform attributeName="transform" type="rotate" from="360 260 260" to="0 260 260" dur="40s" repeatCount="indefinite" />
+        </circle>
+        <circle cx={C} cy={C} r="108" fill="none" stroke="#11223a" strokeDasharray="2 8" />
+        {/* 中心→各席连线 */}
+        {seats.map((s, i) => (
+          <line key={"l" + i} x1={C} y1={C} x2={pos[i].x} y2={pos[i].y} stroke={s.devil ? "#ff5c6a" : "#2a9fc4"} strokeWidth="1" opacity={s.devil ? 0.5 : 0.3} strokeDasharray={s.devil ? "4 6" : undefined} />
+        ))}
+        {/* Kill↔Ship 红色虚线分歧边(§4) */}
+        {dis.map(([i, j], k) => (
+          <line key={"d" + k} x1={pos[i].x} y1={pos[i].y} x2={pos[j].x} y2={pos[j].y} stroke="#ff5c6a" strokeWidth="1" strokeDasharray="4 6" opacity="0.45" />
+        ))}
+        {/* 节点(发光) */}
+        {seats.map((s, i) => {
+          const { x, y } = pos[i];
+          const col = s.devil ? "#ff5c6a" : s.status === "endorse" ? "#34e1ff" : "#9fd6ea";
+          const ring = s.status === "endorse" ? "#34e1ff" : s.status === "pin" ? "#ffb44d" : null;
+          return (
+            <g key={i}>
+              {ring && <circle cx={x} cy={y} r="16" fill="none" stroke={ring} strokeWidth="1" opacity="0.6" strokeDasharray={s.status === "pin" ? "2 3" : undefined} />}
+              <circle cx={x} cy={y} r={s.devil || s.status !== "none" ? 11 : 9} fill={s.devil ? "#1a0d12" : "#08151f"} stroke={col} strokeWidth={s.devil ? 1.8 : 1.4} style={{ filter: `drop-shadow(0 0 5px ${col}aa)` }} />
+              <text x={x} y={y - 21} textAnchor="middle" fontFamily="var(--mono)" fontSize="14" fill={col}>{s.seat}</text>
+              <text x={x} y={y + 27} textAnchor="middle" fontFamily="var(--mono)" fontSize="12" fill={s.status === "endorse" ? "#7fd0ec" : s.status === "pin" ? "#e0a868" : "#8aa1bc"}>{s.cn}{s.status === "endorse" ? " · 已认领" : s.status === "pin" ? " · 钉死" : s.status === "setAside" ? " · 已搁置" : ""}</text>
+            </g>
+          );
+        })}
+        {/* 呼吸辉光核(§5 core) */}
+        <circle className="core" cx={C} cy={C} r="16" fill="none" stroke="#34e1ff" strokeWidth="1" opacity="0.5" />
+        <circle cx={C} cy={C} r="6" fill="#bfefff" style={{ filter: "drop-shadow(0 0 8px #34e1ff)" }} />
+        <text x={C} y={C + 48} textAnchor="middle" fontFamily="var(--mono)" fontSize="12" fill="#8aa1bc">IDEA · 核心</text>
+      </svg>
+    );
+  };
+  // 事实侦察雷达页(对照 ui-mockup-search.html):真实 pack 映射成光点(按可信度 高青/中琥珀/低红)+ 类别条 + 证据流(可逐条排除)
+  const RECON_CAT: Record<string, string> = {
+    competitor: "竞品", oss: "开源", demand: "需求", pricing: "定价", pain: "痛点",
+    viral: "爆款", userVoice: "用户声音", competitorCopy: "竞品文案", platform: "平台", risk: "风险",
+  };
+  const credCls = (c: string) => (c === "high" ? "cy" : c === "medium" ? "am" : "rd");
+  const credCN = (c: string) => (c === "high" ? "高" : c === "medium" ? "中" : "低");
+  const reconScreen = () => {
+    const items = pack?.items || [];
+    const kept = items.filter((it) => !excludedIds.has(it.id));
+    const catCounts: Record<string, number> = {};
+    kept.forEach((it) => { catCounts[it.category] = (catCounts[it.category] || 0) + 1; });
+    const cats = Object.entries(catCounts).sort((a, b) => b[1] - a[1]);
+    const maxCat = Math.max(1, ...cats.map((c) => c[1]));
+    const sources = [...new Set(kept.map((it) => it.source))];
+    const C = 220;
+    return (
+      <div className="recon-app">
+        <div className="chrome">
+          <div className="dot r" /><div className="dot y" /><div className="dot g" />
+          <div className="title">ROAST · <b>事实侦察</b> · FACT RECON</div>
+          <div className="conn">{busy ? <><span className="blink" />扫描中…</> : <span style={{ color: "var(--green)" }}>✓ 侦察完成 · {kept.length} 条证据待审</span>}</div>
+        </div>
+        <div className="recon-top">
+          <div className="rt-l">侦察目标 · TARGET</div>
+          <div className="rt-t">{brief || "(未填写)"}</div>
+        </div>
+        <div className="recon-grid">
+          <div className="recon-stage">
+            <svg className="radar-svg" viewBox="0 0 440 440" preserveAspectRatio="xMidYMid meet">
+              {[200, 150, 95, 44].map((r, i) => <circle key={i} cx={C} cy={C} r={r} fill="none" stroke={i === 0 ? "#13283e" : "#12253a"} />)}
+              <line x1={C} y1="24" x2={C} y2="416" stroke="#1c3a55" opacity="0.5" />
+              <line x1="24" y1={C} x2="416" y2={C} stroke="#1c3a55" opacity="0.5" />
+              {/* 扫描臂 + 拖尾扇形(SMIL 旋转,全浏览器稳) */}
+              <g>
+                <path d={`M${C},${C} L${C},20 A200,200 0 0,1 ${C + 200 * Math.sin(0.9)},${C - 200 * Math.cos(0.9)} Z`} fill="url(#sweepg)" opacity="0.5" />
+                <line x1={C} y1={C} x2={C} y2="20" stroke="#34e1ff" strokeWidth="1.5" opacity="0.7" />
+                <animateTransform attributeName="transform" type="rotate" from={`0 ${C} ${C}`} to={`360 ${C} ${C}`} dur="3.6s" repeatCount="indefinite" />
+              </g>
+              <defs><radialGradient id="sweepg"><stop offset="0%" stopColor="#34e1ff" stopOpacity="0.35" /><stop offset="100%" stopColor="#34e1ff" stopOpacity="0" /></radialGradient></defs>
+              {/* 证据光点:角度黄金角散布、半径按可信度(高=靠核心) */}
+              {kept.map((it, i) => {
+                const ang = i * 2.39996;
+                const rad = 50 + (it.credibility === "high" ? 0.45 : it.credibility === "medium" ? 0.7 : 0.92) * 150;
+                const x = C + rad * Math.cos(ang), y = C + rad * Math.sin(ang);
+                const col = it.credibility === "high" ? "#34e1ff" : it.credibility === "medium" ? "#ffb44d" : "#ff5c6a";
+                return <circle key={it.id} cx={x} cy={y} r="4.5" fill={col} style={{ filter: `drop-shadow(0 0 6px ${col})` }}><animate attributeName="opacity" values="0;1" dur="0.5s" begin={`${0.15 * i}s`} fill="freeze" /></circle>;
+              })}
+              {/* 来源标签(雷达外缘,随 viewBox 缩放) */}
+              {sources.slice(0, 6).map((s, i) => {
+                const a = (-90 + i * 60) * (Math.PI / 180);
+                const x = C + 204 * Math.cos(a), y = C + 204 * Math.sin(a);
+                return <text key={i} x={x} y={y} textAnchor="middle" fontFamily="var(--mono)" fontSize="11" fill="#8aa1bc">{s.length > 9 ? s.slice(0, 9) : s}</text>;
+              })}
+              <circle cx={C} cy={C} r="7" fill="#bfefff" style={{ filter: "drop-shadow(0 0 10px #34e1ff)" }} />
+              <text x={C} y={C + 26} textAnchor="middle" fontFamily="var(--mono)" fontSize="11" fill="#8aa1bc">RECON · 核心</text>
+            </svg>
+          </div>
+          <div className="recon-right">
+            <div className="rr-h">
+              <div className="rr-title">侦察状态</div>
+              <div className="rr-nums"><span>类 <b className="c">{cats.length}</b></span><span>来源 <b>{sources.length}</b></span><span>证据 <b className="a">{kept.length}</b></span><span>用时 <b>{reconElapsed}s</b></span></div>
+            </div>
+            <div className="rr-cats">
+              {cats.map(([cat, n]) => (
+                <div className="cbar" key={cat}><span className="nm">{RECON_CAT[cat] || cat}</span><div className="track"><div className="fill" style={{ width: `${(n / maxCat) * 100}%` }} /></div><span className="v">{n}</span></div>
+              ))}
+              {!cats.length && <div className="rr-empty">{busy ? "扫描中…" : "未检索到证据"}</div>}
+            </div>
+            <div className="rr-feed">
+              <div className="feedh">证据流 · LIVE</div>
+              {items.map((it) => {
+                const ex = excludedIds.has(it.id);
+                return (
+                  <div className={`ev${ex ? " ex" : ""}`} key={it.id}>
+                    <span className={`cd ${credCls(it.credibility)}`} />
+                    <div className="evc">
+                      {it.url
+                        ? <a className="cl" href={it.url} target="_blank" rel="noreferrer" title={it.title || it.url}>{it.claim || it.title} ↗</a>
+                        : <div className="cl">{it.claim || it.title}</div>}
+                      <div className="m">{(it.source || "WEB").toUpperCase()}{it.engagement ? ` · ▲${it.engagement.value}` : ""} · {credCN(it.credibility)}{ex ? " · 已排除" : it.credibility === "low" ? " · 可排除" : ""}</div>
+                    </div>
+                    <button className="ev-x" title={ex ? "恢复(进议会)" : "排除(不进议会)"} onClick={() => setExcludedIds((p) => { const n = new Set(p); n.has(it.id) ? n.delete(it.id) : n.add(it.id); return n; })}>{ex ? "↺" : "✕"}</button>
+                  </div>
+                );
+              })}
+              {!items.length && <div className="rr-empty">{busy ? "扫描中…" : "未检索到证据 — 可直接开议会"}</div>}
+            </div>
+          </div>
+        </div>
+        <div className="recon-bar">
+          {runError ? <span className="recon-err">{runError}</span> : <span className="recon-hint">{busy ? "侦察中,稍候…" : "审完证据,点右侧「开议会」才进入议会 →"}</span>}
+          <button className="ghost" onClick={() => scout()} disabled={busy}>重新侦察</button>
+          <button className="ghost" onClick={() => openCouncil(true)} disabled={busy}>不检索直接开议会</button>
+          <button className="btn primary" onClick={proceedFromRecon} disabled={busy || !discussion || kept.length === 0}>开议会(基于证据) ›</button>
+        </div>
+      </div>
+    );
+  };
+  // 想清楚(clarify §2.2):主脑结构化共创面板 —— 重述 + 关键追问 + 建设性角度 + 最尖锐张力 + 一键送进议会
+  const clarifyPanel = () => {
+    if (!clarify) return <div className="clarify-wrap"><div className="clarify-loading">{deliberating ? "主脑在帮你把它理清…" : "(无)"}</div></div>;
+    return (
+      <div className="clarify-wrap">
+        <div className="clarify-card cl-restate"><div className="cl-h">主脑 · 结构化重述</div><div className="cl-body">{clarify.restate}</div></div>
+        {clarify.keyQuestions.length > 0 && <div className="clarify-card cl-q"><div className="cl-h">关键追问 · 决定成败</div><ol className="cl-list">{clarify.keyQuestions.map((q, i) => <li key={i}>{q}</li>)}</ol></div>}
+        {clarify.constructiveAngles.length > 0 && <div className="clarify-card cl-angle"><div className="cl-h">建设性角度 · 怎么更强</div><ul className="cl-list">{clarify.constructiveAngles.map((a, i) => <li key={i}>{a}</li>)}</ul></div>}
+        {clarify.sharpestTension && <div className="clarify-card cl-tension"><div className="cl-h">最尖锐的待解</div><div className="cl-body">{clarify.sharpestTension}</div></div>}
+        <div className="clarify-acts">
+          <button className="btn primary" disabled={deliberating || busy} onClick={() => switchPosture("roast")}>送进议会拷问 →</button>
+          <button className="btn ghost" disabled={deliberating || busy} onClick={() => switchPosture("council")}>温和审议</button>
+        </div>
+      </div>
+    );
+  };
   const exportPayload = () => ({ title: discussion?.title || "Roast 方案", conclusion, evidence: pack?.items || [] });
   const citTotal = turns.reduce((n, t) => n + (t.citations?.filter((c) => c.evidenceId).length || 0), 0);
   const citValid = turns.reduce((n, t) => n + (t.citations?.filter((c) => c.valid).length || 0), 0);
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso); const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  const typeArtifacts = useMemo(() => artifacts.filter((a) => a.type === produceType), [artifacts, produceType]);
+  const availProviders = produceType === "image" ? produceProviders.filter((p) => p.image) : produceProviders;
+  const recap = useMemo(() => {
+    const vals = Object.values(curation);
+    const verified = viewpoints.filter((v) => v.verification);
+    return {
+      endorse: vals.filter((c) => c.status === "endorse").length,
+      pin: vals.filter((c) => c.status === "pin").length,
+      aside: vals.filter((c) => c.status === "setAside").length,
+      unsil: converged?.unsilenceable.length || 0,
+      pass: verified.length ? Math.round((verified.filter((v) => v.verification!.verdict === "supported").length / verified.length) * 100) : null,
+    };
+  }, [curation, viewpoints, converged]);
+  // mini 分歧图:中心=点子,外围=各反方席(按代表 stance 配色,最硬 kill 红色加大)
+  const miniGraph = () => {
+    const seen = new Set<string>();
+    const seats: { stance?: string; kill: boolean }[] = [];
+    for (const v of viewpoints.filter((x) => x.round === 2)) {
+      if (seen.has(v.seat)) continue;
+      seen.add(v.seat);
+      const sv = viewpoints.filter((x) => x.seat === v.seat && x.round === 2);
+      const counts: Record<string, number> = {};
+      sv.forEach((x) => { if (x.stance) counts[x.stance] = (counts[x.stance] || 0) + 1; });
+      seats.push({ stance: Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0], kill: sv.some((x) => x.isHardestKill) });
+    }
+    if (seats.length < 2) return null;
+    const cx = 70, cy = 70, r = 48;
+    return (
+      <svg width="140" height="140" viewBox="0 0 140 140">
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="#13283e" />
+        {seats.map((s, i) => {
+          const ang = (-90 + (i * 360) / seats.length) * (Math.PI / 180);
+          const x = cx + r * Math.cos(ang), y = cy + r * Math.sin(ang);
+          const col = s.kill ? STANCE_COLOR.Kill : STANCE_COLOR[s.stance || ""] || "#34e1ff";
+          return (
+            <g key={i}>
+              <line x1={cx} y1={cy} x2={x} y2={y} stroke={col} opacity="0.35" />
+              <circle cx={x} cy={y} r={s.kill ? 7 : 5} fill="#08151f" stroke={col} strokeWidth={s.kill ? 2 : 1.4} />
+            </g>
+          );
+        })}
+        <circle cx={cx} cy={cy} r="5" fill="#bfefff" />
+      </svg>
+    );
+  };
 
   return (
     <div className="app">
+      {reconActive && reconScreen()}
       <div className="chrome">
         <div className="dot r" /><div className="dot y" /><div className="dot g" />
         <div className="title">ROAST · <b>SPARRING COUNCIL</b> · 点子陪练</div>
@@ -279,62 +854,184 @@ function App() {
       <div className="grid discuss">
         {/* LEFT: 信息板 */}
         <div className="col left">
+          {delibMode ? (
+            <>
+              <div className="eyebrow">审议综述 · 白箱 <span className="live"><span className="blink" />{deliberating ? "审议中" : "就绪"}</span></div>
+              <div className="board delib-sum">
+                {!deliberation && <div className="board-empty">{deliberating ? "综述生成中…" : "(无综述)"}</div>}
+                {deliberation && (
+                  <>
+                    {([["共识", "#46e6a0", deliberation.consensus, false], ["矛盾", "#ff5c6a", deliberation.contradictions, false], ["部分覆盖", "var(--tx2)", deliberation.partialCoverage, false], ["盲点", "#ffb44d", deliberation.blindSpots, true]] as [string, string, string[], boolean][]).map(([label, color, items, blind], k) => items.length > 0 && (
+                      <div className={`sum${blind ? " blind" : ""}`} key={k}><h4><span className="d" style={{ background: color }} />{label}</h4>{items.map((s, i) => <div className="sum-li" key={i}>{s}</div>)}</div>
+                    ))}
+                    {deliberation.uniqueInsights.length > 0 && (
+                      <div className="sum"><h4><span className="d" style={{ background: "#34e1ff" }} />独有洞见</h4>{deliberation.uniqueInsights.map((u, i) => <div className="sum-li" key={i}><b>{u.seat}:</b> {u.text}</div>)}</div>
+                    )}
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
           <div className="eyebrow">信息板 · INFO BOARD <span className="live"><span className="blink" />{busy ? "运行" : started ? "就绪" : "待命"}</span></div>
           <div className="board">
             {!pack && <div className="board-empty">开场后,这里是供你和 AI 共同引用的真实证据</div>}
-            {pack?.redacted && <div className="board-empty">已关闭检索(redacted)</div>}
+            {pack?.redacted && <div className="board-empty">已关闭检索</div>}
             {pack && !pack.redacted && pack.items.length === 0 && <div className="board-empty">本轮未检索到证据</div>}
             {(pack?.items || []).map((it) => {
-              const bt = pack?.byTheme;
-              const theme = bt?.competitors?.includes(it.id) ? "竞品" : bt?.demandSignals?.includes(it.id) ? "需求" : bt?.pricing?.includes(it.id) ? "定价" : "";
+              const excluded = excludedIds.has(it.id);
+              const catLabel: Record<string, string> = {
+                competitor: "竞品", oss: "开源", demand: "需求", pricing: "定价", pain: "痛点",
+                viral: "爆款", userVoice: "用户声音", competitorCopy: "竞品文案", platform: "平台", risk: "风险",
+              };
               return (
-                <a className={`board-item cred-${it.credibility}`} key={it.id} href={it.url} target="_blank" rel="noreferrer">
-                  <div className="bi-head"><span className="bi-id">{it.id}</span>{theme && <span className="bi-theme">{theme}</span>}<span className="bi-src">{it.source}</span></div>
-                  <div className="bi-title">{it.title}</div>
-                </a>
+                <div className={`board-item cred-${it.credibility}${excluded ? " excluded" : ""}`} key={it.id}>
+                  <div className="bi-head">
+                    <span className="bi-id">{it.id}</span>
+                    {it.category && <span className="bi-theme">{catLabel[it.category] || it.category}</span>}
+                    <span className="bi-src">
+                      <span className={`bi-tier t-${it.tier || "green"}`} title={it.tier === "red" ? "cookie 源·封号/ToS 风险" : it.tier === "yellow" ? "需配置源" : "免 cookie 低风险源"} />
+                      {it.source}
+                    </span>
+                    <button className={`bi-exclude${excluded ? " on" : ""}`} onClick={() => setExcludedIds((prev) => { const s = new Set(prev); excluded ? s.delete(it.id) : s.add(it.id); return s; })} title={excluded ? "取消排除" : "排除(不进议会)"}>
+                      {excluded ? "✓" : "×"}
+                    </button>
+                  </div>
+                  <a className="bi-title-link" href={it.url} target="_blank" rel="noreferrer">{it.title}</a>
+                  {it.impact && <div className="bi-impact">{it.impact}</div>}
+                </div>
               );
             })}
           </div>
           <div className="mode">
-            <button className={mode === "idea" ? "on" : ""} disabled={started} onClick={() => { setMode("idea"); setBrief(SAMPLE_BRIEF.idea); }}>IDEA</button>
-            <button className={mode === "copy" ? "on" : ""} disabled={started} onClick={() => { setMode("copy"); setBrief(SAMPLE_BRIEF.copy); }}>COPY</button>
+            <button className={mode === "idea" ? "on" : ""} disabled={started} onClick={() => { setMode("idea"); setBrief(SAMPLE_BRIEF.idea); }}>点子</button>
+            <button className={mode === "copy" ? "on" : ""} disabled={started} onClick={() => { setMode("copy"); setBrief(SAMPLE_BRIEF.copy); }}>文案</button>
           </div>
           {!started && (
-            <button className="ghost-row" onClick={() => setRetrieve((v) => !v)}>
-              检索证据 · {retrieve ? "ON" : "OFF(redacted)"}
-            </button>
+            <>
+              <button className="ghost-row" onClick={() => setRetrieve((v) => !v)}>
+                检索证据 · {retrieve ? "开" : "关"}
+              </button>
+              {/* 开场前选初始模式;开场后由底部「跟主脑讨论/发动辩论」常驻切换接管 */}
+              <button className={`ghost-row${solo ? " on" : ""}`} onClick={() => setSolo((v) => !v)}>
+                开场模式 · {solo ? "只和主脑" : "全议会"}
+              </button>
+            </>
           )}
-          <button className={`ghost-row${solo ? " on" : ""}`} onClick={() => setSolo((v) => !v)} disabled={phase === "finalized"}>
-            讨论模式 · {solo ? "只和主脑" : "全议会"}
-          </button>
+            </>
+          )}
         </div>
 
-        {/* CENTER: 辩论图谱 */}
+        {/* CENTER: 姿态段控 + 辩论图谱 / 想清楚面板 */}
         <div className="col center">
+          {/* 对话姿态(§2.2):想清楚(共创)/ 审议(平衡)/ 拷问(对抗)—— 随时切 */}
+          <div className="posture-seg">
+            {(["clarify", "council", "roast"] as Posture[]).map((p) => (
+              <button key={p} className={`ps-btn ps-${p}${posture === p ? " on" : ""}`} disabled={busy || deliberating} title={POSTURE_HINT[p]} onClick={() => switchPosture(p)}>{POSTURE_LABEL[p]}</button>
+            ))}
+          </div>
           <div className="stage">
             <span className={`step ${started ? "done" : "now"}`}>{discussion?.title ? discussion.title.slice(0, 22) : "点子"}</span>
-            <span className={`step ${phase === "opening" || phase === "responding" ? "now" : turns.length ? "done" : ""}`}>对线</span>
+            <span className={`step ${clarifyMode ? (clarify ? "done" : "now") : delibMode ? (phase === "finalizing" || phase === "finalized" ? "done" : "now") : phase === "opening" || phase === "responding" ? "now" : turns.length ? "done" : ""}`}>{clarifyMode ? "想清楚" : delibMode ? "人策展" : "对线"}</span>
             <span className={`step ${phase === "finalizing" ? "now" : phase === "finalized" ? "done" : ""}`}>收敛</span>
           </div>
+          {clarifyMode ? (
+            <div className="scene clarify-scene">{clarifyPanel()}</div>
+          ) : (
           <div className="scene">
-            <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} speaking={speaking} />
+            {delibMode ? (councilOrb() || <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} speaking={speaking} />)
+              : <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} speaking={speaking} />}
             <div className="legend">
-              <div><span className="lg" style={{ background: "#34e1ff" }} />辩手席位</div>
-              <div><span className="lg" style={{ background: "#ffb44d" }} />证据(带链接)</div>
-              <div><span className="lg" style={{ background: "#ff5c6a" }} />魔鬼代言人</div>
+              {delibMode ? (<>
+                <div><span className="lg" style={{ background: "#34e1ff" }} />认领(高亮环)</div>
+                <div><span className="lg" style={{ background: "#ffb44d" }} />钉死(虚线环)</div>
+                <div><span className="lg" style={{ background: "#ff5c6a" }} />魔鬼 / 分歧</div>
+              </>) : (<>
+                <div><span className="lg" style={{ background: "#34e1ff" }} />辩手席位</div>
+                <div><span className="lg" style={{ background: "#ffb44d" }} />证据(带链接)</div>
+                <div><span className="lg" style={{ background: "#ff5c6a" }} />魔鬼代言人</div>
+              </>)}
             </div>
             <div className="controls">
+              <button onClick={() => setShowSeatConfig(true)} title="配置审议席位(角色↔模型)">席位{runConfig ? ` · ${3 + runConfig.seats.length}` : ""}</button>
+              <button onClick={() => { setShowHistory(true); refreshHistory(); }} title="浏览/恢复过往讨论">历史{history.length ? ` · ${history.length}` : ""}</button>
               {started && <button onClick={reset}>新讨论</button>}
               <button className={dissentOnly ? "on" : ""} onClick={() => setDissentOnly((v) => !v)}>只看引用</button>
             </div>
           </div>
+          )}
         </div>
 
         {/* RIGHT: 发言时间线 */}
         <div className="col right discuss-right">
-          <div className="eyebrow">讨论 · TRANSCRIPT <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{started ? `引用 ${citValid}/${citTotal} · ${fmt(elapsed)}` : ""}</span></div>
+          <div className="eyebrow">{delibMode ? "观点 + 人策展" : "讨论 · TRANSCRIPT"} <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{started ? (delibMode ? `认领 ${recap.endorse} · 钉死 ${recap.pin} · 搁置 ${recap.aside}` : `引用 ${citValid}/${citTotal} · ${fmt(elapsed)}`) : ""}</span></div>
           <div className="transcript" ref={transcriptRef}>
             {!started && <div className="board-empty" style={{ padding: 20 }}>贴一个点子或文案,点「开场」——几个不同厂商的 AI 会和你一起把它辩成更好的方案。</div>}
+
+            {/* 白箱审议:署名结构化观点 + Fusion 式审议综述 */}
+            {(viewpoints.length > 0 || deliberating) && (
+              <div className="delib">
+                <div className="delib-head">⚖ 白箱审议 · 署名观点
+                  {deliberation?.simulated && <span className="sim-tag" title="真实参与方<2,不出正式结论">SIMULATED</span>}
+                </div>
+                {viewpoints.map((v, i) => {
+                  const cur = (v.id && curation[v.id]) || { status: "none" as CurationStatus, replies: [] };
+                  return (
+                  <div className={`vp-card r${v.round}${v.isHardestKill ? " kill" : ""}${v.stance ? " st-" + v.stance.toLowerCase() : ""}${v.roleAngle === "organizer" ? " organizer" : ""} cur-${cur.status}`} key={v.id || i}>
+                    <div className="vp-head">
+                      <span className="vp-seat" style={{ color: ROLE_COLOR[v.roleAngle] || "#7fd6ee" }}>{v.seat}</span>
+                      <span className="vp-angle">{ANGLE_LABEL[v.roleAngle] || v.roleAngle}</span>
+                      {v.stance && <span className="vp-stance" style={{ color: STANCE_COLOR[v.stance], borderColor: STANCE_COLOR[v.stance] }}>{v.stance}</span>}
+                      {v.isHardestKill && <span className="vp-kill">🔪 最硬·不可静音</span>}
+                      {cur.status === "pin" && <span className="vp-pinned">📌 钉死</span>}
+                    </div>
+                    <div className="vp-text">{v.text}</div>
+                    {cur.replies.length > 0 && (
+                      <div className="vp-replies">
+                        {cur.replies.map((r, k) => <div className="vp-reply" key={k}>↳ 你:{r.note}</div>)}
+                      </div>
+                    )}
+                    <div className="vp-foot">
+                      {v.evidenceIds.map((id) => {
+                        const it = pack?.items.find((p) => p.id === id);
+                        return <a className="vp-cite" key={id} href={it?.url} target="_blank" rel="noreferrer" title={it?.claim || id}>{id}</a>;
+                      })}
+                      {v.verification && (
+                        <span className={`vp-verif ${v.verification.verdict}`} title={v.verification.note}>
+                          {v.verification.verdict === "supported" ? "✓ 核实" : v.verification.verdict === "unsupported" ? "✗ 无据" : "⚠ 夸大"}
+                        </span>
+                      )}
+                    </div>
+                    {v.id && (
+                      <div className="vp-acts">
+                        <button className={`vp-act${cur.status === "endorse" ? " on-cyan" : ""}`} disabled={phase === "finalized"} onClick={() => curate(v.id!, "endorse")} title="认领=这点尖锐,我要处理(≠我同意)">{cur.status === "endorse" ? "已认领" : "认领"}</button>
+                        <button className={`vp-act${cur.status === "pin" ? " on-amber" : ""}`} disabled={phase === "finalized"} onClick={() => curate(v.id!, "pin")} title="钉死必答">{cur.status === "pin" ? "已钉死" : "钉死"}</button>
+                        <button className={`vp-act${cur.status === "setAside" ? " on-gray" : ""}`} disabled={phase === "finalized"} onClick={() => curate(v.id!, "setAside")} title="搁置(留痕,不抹掉)">{cur.status === "setAside" ? "已搁置" : "搁置"}</button>
+                        <button className={`vp-act${replyOpen === v.id ? " on-cyan" : ""}`} disabled={phase === "finalized"} onClick={() => { setReplyOpen(replyOpen === v.id ? null : v.id!); setReplyText(""); }} title="插一句反驳">插一句</button>
+                      </div>
+                    )}
+                    {replyOpen === v.id && (
+                      <div className="vp-reply-box">
+                        <input value={replyText} onChange={(e) => setReplyText(e.target.value)} autoFocus placeholder="插一句反驳…" onKeyDown={(e) => { if (e.key === "Enter") replyTo(v.id!, replyText); }} />
+                        <button onClick={() => replyTo(v.id!, replyText)} disabled={!replyText.trim()}>发</button>
+                      </div>
+                    )}
+                  </div>
+                  );
+                })}
+                {delibFails.map((f, i) => (
+                  <div className="vp-card failed" key={"f" + i}>
+                    <div className="vp-head"><span className="vp-seat">{f.seat} ✕</span><span className="vp-angle">{ANGLE_LABEL[f.roleAngle] || f.roleAngle}</span></div>
+                    <div className="vp-text fail">本席降级未响应(不伪造):{(f.error || "").slice(0, 60)}</div>
+                  </div>
+                ))}
+                {deliberating && <div className="thinking"><span className="blink" /> 审议中…(主脑立靶 → 反方并行开火 → 主席综述)</div>}
+                {viewpoints.some((v) => v.isHardestKill) && (
+                  <div className="lock-banner"><b>不可静音</b>魔鬼代言人最硬的 KILL 已锁定,无论怎么策展,收敛都会强制回应。</div>
+                )}
+              </div>
+            )}
+
             {orderedTurns.map((t, i) => (
               <div className={`turn-item${t.role === "user" ? " user" : ""}${t.failed ? " failed" : ""}`} key={t.id || i}>
                 <div className="turn-head">
@@ -360,7 +1057,65 @@ function App() {
               </div>
             ))}
             {busy && <div className="thinking"><span className="blink" /> {phase === "opening" ? "开场中…" : phase === "responding" ? "对线中…" : phase === "finalizing" ? "收敛中…" : "…"}</div>}
-            {conclusion && (
+            {converged ? (
+              <div className="converged">
+                <div className="conv-head">✦ 你想明白了什么<span className="conv-sub">人 steered · 白箱 · 非 AI 裁决</span></div>
+                {converged.verdictVote?.decision && (
+                  <div className="conv-vote">投票
+                    {(["Ship", "Fix", "Pause", "Kill"] as const).filter((k) => (converged.verdictVote!.tally[k] || 0) > 0).map((k) => (
+                      <span className="cv-chip" style={{ color: STANCE_COLOR[k] }} key={k}>{k} {converged.verdictVote!.tally[k]}</span>
+                    ))}
+                    <span className="cv-note">· 仅参考{converged.verdictVote.simulated ? " · simulated" : ""}</span>
+                  </div>
+                )}
+                <div className="conv-recap">
+                  <span>认领 <b className="c">{recap.endorse}</b></span><span>钉死 <b className="a">{recap.pin}</b></span>
+                  <span>搁置 <b className="g">{recap.aside}</b></span><span>不可静音 <b className="k">{recap.unsil}</b></span>
+                  {recap.pass !== null && <span>核查通过 <b className="ok">{recap.pass}%</b></span>}
+                </div>
+                {miniGraph() && <div className="conv-minibox">{miniGraph()}<span className="conv-mini-cap">分歧图谱</span></div>}
+                {converged.clarified && <div className="conv-clarified">{converged.clarified}</div>}
+                {converged.addressed.length > 0 && (
+                  <div className="conv-sec"><div className="conv-label addr">认领的逐条应对</div>
+                    {converged.addressed.map((a, i) => <div className="conv-item" key={i}>{a.tag && <span className="conv-tag">{a.tag}</span>}<b>{a.point}</b> <span className="conv-arrow">→</span> {a.response}</div>)}
+                  </div>
+                )}
+                {converged.unsilenceable.length > 0 && (
+                  <div className="conv-sec"><div className="conv-label kill">不可静音的最硬 kill</div>
+                    {converged.unsilenceable.map((u, i) => <div className="conv-item killitem" key={i}>🔪 {u}</div>)}
+                  </div>
+                )}
+                {converged.setAside.length > 0 && (
+                  <div className="conv-sec"><div className="conv-label aside">你搁置了什么(留痕)</div>
+                    {converged.setAside.map((a, i) => <div className="conv-item dim" key={i}>{a.point}{a.reason ? `(理由:${a.reason})` : ""}</div>)}
+                  </div>
+                )}
+                {converged.openQuestions.length > 0 && (
+                  <div className="conv-sec"><div className="conv-label q">待验证的关键问题</div>
+                    {converged.openQuestions.map((q, i) => <div className="conv-item" key={i}>{q}</div>)}
+                  </div>
+                )}
+                {converged.cheapestTests.length > 0 && (
+                  <div className="conv-sec"><div className="conv-label test">最便宜的验证</div>
+                    {converged.cheapestTests.map((t, i) => <div className="conv-item" key={i}>{t}</div>)}
+                  </div>
+                )}
+                {converged.aiTake && (
+                  <div className="conv-sec"><div className="conv-label aitake">一个 AI 视角</div>
+                    <div className="conv-item dim">{converged.aiTake} <span className="conv-disclaimer">— 仅一个意见,不是答案</span></div>
+                  </div>
+                )}
+                <div className="conv-acts">
+                  <button onClick={() => deliberate()} disabled={deliberating || busy} title="重开一轮审议(可先改策展)">再辩一轮</button>
+                  <button onClick={() => converge()} disabled={busy} title="改完认领/搁置后,据新策展重新收敛">改策展后重新收敛</button>
+                </div>
+                <div className="conc-export">
+                  <span className="ce-label">导出</span>
+                  <button onClick={() => exportMarkdown(exportPayload())}>MD</button>
+                  <button onClick={() => exportDocx(exportPayload())}>Word</button>
+                </div>
+              </div>
+            ) : conclusion && (
               <div className="conclusion">
                 <div className="conc-head">✦ 打磨后的方案</div>
                 <div className="conc-body">{renderMd(conclusion)}</div>
@@ -370,6 +1125,74 @@ function App() {
                   <button onClick={() => exportPng(exportPayload())}>图片</button>
                   <button onClick={() => exportDocx(exportPayload())}>Word</button>
                   <button onClick={() => exportPptx(exportPayload())}>PPT</button>
+                </div>
+              </div>
+            )}
+
+            {/* 产出层:把方案变成交付物(换厂商比稿 / 接力改稿) */}
+            {conclusion && (
+              <div className="deliver">
+                <div className="deliver-head">📦 交付物产出<span className="deliver-hint">换厂商比稿 · 接力改稿 · 采用导出</span></div>
+                <div className="deliver-tabs">
+                  {(["copy", "prd", "design_doc", "code_sketch", "image"] as ArtifactType[]).map((tp) => {
+                    const n = artifacts.filter((a) => a.type === tp).length;
+                    return (
+                      <button key={tp} className={`dl-tab${produceType === tp ? " on" : ""}`} onClick={() => setProduceType(tp)}>
+                        {ARTIFACT_TYPE_LABEL[tp]}{n ? ` ·${n}` : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="deliver-body">
+                  {typeArtifacts.length === 0 && !producing && (
+                    <div className="dl-empty">还没有「{ARTIFACT_TYPE_LABEL[produceType]}」。选一家 AI 出一版 ↓</div>
+                  )}
+                  {typeArtifacts.map((a) => (
+                    <div key={a.id} className={`dl-card${a.status === "chosen" ? " chosen" : ""}${a.parentId ? " child" : ""}`}>
+                      <div className="dl-card-head">
+                        <span className="dl-vendor-tag">{a.provider}</span>
+                        {a.mode === "refine" && <span className="dl-tag refine">改稿</span>}
+                        {a.status === "chosen" && <span className="dl-tag chosen">★ 采用</span>}
+                        <span className="dl-card-actions">
+                          {a.type !== "image" && <button onClick={() => exportArtifact(a, "md")} title="导出 Markdown">MD</button>}
+                          {a.type !== "image" && <button onClick={() => exportArtifact(a, "docx")} title="导出 Word">Word</button>}
+                          <button onClick={() => chooseArt(a.id, a.type)} disabled={a.status === "chosen"} title="采用这版">采用</button>
+                          {a.type !== "image" && <button onClick={() => { setRefineFor(a); setRefineText(""); }} disabled={producing} title="交给另一家改">改</button>}
+                          <button className="dl-del" onClick={() => removeArt(a.id)} title="删除这版">×</button>
+                        </span>
+                      </div>
+                      {a.type === "image"
+                        ? <img className="dl-img" src={`/api/artifact/${a.id}/image`} alt="配图" />
+                        : <div className="dl-content">{renderMd(a.content)}</div>}
+                    </div>
+                  ))}
+
+                  {producing && <div className="thinking"><span className="blink" /> 产出中…(免费/生图模型较慢)</div>}
+
+                  {refineFor && (
+                    <div className="dl-refine">
+                      <div className="dl-refine-label">把 <b>{refineFor.provider}</b> 这版交给另一家改:</div>
+                      <input className="dl-refine-input" value={refineText} onChange={(e) => setRefineText(e.target.value)} placeholder="改稿要求(可选,如:更口语 / 加个 CTA)" />
+                      <div className="dl-vendors">
+                        {availProviders.filter((p) => p.label !== refineFor.provider).map((p) => (
+                          <button key={p.id} className="dl-vendor" disabled={producing} onClick={() => produce(refineFor.type, p.id, refineFor.id, refineText)}>交给 {p.label}</button>
+                        ))}
+                        <button className="dl-vendor cancel" onClick={() => setRefineFor(null)}>取消</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {!refineFor && (
+                    <div className="dl-gen">
+                      <span className="dl-gen-label">{typeArtifacts.length ? "换一家再出一版:" : "出一版:"}</span>
+                      <div className="dl-vendors">
+                        {availProviders.map((p) => (
+                          <button key={p.id} className="dl-vendor" disabled={producing} onClick={() => produce(produceType, p.id)}>{p.label}</button>
+                        ))}
+                        {produceType === "image" && availProviders.length === 0 && <span className="dl-note">当前无支持生图的厂商(需 OpenAI)</span>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -383,41 +1206,181 @@ function App() {
       <div className="bar">
         <div className="composer">
           <i className="composer-prefix">›</i>
-          {!started ? (
-            <textarea
-              className="composer-input"
-              value={brief}
-              onChange={(e) => setBrief(e.target.value)}
-              placeholder={"描述你的点子或文案,点「开场」——\n支持多行 —— 写得越细,议会挑得越准。"}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (brief.trim()) start(); } }}
-            />
-          ) : (
-            <textarea
-              className="composer-input"
-              value={userInput}
-              onChange={(e) => setUserInput(e.target.value)}
-              disabled={busy || phase === "finalized"}
-              placeholder={phase === "finalized" ? "已收敛 · 点「新讨论」重开" : "插一句:回应、辩护、给个新角度…\n支持多行 —— 写得越细,议会挑得越准。"}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendUser(); } }}
-            />
-          )}
+          <div className="composer-body">
+            {!started ? (
+              <textarea
+                className="composer-input"
+                value={brief}
+                onChange={(e) => setBrief(e.target.value)}
+                placeholder={"描述你的点子或文案,点「开场」——\n支持多行 —— 写得越细,议会挑得越准。"}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (brief.trim() && !busy) openCouncil(); } }}
+              />
+            ) : (
+              <textarea
+                className="composer-input"
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
+                disabled={busy || phase === "finalized"}
+                placeholder={phase === "finalized" ? "已收敛 · 点「新讨论」重开" : "插一句:回应、辩护、给个新角度…\n支持多行 —— 写得越细,议会挑得越准。"}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendUser(); } }}
+              />
+            )}
+            {attachments.length > 0 && (
+              <div className="attach-chips">
+                {attachments.map((a, i) => (
+                  <span className="attach-chip" key={i}>
+                    <span className="attach-chip-kind">{a.kind === "image" ? "IMG" : "TXT"}</span>
+                    <span className="attach-chip-name">{a.name}</span>
+                    <button className="attach-chip-del" onClick={() => removeAttach(i)} title="移除">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*,.txt,.md,.json,.csv"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => { addAttachFiles(e.target.files); e.target.value = ""; }}
+          />
+          <button
+            className="attach-btn"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy || phase === "finalized"}
+            title="附加图片或文本文件"
+          >⊕</button>
         </div>
         <div className="btncol">
           {!started ? (
-            <button className="btn primary" onClick={start} disabled={!brief.trim() || busy}>{busy ? "OPENING…" : "开场 START"}</button>
+            <button className="btn primary" onClick={() => (posture === "clarify" ? openCouncil() : retrieve ? scout() : openCouncil())} disabled={!brief.trim() || busy}>{busy ? (posture === "clarify" ? "理清中…" : retrieve ? "侦察中…" : "审议中…") : posture === "clarify" ? "想清楚 ›" : retrieve ? "侦察 · 找证据 ›" : "直接开议会"}</button>
+          ) : clarifyMode ? (
+            <>
+              <button className="btn ghost" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="让主脑再理一轮">{deliberating ? "理清中…" : "重新理清"}</button>
+              <button className="btn primary" onClick={() => switchPosture("roast")} disabled={deliberating || busy} title="理清了 → 送进议会拷问">送进议会 →</button>
+              <button className="btn ghost sm" onClick={sendUser} disabled={busy || !userInput.trim()} title="回答主脑的追问 / 补充细节">发送</button>
+            </>
+          ) : delibMode ? (
+            <>
+              <button className="btn ghost" onClick={() => deliberate()} disabled={deliberating || busy} title="重开一轮审议(可先改策展)">{deliberating ? "审议中…" : "再辩一轮"}</button>
+              <button className="btn primary" onClick={doConverge} disabled={busy || phase === "finalized" || viewpoints.length === 0} title="据你策展过的观点收敛(白箱,非裁决)">{phase === "finalizing" ? "收敛中…" : "收敛成方案 ›"}</button>
+              <button className="btn ghost sm" onClick={() => { setSolo(true); respond(""); }} disabled={busy} title="退回对话式,跟主脑聊">跟主脑聊</button>
+            </>
           ) : (
             <>
-              {solo ? (
-                <button className="btn accent" onClick={() => { setSolo(false); respond("", false); }} disabled={busy || phase === "finalized"} title="把建设者+反对者带进讨论">引入辩论者 →</button>
-              ) : (
-                <button className="btn ghost" onClick={() => respond("")} disabled={busy || phase === "finalized"} title="让 agents 不带你的话再辩一轮">再辩一轮</button>
-              )}
+              {/* 常驻二段切换:两种模式都在,当前态高亮,随时来回切 */}
+              <div className="modeswitch">
+                <button
+                  className={`ms-btn${solo ? " on" : ""}`}
+                  onClick={() => setSolo(true)}
+                  disabled={busy || phase === "finalized"}
+                  title="只和主脑讨论"
+                >跟主脑讨论</button>
+                <button
+                  className={`ms-btn${!solo ? " on" : ""}`}
+                  onClick={() => { if (solo) { setSolo(false); respond("", false); } }}
+                  disabled={busy || phase === "finalized"}
+                  title="把建设者+反对者带进讨论"
+                >发动辩论</button>
+              </div>
+              <button className="btn ghost sm" onClick={() => respond("")} disabled={busy || phase === "finalized"} title={solo ? "让主脑不带你的话再说一轮" : "让 agents 不带你的话再辩一轮"}>再辩一轮</button>
               <button className="btn ghost" onClick={sendUser} disabled={busy || phase === "finalized" || !userInput.trim()}>发送</button>
-              <button className="btn primary" onClick={finalize} disabled={busy || phase === "finalized" || turns.length === 0}>{phase === "finalizing" ? "收敛中…" : "收敛成方案"}</button>
+              <button className="btn accent" onClick={() => deliberate(posture === "clarify" ? "council" : posture)} disabled={deliberating || busy} title="白箱审议:署名结构化观点 + 分歧 + 盲点">{deliberating ? "审议中…" : "⚖ 审议"}</button>
+              <button className="btn primary" onClick={doConverge} disabled={busy || phase === "finalized" || (turns.length === 0 && viewpoints.length === 0)} title={viewpoints.length > 0 ? "据你策展过的观点收敛(白箱,非裁决)" : "综合讨论收敛成方案"}>{phase === "finalizing" ? "收敛中…" : "收敛成方案"}</button>
             </>
           )}
         </div>
       </div>
+      {showHistory && (
+        <div className="hist-overlay" onClick={() => setShowHistory(false)}>
+          <div className="hist-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="hist-head">
+              <span>历史讨论 · {history.length}</span>
+              <button className="hist-close" onClick={() => setShowHistory(false)} title="关闭">×</button>
+            </div>
+            <div className="hist-list">
+              {history.length === 0 && <div className="hist-empty">还没有历史讨论</div>}
+              {history.map((h) => (
+                <div className="hist-item" key={h.id} onClick={() => loadDiscussion(h.id)}>
+                  <div className="hist-item-main">
+                    <span className={`hist-mode ${h.mode}`}>{h.mode === "copy" ? "文案" : "点子"}</span>
+                    <span className="hist-title">{h.title || "(无标题)"}</span>
+                  </div>
+                  <div className="hist-item-meta">
+                    <span className={`hist-status ${h.status}`}>{h.status === "finalized" ? "已收敛" : "进行中"}</span>
+                    <span className="hist-date">{fmtDate(h.updated_at)}</span>
+                    <button className="hist-del" onClick={(e) => { e.stopPropagation(); removeDiscussion(h.id); }} title="删除">×</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {showSeatConfig && runConfig && personaLib && (() => {
+        const calls = 1 + runConfig.seats.length + 1 + 1 + (runConfig.posture === "roast" ? runConfig.seats.length : 0) + (runConfig.autoRecruitDomain ? 1 : 0);
+        const estSec = runConfig.posture === "roast" ? 75 : 45;
+        const cnOf = (pid: string) => personasForMode.find((p) => p.id === pid)?.cn || pid;
+        const funcSeats: [string, string][] = [["organizer", "主脑 Organizer"], ["verifier", "Verifier 事实核查"], ["chairman", "主席 Chairman"]];
+        return (
+        <div className="sc-overlay" onClick={() => setShowSeatConfig(false)}>
+          <div className="sc-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="sc-headbar"><span>席位配置 · COUNCIL CONFIG</span><button className="sc-x" onClick={() => setShowSeatConfig(false)}>×</button></div>
+            <div className="sc-topbar">
+              <span className={`sc-modetag ${mode}`}>{mode === "copy" ? "文案" : "点子"}</span>
+              <span className="sc-meter">出场 <b>{3 + runConfig.seats.length}{runConfig.autoRecruitDomain ? "+" : ""}</b> 席 · 预估 <b>~{calls}×</b> · ~{estSec}s</span>
+            </div>
+            <div className="sc-grid">
+              <div className="sc-lib">
+                <div className="sc-eyebrow">反方角色库(点击加入)</div>
+                {personasForMode.filter((p) => p.id !== "devils-advocate").map((p) => (
+                  <div className={`sc-role${seatInUse(p.id) ? " dim" : ""}`} key={p.id} onClick={() => !seatInUse(p.id) && addCritic(p.id)}>
+                    <span className="sc-rn">{p.cn}</span>
+                    <span className="sc-radd">{seatInUse(p.id) ? "✓ 已在场" : "+ 加入"}</span>
+                  </div>
+                ))}
+                <div className="sc-eyebrow" style={{ marginTop: 12 }}>领域专家</div>
+                <div className="sc-libnote">开「自动招募」后,按点子领域临时招(金融→合规反方、医疗→临床反方…)</div>
+              </div>
+              <div className="sc-lineup">
+                <div className="sc-eyebrow">中立功能席(固定)</div>
+                {funcSeats.map(([role, name]) => (
+                  <div className="sc-seat fixed" key={role}>
+                    <div className="sc-info"><div className="sc-nm">{name} <span className="sc-tag fix">固定</span></div></div>
+                    <select className="sc-sel" value={(runConfig.functional as any)?.[role] || ""} onChange={(e) => setFuncModel(role as any, e.target.value)}>
+                      <option value="">自动</option>
+                      {personaLib.providers.map((pr) => <option key={pr.id} value={pr.id}>{pr.label}</option>)}
+                    </select>
+                  </div>
+                ))}
+                <div className="sc-eyebrow" style={{ marginTop: 10 }}>反方席(默认 3,可换角/加角,上限 {maxSeats})</div>
+                {runConfig.seats.map((s, i) => {
+                  const devil = s.personaId === "devils-advocate";
+                  return (
+                    <div className={`sc-seat ${devil ? "devil" : "opp"}`} key={i}>
+                      <div className="sc-info"><div className="sc-nm">{cnOf(s.personaId)} {devil && <span className="sc-tag lock">🔒 锁定·不可删</span>}</div></div>
+                      <select className="sc-sel" value={s.modelId || ""} onChange={(e) => setSeatModel(i, e.target.value)}>
+                        <option value="">自动</option>
+                        {personaLib.providers.map((pr) => <option key={pr.id} value={pr.id}>{pr.label}</option>)}
+                      </select>
+                      <span className={`sc-rm${devil ? " lock" : ""}`} onClick={() => removeCritic(i)} title={devil ? "魔鬼代言人锁定,不可删" : "移除"}>✕</span>
+                    </div>
+                  );
+                })}
+                {runConfig.seats.length >= maxSeats && <div className="sc-full">已满 {maxSeats} 席(=可用模型数),需先移除或换角</div>}
+                <label className="sc-toggle"><span className={`sc-sw${runConfig.autoRecruitDomain ? " on" : ""}`} onClick={() => setRunConfig((rc) => rc ? { ...rc, autoRecruitDomain: !rc.autoRecruitDomain } : rc)} />按点子领域自动招募专家反方</label>
+                <div className="sc-note">对抗强度由顶部「想清楚 / 审议 / 拷问」姿态控制(拷问=强制魔鬼 + R3 交叉互驳)</div>
+              </div>
+            </div>
+            <div className="sc-bar">
+              <button className="sc-ghost" onClick={() => setRunConfig(defaultRunConfig(mode))}>恢复默认</button>
+              <button className="sc-primary" onClick={() => { if (runConfig) fetch("/api/run-config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, runConfig }) }).catch(() => {}); setShowSeatConfig(false); }}>保存配置</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
       <div className="corner c-tl" /><div className="corner c-tr" />
       <div className="corner c-bl" /><div className="corner c-br" />
     </div>
@@ -483,4 +1446,7 @@ function Root() {
   return <App />;
 }
 
-createRoot(document.getElementById("root")!).render(<Root />);
+// HMR 守卫:复用同一个 root,避免热重载反复 createRoot 报警(仅开发期噪音)。
+const container = document.getElementById("root")! as HTMLElement & { _root?: ReturnType<typeof createRoot> };
+const root = container._root ?? (container._root = createRoot(container));
+root.render(<Root />);

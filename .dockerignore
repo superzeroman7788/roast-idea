@@ -1,0 +1,18 @@
+# 绝不进镜像:密钥、依赖、构建产物、运行时数据、版本库、设计稿大文件
+node_modules
+dist
+data
+.git
+.gitignore
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+docs
+.claude
+# 设计稿/原型(构建用不到;保留根 index.html 作 vite 入口)
+ui-mockup-*.html
+"ROAST Council UI - Redesign (standalone).html"
+design_handoff_roast_idea_video
+*.plist

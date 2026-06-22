@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Roast · 席位配置</title>
+<style>
+  :root{--cyan:#34e1ff;--amber:#ffb44d;--red:#ff5c6a;--green:#46e6a0;--gray:#5a708a;
+    --tx:#dcecf6;--tx2:#7f97b0;--tx3:#52688a;--mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:-apple-system,system-ui,sans-serif}
+  *{box-sizing:border-box;margin:0;padding:0}html,body{height:100%}
+  body{background:radial-gradient(1100px 640px at 50% 38%,#0a1326,#060a14 60%,#03060d);font-family:var(--sans);color:var(--tx);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;-webkit-font-smoothing:antialiased}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:9;background:repeating-linear-gradient(0deg,#ffffff04 0 1px,transparent 1px 3px);mix-blend-mode:overlay;opacity:.4}
+  .app{width:1040px;height:680px;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(180deg,#070c16,#04070f);border:1px solid #143052;border-radius:16px;box-shadow:0 26px 70px #000a}
+  .chrome{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #0f2138;background:#060a14}
+  .dot{width:11px;height:11px;border-radius:50%}.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .ctitle{flex:1;text-align:center;font-family:var(--mono);font-size:12px;letter-spacing:.3em;color:#5f7a98}.ctitle b{color:var(--cyan);font-weight:500}
+  .topbar{padding:13px 18px;border-bottom:1px solid #0d1c30;display:flex;align-items:center;gap:16px}
+  .mode{display:flex;gap:6px}
+  .mode button{font-family:var(--mono);font-size:11px;letter-spacing:.12em;padding:7px 16px;border-radius:7px;border:1px solid #173052;background:#0a1626;color:#7f97b0;cursor:pointer}
+  .mode button.on{border-color:var(--cyan);color:var(--cyan);background:#0c2233}
+  .meter{margin-left:auto;font-family:var(--mono);font-size:11px;color:#7f97b0;display:flex;align-items:center;gap:10px}
+  .meter b{color:var(--amber)}
+  .bars{display:flex;gap:2px}.bars i{width:5px;height:13px;background:#16314e;border-radius:1px}.bars i.on{background:var(--amber)}
+  .grid{flex:1;display:grid;grid-template-columns:300px 1fr;min-height:0}
+  .lib{border-right:1px solid #0d1c30;padding:14px 13px;overflow:auto}
+  .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:#5f7a98;text-transform:uppercase;margin:4px 0 9px}
+  .role{background:#0a1322;border:1px solid #122742;border-radius:9px;padding:9px 11px;margin-bottom:7px;cursor:pointer}
+  .role:hover{border-color:#1d4a5e}
+  .role .n{font-size:13px;color:#dceaf4;font-weight:500;display:flex;align-items:center;gap:8px}
+  .role .k{font-size:11px;color:#7f97b0;margin-top:3px;line-height:1.4}
+  .role .add{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--cyan)}
+  .role.dim{opacity:.5}
+  .lineup{padding:14px 16px;overflow:auto;display:flex;flex-direction:column}
+  .seat{display:flex;align-items:center;gap:11px;background:#0a1322;border:1px solid #122742;border-left-width:3px;border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .seat.fixed{border-left-color:#34e1ff}.seat.opp{border-left-color:var(--amber)}.seat.devil{border-left-color:var(--red)}
+  .seat .info{flex:1}
+  .seat .nm{font-size:13px;color:#e0ecf5;font-weight:500;display:flex;align-items:center;gap:8px}
+  .seat .ang{font-size:11px;color:#7f97b0;margin-top:2px}
+  .tag{font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;padding:2px 7px;border-radius:4px}
+  .t-fix{background:#0e2a36;color:#7fd0ec}.t-lock{background:#2a1419;color:#ff9aa3}
+  .sel{font-family:var(--mono);font-size:11px;color:#bcd3e2;background:#0c1828;border:1px solid #1a3350;border-radius:7px;padding:7px 10px;min-width:120px;display:flex;align-items:center;gap:7px}
+  .sel .cv{margin-left:auto;color:#5f7a98}
+  .rm{font-family:var(--mono);font-size:14px;color:#5f7a98;cursor:pointer;padding:0 4px}
+  .rm.lock{color:#3a4a5e;cursor:not-allowed}
+  .addbtn{margin-top:4px;font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--cyan);background:#0a1626;border:1px dashed #1d4a5e;border-radius:9px;padding:10px;cursor:pointer;text-align:center}
+  .auto{margin-top:12px;display:flex;align-items:center;gap:9px;font-size:12px;color:#9fb1c4;padding:10px;border-top:1px solid #0c1c2e}
+  .sw{width:34px;height:18px;border-radius:9px;background:#15314c;position:relative;flex:none}.sw.on{background:#0e3a44}
+  .sw::after{content:"";position:absolute;width:14px;height:14px;border-radius:50%;background:#cfe2ef;top:2px;left:2px;transition:.2s}.sw.on::after{left:18px;background:#7fe0f0}
+  .bar{height:58px;border-top:1px solid #0f2138;background:#060b15;display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 18px}
+  .ghost{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:#7f97b0;background:#0a1626;border:1px solid #173052;border-radius:8px;padding:10px 16px;cursor:pointer}
+  .primary{font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:#10202c;background:linear-gradient(180deg,#ffce7a,#f2a23a);border:none;border-radius:9px;padding:11px 22px;cursor:pointer;font-weight:600;box-shadow:0 0 18px #ffb44d33}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="chrome"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+      <div class="ctitle">ROAST · <b>席位配置</b> · COUNCIL CONFIG</div></div>
+    <div class="topbar">
+      <div class="mode"><button class="on">IDEA</button><button>COPY</button></div>
+      <div class="meter">出场 <b>6</b>/6 席
+        <span class="bars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>
+        预估 <b>~6×</b> 单次 · <b>~48s</b></div>
+    </div>
+
+    <div class="grid">
+      <!-- 角色库 -->
+      <div class="lib">
+        <div class="eyebrow">反方角色库(点击加入)</div>
+        <div class="role"><div class="n">竞争·护城河 <span class="add">+ 加入</span></div><div class="k">专杀:已有人做、你没壁垒、巨头碾压</div></div>
+        <div class="role"><div class="n">目标用户 <span class="add">+ 加入</span></div><div class="k">专杀:维生素不是止痛药、没痛点</div></div>
+        <div class="role dim"><div class="n">投资人 ✓ 已在场</div><div class="k">专杀:不是真生意 / 没人付钱 / 回报小</div></div>
+        <div class="role dim"><div class="n">增长·分发 ✓ 已在场</div><div class="k">专杀:做出来没人知道(CAC/渠道)</div></div>
+        <div class="role dim"><div class="n">可行性·工程 ✓ 已在场</div><div class="k">专杀:造不出 / 单位经济崩</div></div>
+        <div class="eyebrow" style="margin-top:14px">领域专家(自动招募)</div>
+        <div class="role"><div class="n">合规反方 <span class="add">+ 加入</span></div><div class="k">金融/数据类点子触发</div></div>
+        <div class="role"><div class="n">临床/监管反方 <span class="add">+ 加入</span></div><div class="k">医疗类点子触发</div></div>
+      </div>
+
+      <!-- 当前阵容 -->
+      <div class="lineup">
+        <div class="eyebrow">当前出场阵容 · 中立功能席(固定)</div>
+        <div class="seat fixed"><div class="info"><div class="nm">主脑 Organizer <span class="tag t-fix">固定</span></div><div class="ang">立靶:把点子整理成结构化方案</div></div>
+          <div class="sel">OpenAI <span class="cv">▾</span></div></div>
+        <div class="seat fixed"><div class="info"><div class="nm">Verifier 事实核查 <span class="tag t-fix">固定</span></div><div class="ang">核查反方陈述 vs 证据</div></div>
+          <div class="sel">DeepSeek <span class="cv">▾</span></div></div>
+        <div class="seat fixed"><div class="info"><div class="nm">主席 Chairman <span class="tag t-fix">固定</span></div><div class="ang">审议综述 + 据人策展收敛</div></div>
+          <div class="sel">Claude <span class="cv">▾</span></div></div>
+
+        <div class="eyebrow" style="margin-top:10px">反方席(默认 3,可换角/加角)</div>
+        <div class="seat opp"><div class="info"><div class="nm">投资人</div><div class="ang">谁投/谁买/回报/真生意吗</div></div>
+          <div class="sel">Qwen <span class="cv">▾</span></div><span class="rm">✕</span></div>
+        <div class="seat opp"><div class="info"><div class="nm">增长·分发</div><div class="ang">CAC、渠道、怎么获客</div></div>
+          <div class="sel">Kimi <span class="cv">▾</span></div><span class="rm">✕</span></div>
+        <div class="seat opp"><div class="info"><div class="nm">可行性·工程</div><div class="ang">造得出 / 可持续 / 单位经济</div></div>
+          <div class="sel">Gemini <span class="cv">▾</span></div><span class="rm">✕</span></div>
+        <div class="seat devil"><div class="info"><div class="nm">魔鬼代言人 <span class="tag t-lock">🔒 锁定·不可删</span></div><div class="ang">强制给最强"会死"理由</div></div>
+          <div class="sel">Grok <span class="cv">▾</span></div><span class="rm lock">✕</span></div>
+
+        <div class="addbtn">+ 加一个反方(已满 6 席,需先移除或换角)</div>
+        <div class="auto"><span class="sw on"></span>按点子领域自动招募专家反方(如金融→合规反方)</div>
+      </div>
+    </div>
+
+    <div class="bar"><button class="ghost">恢复默认</button><button class="primary">保存配置</button></div>
+  </div>
+</body>
+</html>

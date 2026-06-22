@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Roast · 事实侦察(雷达)</title>
+<style>
+  :root{--cyan:#34e1ff;--amber:#ffb44d;--red:#ff5c6a;--green:#46e6a0;
+    --tx:#dcecf6;--tx2:#7f97b0;--tx3:#52688a;--mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:-apple-system,system-ui,sans-serif}
+  *{box-sizing:border-box;margin:0;padding:0}html,body{height:100%}
+  body{background:radial-gradient(1100px 640px at 50% 42%,#0a1326,#060a14 60%,#03060d);font-family:var(--sans);color:var(--tx);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;-webkit-font-smoothing:antialiased}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:9;background:repeating-linear-gradient(0deg,#ffffff05 0 1px,transparent 1px 3px);mix-blend-mode:overlay;opacity:.45}
+  .app{width:1180px;height:740px;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(180deg,#070c16,#04070f);border:1px solid #143052;border-radius:16px;box-shadow:0 26px 70px #000a}
+  .chrome{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #0f2138;background:#060a14}
+  .dot{width:11px;height:11px;border-radius:50%}.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .ctitle{flex:1;text-align:center;font-family:var(--mono);font-size:12px;letter-spacing:.3em;color:#5f7a98}.ctitle b{color:var(--cyan);font-weight:500}
+  .scan{font-family:var(--mono);font-size:11px;color:var(--cyan);display:flex;align-items:center;gap:6px}
+  .bk{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:bk 1.2s infinite}@keyframes bk{0%,100%{opacity:1}50%{opacity:.3}}
+  .top{padding:12px 18px;border-bottom:1px solid #0d1c30;display:flex;align-items:center;gap:14px}
+  .q{flex:1;min-width:0}.q .l{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:#5f7a98}
+  .q .t{font-size:14px;color:#cfe2ef;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .grid{flex:1;display:grid;grid-template-columns:1fr 330px;min-height:0}
+  .stagewrap{position:relative;display:flex;align-items:center;justify-content:center}
+  /* RADAR */
+  .radar{position:relative;width:440px;height:440px;border-radius:50%}
+  .ring{position:absolute;border-radius:50%;border:1px solid #12253a;top:50%;left:50%;transform:translate(-50%,-50%)}
+  .sweep{position:absolute;inset:0;border-radius:50%;
+    background:conic-gradient(from 0deg, rgba(52,225,255,0) 0deg, rgba(52,225,255,0) 296deg, rgba(52,225,255,.10) 330deg, rgba(52,225,255,.45) 358deg, rgba(52,225,255,.6) 360deg);
+    animation:spin 3.6s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .cross{position:absolute;inset:0}.cross::before,.cross::after{content:"";position:absolute;background:#1c3a55;opacity:.5}
+  .cross::before{left:50%;top:6%;bottom:6%;width:1px;transform:translateX(-.5px)}
+  .cross::after{top:50%;left:6%;right:6%;height:1px;transform:translateY(-.5px)}
+  .core{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:#bfefff;box-shadow:0 0 16px #34e1ff;animation:cp 3s ease-in-out infinite}
+  @keyframes cp{0%,100%{box-shadow:0 0 14px #34e1ff}50%{box-shadow:0 0 26px #34e1ff}}
+  .corelbl{position:absolute;top:54%;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:9px;letter-spacing:.18em;color:#6f9cb4}
+  .blip{position:absolute;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%);opacity:0;animation:pop .5s ease-out forwards, bk 2.6s ease-in-out infinite}
+  .blip.cy{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+  .blip.am{background:var(--amber);box-shadow:0 0 10px var(--amber)}
+  .blip.rd{background:var(--red);box-shadow:0 0 10px var(--red)}
+  @keyframes pop{from{opacity:0;transform:translate(-50%,-50%) scale(.2)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+  .rim{position:absolute;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:#6f88a4}
+  .rim b{color:var(--cyan)}
+  .cat{position:absolute;font-family:var(--mono);font-size:10px;color:#7f97b0;letter-spacing:.08em}
+  /* RIGHT */
+  .right{border-left:1px solid #0d1c30;display:flex;flex-direction:column;min-height:0}
+  .rh{padding:13px 14px;border-bottom:1px solid #0d1c30}
+  .nums{display:flex;gap:14px;margin-top:8px;font-family:var(--mono);font-size:10px;color:#6f88a4}
+  .nums b{font-weight:500}.nums .c{color:var(--cyan)}.nums .a{color:var(--amber)}
+  .cats{padding:10px 14px;border-bottom:1px solid #0d1c30}
+  .cbar{display:flex;align-items:center;gap:8px;margin:6px 0;font-family:var(--mono);font-size:10px;color:#8fa3b8}
+  .cbar .nm{width:64px}
+  .track{flex:1;height:5px;background:#0e2034;border-radius:3px;overflow:hidden}
+  .fill{height:100%;background:linear-gradient(90deg,#1b9fc4,#34e1ff);border-radius:3px}
+  .cbar .v{width:30px;text-align:right;color:#5f7a98}
+  .feed{flex:1;overflow:auto;padding:10px 14px}
+  .feedh{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:#5f7a98;text-transform:uppercase;margin-bottom:8px}
+  .ev{display:flex;gap:9px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #0c1c2e;opacity:0;animation:fin .5s ease forwards}
+  @keyframes fin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .cd{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none}.cd.cy{background:var(--cyan)}.cd.am{background:var(--amber)}.cd.rd{background:var(--red)}
+  .ev .c{flex:1}.ev .cl{font-size:12px;color:#cdddea;line-height:1.4}
+  .ev .m{font-family:var(--mono);font-size:9px;color:#5f7a98;margin-top:3px}
+  .bar{height:60px;border-top:1px solid #0f2138;background:#060b15;display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 18px}
+  .ghost{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:#7f97b0;background:#0a1626;border:1px solid #173052;border-radius:8px;padding:10px 16px;cursor:pointer}
+  .primary{font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:#10202c;background:linear-gradient(180deg,#ffce7a,#f2a23a);border:none;border-radius:9px;padding:11px 22px;cursor:pointer;font-weight:600;box-shadow:0 0 18px #ffb44d33}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="chrome"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+      <div class="ctitle">ROAST · <b>事实侦察</b> · FACT RECON</div>
+      <div class="scan"><span class="bk"></span>扫描中</div></div>
+    <div class="top">
+      <div class="q"><div class="l">侦察目标 · TARGET</div><div class="t">一个跨厂商、有证据的反方 AI 议会,帮创业者在动工前反驳自己的点子</div></div>
+    </div>
+
+    <div class="grid">
+      <!-- RADAR -->
+      <div class="stagewrap">
+        <div class="radar">
+          <div class="ring" style="width:440px;height:440px;border-color:#13283e"></div>
+          <div class="ring" style="width:330px;height:330px"></div>
+          <div class="ring" style="width:210px;height:210px"></div>
+          <div class="ring" style="width:96px;height:96px"></div>
+          <div class="cross"></div>
+          <div class="sweep"></div>
+          <div class="core"></div><div class="corelbl">RECON</div>
+
+          <!-- blips (证据,按可信度着色,逐个冒出) -->
+          <div class="blip cy" style="left:275px;top:98px;animation-delay:.2s"></div>
+          <div class="blip am" style="left:125px;top:241px;animation-delay:.9s"></div>
+          <div class="blip rd" style="left:333px;top:312px;animation-delay:1.5s"></div>
+          <div class="blip cy" style="left:165px;top:156px;animation-delay:.6s"></div>
+          <div class="blip am" style="left:313px;top:173px;animation-delay:1.2s"></div>
+          <div class="blip cy" style="left:162px;top:342px;animation-delay:1.8s"></div>
+          <div class="blip am" style="left:300px;top:250px;animation-delay:2.1s"></div>
+
+          <!-- 来源(边缘) -->
+          <div class="rim" style="top:6px;left:50%;transform:translateX(-50%)"><b>SearXNG</b></div>
+          <div class="rim" style="top:80px;right:-6px"><b>HN</b></div>
+          <div class="rim" style="bottom:80px;right:-10px">GitHub</div>
+          <div class="rim" style="bottom:4px;left:50%;transform:translateX(-50%)">公众号 · 微博</div>
+          <div class="rim" style="bottom:80px;left:-6px">抖音</div>
+          <div class="rim" style="top:80px;left:-10px">小红书<span style="color:#cf9a5a">·小号</span></div>
+
+          <!-- 类别(内圈方向) -->
+          <div class="cat" style="top:74px;left:62%">竞品</div>
+          <div class="cat" style="top:50%;right:64px">需求</div>
+          <div class="cat" style="bottom:84px;left:60%">定价</div>
+          <div class="cat" style="bottom:96px;left:24%">痛点</div>
+          <div class="cat" style="top:50%;left:58px">开源</div>
+        </div>
+      </div>
+
+      <!-- 右栏:计数 + 类别进度 + 证据流 -->
+      <div class="right">
+        <div class="rh">
+          <div class="feedh" style="margin:0">侦察状态</div>
+          <div class="nums"><span>类 <b class="c">3/5</b></span><span>来源 <b>6</b></span><span>证据 <b class="a">12</b></span><span>用时 <b>8s</b></span></div>
+        </div>
+        <div class="cats">
+          <div class="cbar"><span class="nm">竞品</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="v">4</span></div>
+          <div class="cbar"><span class="nm">开源</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="v">2</span></div>
+          <div class="cbar"><span class="nm">需求</span><div class="track"><div class="fill" style="width:70%"></div></div><span class="v">3</span></div>
+          <div class="cbar"><span class="nm">定价</span><div class="track"><div class="fill" style="width:45%"></div></div><span class="v">2</span></div>
+          <div class="cbar"><span class="nm">痛点</span><div class="track"><div class="fill" style="width:20%"></div></div><span class="v">1</span></div>
+        </div>
+        <div class="feed">
+          <div class="feedh">证据流 · LIVE</div>
+          <div class="ev" style="animation-delay:.2s"><span class="cd cy"></span><div class="c"><div class="cl">已有 Talkory/Eye2 等多模型聚合,且多免费</div><div class="m">WEB · talkory.ai · 2026-05 · 高</div></div></div>
+          <div class="ev" style="animation-delay:.6s"><span class="cd cy"></span><div class="c"><div class="cl">karpathy/llm-council 开源,社区关注高</div><div class="m">GITHUB · ▲4.2k · 高</div></div></div>
+          <div class="ev" style="animation-delay:1s"><span class="cd cy"></span><div class="c"><div class="cl">HN 多帖吐槽"AI 反馈太会附和"</div><div class="m">HN · ▲318 · 高</div></div></div>
+          <div class="ev" style="animation-delay:1.4s"><span class="cd am"></span><div class="c"><div class="cl">开源 Devil's-Advocate CIO 跑 4 对抗 agent</div><div class="m">WEB · medium · 中</div></div></div>
+          <div class="ev" style="animation-delay:1.8s"><span class="cd am"></span><div class="c"><div class="cl">同类企业版约 $299/月,个人多免费</div><div class="m">WEB · collectiviq · 中</div></div></div>
+          <div class="ev" style="animation-delay:2.2s"><span class="cd rd"></span><div class="c"><div class="cl">某营销软文(无日期,SEO 味)</div><div class="m">WEB · 低 · 可排除</div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bar"><button class="ghost">重新侦察</button><button class="ghost">不检索直接开议会</button><button class="primary">开议会(基于证据) ›</button></div>
+  </div>
+</body>
+</html>
