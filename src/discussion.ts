@@ -147,9 +147,11 @@ export type RelayOutput = {
 };
 
 export const RELAY_LENS_CN: Record<string, string> = {
-  "drift-detector": "漂移检测",
+  "drift-detector": "漂移检测·反方",
   "assumption-finder": "假设猎手",
   "focus-finder": "聚焦",
+  "market-lens": "市场·用户场景",
+  "consensus-mapper": "共识·分歧整理",
 };
 
 // 审议引擎(白箱):结构化署名观点 + Fusion 式审议综述

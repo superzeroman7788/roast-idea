@@ -663,10 +663,18 @@ export async function runClarify({ mode, brief, evidence, byoKeys, runConfig }, 
   }
 }
 
-// ============ 跨模型接力(想清楚引擎;串行跑 Spec lenses)============
-// Claude 立框 → 假设猎手 → 漂移检测 → 收棒出方向卡。每棒换模型、接受核心 + 扩大思考范围。
-const RELAY_CHAIN_PREF = ["claude", "openai", "deepseek", "kimi"]; // 主力顺序;缺谁从可用池补
-const RELAY_LENS_BY_HOP = [null, "assumption-finder", "drift-detector", null]; // 中间棒戴镜头(对齐 Spec)
+// ============ 跨模型接力(想清楚引擎)============
+// 按"思考链路位置"分配模型(非按谁最强):Claude 双端(立框 + 收棒),中间各棒戴专属镜头。
+// 角色模型掉线 → 从补位池顶上,保持链路完整(不整条断)。
+const RELAY_THINKING = [
+  { id: "claude", role: "seed", lens: null },                  // 立框:这想法到底是什么?真正要澄清的问题?
+  { id: "openai", role: "expand", lens: "assumption-finder" }, // 假设猎手:成立依赖哪些关键假设?
+  { id: "deepseek", role: "expand", lens: "drift-detector" },  // 漂移检测+反方:混了哪些产品?MVP 哪会失控?
+  { id: "qwen", role: "expand", lens: "market-lens" },         // 用户/市场:第一个用户是谁?第一场景?
+  { id: "kimi", role: "expand", lens: "consensus-mapper" },    // 共识与分歧整理:哪些稳定?哪些要人拍板?
+  { id: "claude", role: "synth", lens: null },                 // 收棒:方向卡 / 关键问题 / 下一步
+];
+const RELAY_SUB_ORDER = ["claude", "openai", "deepseek", "qwen", "kimi", "agnes", "openrouter"]; // 掉线补位优先级
 
 function normFraming(o) {
   return { oneLine: clean(o?.oneLine), clear: asStrArr(o?.clear), assumptions: asStrArr(o?.assumptions), openQuestions: asStrArr(o?.openQuestions) };
@@ -684,23 +692,27 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
   const emit = (ev, data) => onEvent && onEvent(ev, data);
   const configured = getConfiguredProviders(byoKeys);
   if (configured.length < 2) { emit("error", { error: "接力至少需要 2 家可用模型" }); return { hops: [], card: null, models: [] }; }
-  // 按主力顺序排链(Claude→OpenAI→DeepSeek→Kimi),缺的从可用池补,去重取前 4
+  // 解析 6 个角色槽位:首选 slot.id;掉线则从补位池顶上(expand 棒尽量用不同模型;seed/synth 允许复用主脑)
   const byId = new Map(configured.map((e) => [e.provider.id, e]));
-  const chain = [];
-  for (const id of RELAY_CHAIN_PREF) { const e = byId.get(id); if (e && !chain.includes(e)) chain.push(e); }
-  for (const e of configured) { if (chain.length >= 4) break; if (!chain.includes(e)) chain.push(e); }
-  const links = chain.slice(0, Math.min(4, chain.length));
+  const usedExpand = new Set();
+  const links = RELAY_THINKING.map((s) => {
+    let e = byId.get(s.id);
+    if (!e) {
+      for (const id of RELAY_SUB_ORDER) { const c = byId.get(id); if (c && (s.role !== "expand" || !usedExpand.has(id))) { e = c; break; } }
+      if (!e) e = configured.find((c) => s.role !== "expand" || !usedExpand.has(c.provider.id)) || configured[0];
+    }
+    if (s.role === "expand" && e) usedExpand.add(e.provider.id);
+    return { provider: e.provider, apiKey: e.apiKey, role: s.role, lens: s.lens };
+  });
   const N = links.length;
-  const models = links.map((l) => l.provider.label);
+  const models = [...new Set(links.map((l) => l.provider.label))];
   const hops = [];
   let framing = null;
   const allAdded = [];
   for (let i = 0; i < N; i++) {
-    const { provider, apiKey } = links[i];
-    const isSeed = i === 0;
-    const isSynth = i === N - 1; // 最后一棒收棒(N≥2)
-    const lens = (!isSeed && !isSynth) ? (RELAY_LENS_BY_HOP[i] || "assumption-finder") : null;
-    const role = isSeed ? "seed" : isSynth ? "synth" : "expand";
+    const { provider, apiKey, role, lens } = links[i];
+    const isSeed = role === "seed";
+    const isSynth = role === "synth";
     const started = Date.now();
     try {
       if (isSeed) {

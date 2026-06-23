@@ -953,13 +953,44 @@ Roast Idea should make the user feel:
 
 §6.4 的 Agent Review 是**并行** lenses。但本项目把 Thinking Mode 的合成做成**串行跨模型接力**(把方案逐棒在多家强模型间传递,每棒接受扎实核心 + **扩大思考范围**,而不是盯住某个小处打转或互相附和)。来自真实经验:把半成形的想法在 Claude → Codex → 拿回 Claude 之间搬,大部分被接受,小部分触发二阶思考。
 
-实现(已落地 `runRelay`):
-- 4 棒,每棒换模型:**Claude 立框 → OpenAI(假设猎手镜头)→ DeepSeek(漂移检测镜头)→ Kimi 收棒**。
-- 每棒串行跑一个 Spec 的 thinking lens(§7 的角色即镜头)。
-- 立框只夯清楚不批判;中间棒接受核心 + 铺开新角度;收棒读整条链 → 产出**方向卡(§10.1)**。
-- 收棒失败自动换模型重合成,方向卡不因单模型 429 丢失。
-- 全程白箱流式:用户看着想法一棒棒长大、每棒加了什么角度。
-- §17 的宪法(身份/10 铁律/语气)烤进每一棒的 system prompt(`ROAST_CONSTITUTION`)。
+### 21.1 模型分工(按"思考链路位置",非按谁最强)
+
+| 模型 | 链路定位 |
+|---|---|
+| **Claude** | Main Brain / Clarifier / Path Synthesizer —— 立框 + 最终收敛(双端)|
+| **OpenAI** | Assumption Finder / Product Verifier —— 找关键假设、查逻辑漏洞、最终校验 |
+| **DeepSeek** | Skeptic / Drift Detector / Builder Lens —— 反方、漂移检测、工程现实感、MVP Cutter |
+| **Kimi** | Consensus Mapper / Chinese Synthesizer / Doc Organizer —— 长上下文整理共识/分歧、中文文档 |
+| **Qwen** | Market Lens / Use-case Generator —— 本土产品感、用户场景、功能分支 |
+| **Agnes** | Auxiliary Reviewer / Alternative Generator —— 低成本补位、轻量反方、备选 |
+| **OpenRouter** | Fallback / Second Opinion Pool —— 兜底、可替换模型池(不绑核心角色)|
+
+### 21.2 默认思考链(Thinking Mode,已落地 `runRelay`,6 棒)
+
+```
+1 Claude   立框         这想法到底是什么?真正要澄清的问题?
+2 OpenAI   假设猎手     成立依赖哪些关键假设?
+3 DeepSeek 漂移检测+反方  混了哪些产品?MVP 哪会失控?
+4 Qwen     用户/市场场景  第一个用户是谁?第一使用场景?
+5 Kimi     共识与分歧整理  哪些已稳定?哪些要人拍板?
+6 Claude   收棒         方向卡 / 关键问题 / 下一步
+```
+- 每棒串行跑一个 §7 的 thinking lens;立框只夯清楚不批判,中间棒接受核心 + 扩大思考范围,收棒读整条链 → **方向卡(§10.1)**。
+- **角色模型掉线 → 从补位池(Agnes/OpenRouter…)顶上**,保持链路完整;**收棒失败自动换模型重合成**,方向卡不丢。
+- 全程白箱流式;§17 宪法烤进每棒 system prompt(`ROAST_CONSTITUTION`)。
+
+### 21.3 MVP 文档链(MVP Document Mode,**v2 待建**)
+
+```
+1 Claude   明确方向 + 文档骨架
+2 Qwen     补用户场景 + 功能流程
+3 DeepSeek 砍 MVP 范围 + 工程风险
+4 OpenAI   校验完整性 + 逻辑
+5 Kimi     整理成中文开发文档
+6 Claude   最终润色 + 决策提醒
+```
+
+并行 Agent Review 仍保留:用于 §12 的 **Council Challenge(审问)**——在方向卡之后对它开火。
 
 并行 Agent Review 仍保留:用于 §12 的 **Council Challenge(审问)**——在方向卡之后对它开火。
 
