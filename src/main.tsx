@@ -99,7 +99,12 @@ async function streamSSE(
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(body),
   });
-  if (!res.ok || !res.body) throw new Error((await res.text().catch(() => "")) || "stream failed");
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    // 讨论在服务器上找不到(免费层无持久盘,重启/冷启动会清空 DB)→ 友好提示而非甩生 JSON
+    if (res.status === 404 || /not found/i.test(txt)) throw new Error("这场讨论在服务器上失效了(免费层重启会清空历史)—— 点左下「新讨论」重开即可。");
+    throw new Error(txt || "stream failed");
+  }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
