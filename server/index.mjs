@@ -41,7 +41,8 @@ import {
 
 loadEnv();
 
-const port = Number(process.env.ROAST_API_PORT || 8787);
+// PORT 优先(Render/Fly/Railway 等平台注入动态端口);本地回落 ROAST_API_PORT / 8787
+const port = Number(process.env.PORT || process.env.ROAST_API_PORT || 8787);
 // 图片落盘根目录(与 db.mjs 的默认 data 目录一致)
 const DATA_DIR = process.env.ROAST_DATA_DIR || path.join(process.cwd(), "data");
 // 生产:vite build 静态产物目录(单进程托管前端)

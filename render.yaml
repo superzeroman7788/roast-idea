@@ -1,0 +1,35 @@
+# Render Blueprint —— 一键部署 Roast(免费层 · Docker · 单进程托管前端 dist/ + API/SSE)
+# 用法:
+#   1) render.com 注册/登录(免费,不需信用卡)→ New + → Blueprint
+#   2) 连接 GitHub 仓库 superzeroman7788/roast-idea,Render 自动读本文件建服务
+#   3) 部署后到该服务 Environment,填下面标 sync:false 的密钥(从本地 .env.local 拷过去)
+# 注:免费层会在闲置 ~15 分钟后休眠,下次访问冷启动 ~50s;且无持久盘(sqlite/图片重启清,demo 够用)。
+services:
+  - type: web
+    name: roast-idea
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore            # 离得近;也可 oregon / frankfurt
+    healthCheckPath: /api/status  # 返回 200 即健康
+    autoDeploy: true              # push 到 master 自动重新部署
+    envVars:
+      - key: ROAST_DATA_DIR
+        value: /data
+      # ↓↓ 密钥/密码:绝不进 git。部署后在 Render Dashboard → Environment 手填(值从 .env.local 拷)
+      - key: ROAST_ACCESS_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: KIMI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: QWEN_API_KEY
+        sync: false
+      - key: AGNES_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openai/gpt-oss-120b:free

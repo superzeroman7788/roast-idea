@@ -287,6 +287,13 @@ function App() {
   // 雷达页 →「开议会(基于证据)」:复用现有 discussion(scout 已建)直接审议,带上排除的证据。
   function proceedFromRecon() { setReconActive(false); deliberate(); }
 
+  // 常驻「侦察证据」入口:已有证据 → 直接看雷达(不重抓、不破坏当前讨论);没有 → 检索。
+  function openRecon() {
+    if (busy || deliberating) return;
+    if (discussion && pack?.items?.length) setReconActive(true);
+    else scout();
+  }
+
   // 顶部姿态段控:切 posture;已有讨论则按新姿态即时重跑(随时切共创↔对抗)
   function switchPosture(p: Posture) {
     if (p === posture) return;
@@ -761,6 +768,7 @@ function App() {
           </div>
         </div>
         <div className="recon-bar">
+          <button className="ghost" onClick={() => setReconActive(false)} disabled={busy} title="退出雷达,回到刚才的界面(不丢当前讨论)">← 返回</button>
           {runError ? <span className="recon-err">{runError}</span> : <span className="recon-hint">{busy ? "侦察中,稍候…" : "审完证据,点右侧「开议会」才进入议会 →"}</span>}
           <button className="ghost" onClick={() => scout()} disabled={busy}>重新侦察</button>
           <button className="ghost" onClick={() => openCouncil(true)} disabled={busy}>不检索直接开议会</button>
@@ -953,6 +961,7 @@ function App() {
               </>)}
             </div>
             <div className="controls">
+              <button onClick={openRecon} disabled={busy || deliberating} title="事实侦察雷达:检索/查看证据(随时跳进去看)">🔍 侦察</button>
               <button onClick={() => setShowSeatConfig(true)} title="配置审议席位(角色↔模型)">席位{runConfig ? ` · ${3 + runConfig.seats.length}` : ""}</button>
               <button onClick={() => { setShowHistory(true); refreshHistory(); }} title="浏览/恢复过往讨论">历史{history.length ? ` · ${history.length}` : ""}</button>
               {started && <button onClick={reset}>新讨论</button>}
@@ -1254,12 +1263,16 @@ function App() {
         </div>
         <div className="btncol">
           {!started ? (
-            <button className="btn primary" onClick={() => (posture === "clarify" ? openCouncil() : retrieve ? scout() : openCouncil())} disabled={!brief.trim() || busy}>{busy ? (posture === "clarify" ? "理清中…" : retrieve ? "侦察中…" : "审议中…") : posture === "clarify" ? "想清楚 ›" : retrieve ? "侦察 · 找证据 ›" : "直接开议会"}</button>
+            <>
+              <button className="btn primary" onClick={() => (posture === "clarify" ? openCouncil() : retrieve ? scout() : openCouncil())} disabled={!brief.trim() || busy}>{busy ? (posture === "clarify" ? "理清中…" : retrieve ? "侦察中…" : "审议中…") : posture === "clarify" ? "想清楚 ›" : retrieve ? "侦察 · 找证据 ›" : "直接开议会"}</button>
+              <button className="btn ghost sm" onClick={openRecon} disabled={!brief.trim() || busy} title="先看证据再决定:打开事实侦察雷达">🔍 侦察证据</button>
+            </>
           ) : clarifyMode ? (
             <>
-              <button className="btn ghost" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="让主脑再理一轮">{deliberating ? "理清中…" : "重新理清"}</button>
               <button className="btn primary" onClick={() => switchPosture("roast")} disabled={deliberating || busy} title="理清了 → 送进议会拷问">送进议会 →</button>
+              <button className="btn ghost sm" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="让主脑再理一轮">{deliberating ? "理清中…" : "重新理清"}</button>
               <button className="btn ghost sm" onClick={sendUser} disabled={busy || !userInput.trim()} title="回答主脑的追问 / 补充细节">发送</button>
+              <button className="btn ghost sm" onClick={openRecon} disabled={busy || deliberating} title="打开事实侦察雷达:查看/检索证据">🔍 侦察证据</button>
             </>
           ) : delibMode ? (
             <>
