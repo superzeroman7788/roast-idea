@@ -511,7 +511,7 @@ function App() {
   }
 
   // ---- 审议引擎(白箱):结构化观点 + 审议综述 ----
-  async function deliberate(postureOverride?: Posture) {
+  async function deliberate(postureOverride?: Posture, clarification?: string) {
     if (!discussion || deliberating) return;
     const usePosture = postureOverride || runConfig?.posture || "clarify";
     const t = ++token.current;
@@ -519,7 +519,7 @@ function App() {
     try {
       await streamSSE(
         `/api/discussion/${discussion.id}/deliberate`,
-        { runConfig: runConfig || undefined, posture: usePosture, excludedIds: [...excludedIds] },
+        { runConfig: runConfig || undefined, posture: usePosture, excludedIds: [...excludedIds], clarification: clarification || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "viewpoint") setViewpoints((prev) => [...prev, d as Viewpoint]);
@@ -836,11 +836,6 @@ function App() {
           {deliberating && !relayCard && <div className="relay-running"><span className="blink" />接力中…(主脑立框 → 各模型扩大思考面 → 收棒出方向卡)</div>}
         </div>
         {relayCard && directionCard(relayCard)}
-        <div className="clarify-acts">
-          <button className="btn primary" disabled={deliberating || busy} onClick={() => switchPosture("roast")}>送进议会拷问 →</button>
-          <button className="btn ghost" disabled={deliberating || busy} onClick={() => switchPosture("council")}>温和审议</button>
-          <button className="btn ghost sm" disabled={deliberating || busy} onClick={() => deliberate("clarify")}>{deliberating ? "接力中…" : "重新接力"}</button>
-        </div>
       </div>
     );
   };
@@ -1336,8 +1331,8 @@ function App() {
           ) : clarifyMode ? (
             <>
               <button className="btn primary" onClick={() => switchPosture("roast")} disabled={deliberating || busy} title="理清了 → 送进议会拷问">送进议会 →</button>
-              <button className="btn ghost sm" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="再跑一轮跨模型接力">{deliberating ? "接力中…" : "重新接力"}</button>
-              <button className="btn ghost sm" onClick={sendUser} disabled={busy || !userInput.trim()} title="回答主脑的追问 / 补充细节">发送</button>
+              <button className="btn ghost sm" onClick={() => { const t = userInput.trim(); if (t && !deliberating && !busy) { setUserInput(""); appendTurn({ round: 0, speaker: "you", role: "user", body: t, citations: [] }); deliberate("clarify", t); } }} disabled={busy || deliberating || !userInput.trim()} title="把你的补充/纠正并进来,按最新理解重新接力一遍">补充并重接</button>
+              <button className="btn ghost sm" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="不加补充,直接再跑一轮接力">{deliberating ? "接力中…" : "重新接力"}</button>
               <button className="btn ghost sm" onClick={openRecon} disabled={busy || deliberating} title="打开事实侦察雷达:查看/检索证据">🔍 侦察证据</button>
             </>
           ) : delibMode ? (

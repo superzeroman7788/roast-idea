@@ -263,8 +263,14 @@ const server = http.createServer(async (req, res) => {
         sseSend(res, "deliberate-start", { discussionId: d.id, posture });
         if (posture === "clarify") {
           // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
+          // 用户补充/纠正:存为 turn,并把所有用户补充并进 brief,让接力按"最新理解"重跑(而非原始 brief)。
+          const clarification = typeof body.clarification === "string" ? body.clarification.trim() : "";
+          if (clarification) { try { addTurn({ discussionId: d.id, round: 0, speaker: "you", role: "user", body: clarification, citations: [] }); } catch (e) { console.error("[roast-api] addTurn(clarify) failed:", e?.message || e); } }
+          const fresh = getDiscussion(d.id);
+          const userClar = (fresh?.turns || []).filter((t) => t.role === "user" || t.speaker === "you").map((t) => String(t.body || "").trim()).filter(Boolean);
+          const effBrief = userClar.length ? `${d.brief}\n\n用户后续补充/纠正(按此理解,优先于上面的初稿):\n${userClar.map((c, i) => `${i + 1}. ${c}`).join("\n")}` : d.brief;
           const relayRes = await runRelay(
-            { mode: d.mode, brief: d.brief, evidence: evidenceForAgents, byoKeys, runConfig },
+            { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys, runConfig },
             (ev, data) => {
               if (ev === "relay-hop") sseSend(res, "relay-hop", data);
               else if (ev === "relay-card") sseSend(res, "relay-card", data);
