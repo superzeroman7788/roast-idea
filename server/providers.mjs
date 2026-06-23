@@ -315,7 +315,7 @@ export function assignDiscussionSeats(byoKeys) {
 
 // 瞬时失败退避重试:429/5xx/网络抖动/超时重试一次,救慢/抖 provider(Kimi/Agnes/OpenRouter 并发突发下的瞬时过载)。
 // makeOpts 是工厂:每次 attempt 拿全新 options(AbortSignal.timeout 触发后不可复用)。最后一次失败照常返回/抛出,保留 seat-failed 文案。
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]); // 529 = Anthropic Overloaded(高峰常见,必retry)
 async function fetchRetry(url, makeOpts, tries = 2) {
   for (let i = 0; ; i++) {
     try {
@@ -716,9 +716,23 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
     const started = Date.now();
     try {
       if (isSeed) {
-        const out = await chatJSON(provider, apiKey, buildRelaySeedPrompt({ mode, brief, evidence }));
-        framing = normFraming(out);
-        const hop = { order: i + 1, seat: provider.label, role, lens: null, added: [], framing, latencyMs: Date.now() - started };
+        // 立框:本棒模型(Claude)→ 其余可用模型依次兜底(Claude 529 Overloaded/掉线不致全链失败)
+        const seedOrder = [links[i], ...links].filter((v, idx, a) => a.indexOf(v) === idx);
+        let seeded = null, seedSeat = provider.label, lastErr = "";
+        for (const cand of seedOrder) {
+          try {
+            const out = await chatJSON(cand.provider, cand.apiKey, buildRelaySeedPrompt({ mode, brief, evidence }));
+            seeded = normFraming(out); seedSeat = cand.provider.label; break;
+          } catch (e) { lastErr = compact(e?.message || String(e)); }
+        }
+        if (!seeded) {
+          const hop = { order: i + 1, seat: provider.label, role, lens: null, added: [], failed: true, error: lastErr, latencyMs: Date.now() - started };
+          hops.push(hop); emit("relay-hop", hop);
+          emit("error", { error: "立框失败:" + lastErr });
+          return { hops, card: null, models };
+        }
+        framing = seeded;
+        const hop = { order: i + 1, seat: seedSeat, role, lens: null, added: [], framing, latencyMs: Date.now() - started };
         hops.push(hop); emit("relay-hop", hop);
       } else if (isSynth) {
         // 收棒:依次尝试(本棒模型 → 主脑 → 其余),单模型 429/挂掉不丢方向卡

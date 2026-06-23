@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ROAST · 四站工作台 · mockup</title>
+<style>
+:root{
+  --bg0:#070b15; --bg1:#070b16; --panel:#0a1020cc; --panel2:#0c1426;
+  --line:#16294180; --line2:#2a4a6a;
+  --cyan:#48dcff; --cyan-dim:#3aa9cf; --cyan-faint:#48dcff22;
+  --amber:#ffb158; --amber-dim:#c9821f;
+  --red:#ff5d6e; --green:#3fe3a0; --purple:#c9a0ff; --gray:#5a708a;
+  --tx:#d8e3ee; --tx2:#93a8bf; --tx3:#6f86a4;
+  --mono:'Share Tech Mono',ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:-apple-system,"Helvetica Neue","Noto Sans SC",system-ui,sans-serif;
+  --disp:'Chakra Petch','Noto Sans SC',var(--sans);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:radial-gradient(1200px 700px at 50% 38%, #0a1326 0%, #060a14 55%, #03060d 100%);
+  font-family:var(--sans); color:var(--tx);
+  display:flex; align-items:center; justify-content:center;
+  min-height:100vh; overflow:hidden; -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:99;
+  background:repeating-linear-gradient(0deg,#ffffff05 0 1px,transparent 1px 3px),
+    radial-gradient(900px 600px at 50% 40%,transparent 60%,#00000066 100%);
+  mix-blend-mode:overlay; opacity:.14;
+}
+.app{
+  width:min(1680px,97vw); height:min(922px,95vh); flex-shrink:0; position:relative;
+  background:linear-gradient(180deg,#070c18 0%,#050810 100%);
+  border:1px solid #16314e; border-radius:16px;
+  box-shadow:0 0 160px #0e3a5522 inset,0 30px 90px #0009;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+/* top chrome */
+.chrome{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;
+  border-bottom:1px solid #122742;background:#060a14}
+.dot{width:11px;height:11px;border-radius:50%}
+.dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+.chrome .title{flex:1;text-align:center;font-family:var(--mono);font-size:12px;
+  letter-spacing:.32em;color:#7e97b3}
+.chrome .title b{color:var(--cyan);font-weight:500;text-shadow:0 0 10px #48dcff66}
+.chrome .conn{font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:6px;color:var(--green)}
+.chrome .conn i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+/* tab bar = the pipeline flow */
+.tabs{height:52px;display:flex;align-items:center;gap:4px;padding:0 16px;
+  border-bottom:1px solid #0f2138;background:#070d18}
+.tab{position:relative;display:flex;align-items:center;gap:9px;padding:8px 18px;border-radius:9px;
+  font-family:var(--disp);font-size:14px;letter-spacing:.04em;color:var(--tx2);
+  background:transparent;border:1px solid transparent;cursor:pointer;transition:.15s}
+.tab .n{font-family:var(--mono);font-size:11px;width:18px;height:18px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;border:1px solid #25415f;color:var(--tx3)}
+.tab .sub{font-size:11px;color:var(--tx3);font-family:var(--mono);letter-spacing:0}
+.tab:hover{background:#0b1626;color:var(--tx)}
+.tab.active{background:#0c1a2e;border-color:#1c5170;color:var(--cyan);box-shadow:0 0 0 1px #1c517055,0 4px 18px #48dcff14}
+.tab.active .n{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 8px #48dcff55}
+.tab.active .sub{color:var(--cyan-dim)}
+.tab.done .n{border-color:var(--green);color:var(--green)}
+.flow-arrow{color:#22405e;font-size:15px;padding:0 2px;user-select:none}
+.spacer{flex:1}
+.tabs .lens{font-family:var(--mono);font-size:11px;color:var(--tx3);letter-spacing:.1em}
+/* body grid */
+.grid{flex:1;display:grid;grid-template-columns:264px 1fr 320px;min-height:0}
+.col{padding:16px;display:flex;flex-direction:column;min-height:0;min-width:0}
+.col.left{border-right:1px solid #0f2138;background:#070c17}
+.col.right{border-left:1px solid #0f2138;background:#070c17}
+.col.center{padding:18px 14px 10px;position:relative}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.26em;color:#7e97b3;
+  text-transform:uppercase;display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.eyebrow .live{display:inline-flex;align-items:center;gap:5px;color:var(--cyan);margin-left:auto;letter-spacing:.08em}
+.blink{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:blink 1.6s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+/* ---- left workspace ---- */
+.subject{font-size:13px;line-height:1.55;color:var(--tx);background:#0a1424;border:1px solid #14304c;
+  border-left:2px solid var(--cyan);border-radius:8px;padding:10px 12px;margin-bottom:16px}
+.subject .lab{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--tx3);display:block;margin-bottom:4px}
+.pl-title{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--tx3);margin:4px 0 8px}
+.pl-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;margin-bottom:5px;
+  border:1px solid #11223a;background:#091322;cursor:pointer;transition:.15s}
+.pl-row:hover{border-color:#1c4060}
+.pl-row .st{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:11px;flex-shrink:0}
+.pl-row .st.done{background:#0e2a22;color:var(--green);border:1px solid #1c5a44}
+.pl-row .st.run{background:#0c2233;color:var(--cyan);border:1px solid #1c517a;animation:pulse 1.5s infinite}
+.pl-row .st.idle{background:#10182a;color:var(--tx3);border:1px solid #1c2c45}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 #48dcff44}50%{box-shadow:0 0 0 4px #48dcff00}}
+.pl-row .nm{font-size:13px;color:var(--tx);font-family:var(--disp)}
+.pl-row .meta{font-size:10px;color:var(--tx3);font-family:var(--mono);margin-left:auto}
+.docs-title{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--tx3);margin:18px 0 8px;
+  display:flex;align-items:center;gap:6px}
+.doc{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;margin-bottom:6px;
+  background:#0a1626;border:1px solid #13294353}
+.doc i.md{font-family:var(--mono);font-size:9px;color:#0a1626;background:var(--cyan-dim);border-radius:3px;padding:2px 4px;letter-spacing:.05em}
+.doc .dn{font-size:12px;color:var(--tx)}
+.doc .send{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--cyan);
+  border:1px solid #1c4d6e;border-radius:6px;padding:3px 8px;background:#0a1c2c;cursor:pointer;white-space:nowrap}
+.doc .send:hover{background:#0e2740}
+.doc.gen{opacity:.6}
+.doc.gen .dn{color:var(--tx3)}
+.handoff-note{margin-top:auto;font-size:11px;line-height:1.5;color:var(--tx3);
+  border-top:1px dashed #16314e;padding-top:10px}
+.handoff-note b{color:var(--cyan-dim);font-weight:500}
+/* ---- center stage panels ---- */
+.stage{position:absolute;inset:18px 14px 10px;display:none;flex-direction:column}
+.stage.active{display:flex}
+.stage-head{font-family:var(--disp);font-size:15px;color:var(--tx);text-align:center;margin-bottom:2px}
+.stage-sub{font-family:var(--mono);font-size:11px;color:var(--tx3);text-align:center;letter-spacing:.08em;margin-bottom:10px}
+.stage-canvas{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative}
+/* radar (search) */
+.radar{width:300px;height:300px;border-radius:50%;position:relative;
+  background:radial-gradient(circle,#0a1c2e 0%,#060f1c 70%);border:1px solid #143a55;
+  box-shadow:0 0 60px #48dcff14 inset}
+.radar .ring{position:absolute;border:1px solid #173f5a;border-radius:50%;inset:0;margin:auto}
+.radar .ring.r2{inset:50px}.radar .ring.r3{inset:100px}
+.radar .sweep{position:absolute;inset:0;border-radius:50%;
+  background:conic-gradient(from 0deg,#48dcff00 0deg,#48dcff00 300deg,#48dcff33 350deg,#48dcffaa 360deg);
+  animation:spin 3.2s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.radar .blip{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 10px var(--green);animation:ping 3.2s infinite}
+.radar .blip.b2{background:var(--amber);box-shadow:0 0 10px var(--amber);animation-delay:1s}
+.radar .blip.b3{background:var(--cyan);box-shadow:0 0 10px var(--cyan);animation-delay:2.1s}
+@keyframes ping{0%,70%{opacity:0;transform:scale(.4)}80%{opacity:1;transform:scale(1.3)}100%{opacity:.55;transform:scale(1)}}
+.radar-cap{position:absolute;bottom:-6px;left:0;right:0;text-align:center;font-family:var(--mono);font-size:11px;color:var(--cyan-dim)}
+/* relay chain */
+.chain{width:100%;max-width:560px}
+.chain-rail{display:flex;align-items:center;justify-content:space-between;position:relative;margin:6px 12px 0}
+.chain-rail::before{content:"";position:absolute;left:18px;right:18px;top:18px;height:2px;background:#16314e}
+.chain-rail .barge{position:absolute;top:11px;left:18px;width:16px;height:16px;border-radius:50%;
+  background:var(--cyan);box-shadow:0 0 14px var(--cyan);animation:barge 5s linear infinite}
+@keyframes barge{0%{left:18px}100%{left:calc(100% - 34px)}}
+.node{display:flex;flex-direction:column;align-items:center;gap:6px;z-index:1;width:74px}
+.node .ball{width:38px;height:38px;border-radius:50%;background:#0a1626;border:1px solid #1c3a58;
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;color:var(--tx2)}
+.node.seed .ball{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 12px #48dcff44}
+.node.synth .ball{border-color:var(--green);color:var(--green);box-shadow:0 0 12px #3fe3a044}
+.node .who{font-size:11px;color:var(--tx);font-family:var(--disp)}
+.node .lens{font-size:9px;color:var(--tx3);font-family:var(--mono);text-align:center;line-height:1.2}
+.grow-card{margin:22px auto 0;max-width:520px;background:#0a1626;border:1px solid #14304c;border-radius:10px;padding:14px 16px}
+.grow-card .ol{font-size:14px;color:var(--tx);line-height:1.5;margin-bottom:10px}
+.grow-card .ol b{color:var(--cyan)}
+.grow-card .angles{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:11px;color:var(--tx2);background:#0c1d30;border:1px solid #163350;border-radius:20px;padding:3px 10px}
+.chip.new{color:var(--cyan);border-color:#1c4d6e;animation:fadein .6s}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+/* orb (council) */
+.orb-wrap{position:relative;width:330px;height:330px;display:flex;align-items:center;justify-content:center}
+.orb-wrap svg{width:330px;height:330px}
+.seatlbl{position:absolute;font-family:var(--mono);font-size:10px;color:var(--tx2);white-space:nowrap}
+/* produce */
+.produce{display:flex;gap:20px;align-items:center;justify-content:center;width:100%}
+.paper{width:230px;height:300px;background:#0a1424;border:1px solid #163350;border-radius:8px;padding:18px 16px;position:relative;overflow:hidden}
+.paper .ttl{height:12px;width:60%;background:#1c4d6e;border-radius:3px;margin-bottom:14px}
+.paper .ln{height:8px;background:#13283f;border-radius:3px;margin-bottom:9px;animation:type 2.4s infinite}
+.paper .ln:nth-child(2){width:92%}.paper .ln:nth-child(3){width:80%;animation-delay:.3s}
+.paper .ln:nth-child(4){width:96%;animation-delay:.6s}.paper .ln:nth-child(5){width:70%;animation-delay:.9s}
+.paper .ln:nth-child(6){width:88%;animation-delay:1.2s}.paper .ln:nth-child(7){width:60%;animation-delay:1.5s}
+@keyframes type{0%,100%{opacity:.45}50%{opacity:1;background:#1a3a55}}
+.gen-side{display:flex;flex-direction:column;gap:10px;width:170px}
+.gen-side .gl{font-family:var(--mono);font-size:10px;letter-spacing:.15em;color:var(--tx3);margin-bottom:2px}
+.fmt{display:flex;align-items:center;gap:8px;padding:8px 11px;border-radius:8px;background:#0a1626;border:1px solid #143050;font-size:12px;color:var(--tx2);cursor:pointer}
+.fmt.on{border-color:var(--cyan);color:var(--cyan);background:#0c1d30}
+.fmt .em{font-size:14px}
+.who-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.who-pill{font-family:var(--mono);font-size:10px;color:var(--tx2);border:1px solid #1c3a58;border-radius:14px;padding:3px 8px;background:#091322}
+.who-pill.on{color:var(--green);border-color:#1c5a44}
+/* ---- right output ---- */
+.out{display:none;flex-direction:column;min-height:0;flex:1}
+.out.active{display:flex}
+.out-scroll{overflow:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:9px;padding-right:2px}
+.ev{background:#0a1424;border:1px solid #132a44;border-radius:9px;padding:10px 12px}
+.ev .top{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+.ev .cat{font-family:var(--mono);font-size:10px;color:var(--amber);border:1px solid #4a3a1a;border-radius:5px;padding:1px 6px}
+.ev .cred{font-family:var(--mono);font-size:10px;margin-left:auto;color:var(--green)}
+.ev .claim{font-size:12px;color:var(--tx);line-height:1.45;margin-bottom:5px}
+.ev .src{font-size:11px;color:var(--cyan-dim);display:flex;align-items:center;gap:5px}
+.vp{background:#0a1424;border:1px solid #132a44;border-radius:9px;padding:10px 12px;border-left:2px solid var(--gray)}
+.vp.kill{border-left-color:var(--red)}.vp.fix{border-left-color:var(--amber)}.vp.ship{border-left-color:var(--green)}
+.vp .top{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+.vp .who{font-family:var(--disp);font-size:12px;color:var(--tx)}
+.vp .role{font-family:var(--mono);font-size:10px;color:var(--tx3)}
+.vp .stance{margin-left:auto;font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:5px}
+.vp .stance.kill{color:var(--red);border:1px solid #5a1c28}
+.vp .stance.fix{color:var(--amber);border:1px solid #4a3a1a}
+.vp .stance.ship{color:var(--green);border:1px solid #1c5a44}
+.vp .txt{font-size:12px;color:var(--tx2);line-height:1.45}
+.art{background:#0a1424;border:1px solid #132a44;border-radius:9px;padding:11px 12px}
+.art .top{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.art .ty{font-family:var(--mono);font-size:10px;color:var(--cyan);border:1px solid #1c4d6e;border-radius:5px;padding:1px 6px}
+.art .by{font-family:var(--mono);font-size:10px;color:var(--tx3);margin-left:auto}
+.art .pv{font-size:12px;color:var(--tx2);line-height:1.5}
+.card2{background:#0a1626;border:1px solid #14304c;border-radius:10px;padding:13px 14px}
+.card2 h4{font-family:var(--disp);font-size:13px;color:var(--cyan);font-weight:500;margin-bottom:8px;letter-spacing:.04em}
+.card2 ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+.card2 li{font-size:12px;color:var(--tx2);line-height:1.4;padding-left:14px;position:relative}
+.card2 li::before{content:"›";position:absolute;left:2px;color:var(--cyan-dim)}
+/* ---- bottom composer ---- */
+.composer{border-top:1px solid #122742;background:#060b15;padding:12px 16px;display:flex;gap:12px;align-items:flex-end}
+.composer .ta{flex:1;background:#0a1424;border:1px solid #16314e;border-radius:10px;padding:11px 14px;
+  min-height:54px;color:var(--tx2);font-size:13px;line-height:1.5;font-family:var(--sans)}
+.composer .ta .ph{color:var(--tx3)}
+.composer .ta .hint{font-size:11px;color:#3a5878;margin-top:4px;font-family:var(--mono)}
+.composer .btncol{display:flex;flex-direction:column;gap:8px;width:150px}
+.btn{font-family:var(--disp);font-size:13px;letter-spacing:.04em;padding:10px;border-radius:9px;cursor:pointer;text-align:center;border:1px solid #1d3350;background:#0a1626;color:var(--tx2)}
+.btn.primary{background:linear-gradient(180deg,#ffcf7a,#f0a83e);color:#2a1a06;border-color:#c9821f;font-weight:600;box-shadow:0 0 22px #ffb15833}
+.btn.sm{font-size:11px;padding:8px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="chrome">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="title">R O A S T &nbsp;·&nbsp; <b>SPARRING COUNCIL</b> &nbsp;·&nbsp; 点子陪练</span>
+    <span class="conn"><i></i>已连接 · 7 家</span>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab done" data-tab="search"><span class="n">1</span>搜索<span class="sub">事实侦察</span></button>
+    <span class="flow-arrow">→</span>
+    <button class="tab done" data-tab="relay"><span class="n">2</span>陪练<span class="sub">想清楚</span></button>
+    <span class="flow-arrow">→</span>
+    <button class="tab active" data-tab="council"><span class="n">3</span>议会<span class="sub">温和/拷问</span></button>
+    <span class="flow-arrow">→</span>
+    <button class="tab" data-tab="produce"><span class="n">4</span>产出<span class="sub">生图/文/PPT</span></button>
+    <span class="spacer"></span>
+    <span class="lens">WORKSPACE · 一条点子 · 四站流转</span>
+  </nav>
+
+  <div class="grid">
+    <!-- ===== LEFT: workspace ===== -->
+    <aside class="col left">
+      <div class="eyebrow">工作台 · WORKSPACE</div>
+      <div class="subject"><span class="lab">当前点子</span>多 agent 帮用户把模糊想法,逐步变成一个清晰、可执行的方案平台</div>
+
+      <div class="pl-title">流水线</div>
+      <div class="pl-row" data-go="search"><span class="st done">✓</span><span class="nm">搜索</span><span class="meta">3 证据</span></div>
+      <div class="pl-row" data-go="relay"><span class="st done">✓</span><span class="nm">陪练</span><span class="meta">方向卡 ✓</span></div>
+      <div class="pl-row" data-go="council"><span class="st run">●</span><span class="nm">议会</span><span class="meta">进行中</span></div>
+      <div class="pl-row" data-go="produce"><span class="st idle">—</span><span class="nm">产出</span><span class="meta">待启</span></div>
+
+      <div class="docs-title">文档 · 可送到下一站</div>
+      <div class="doc"><i class="md">MD</i><span class="dn">证据简报</span><span class="send">送到 ▾</span></div>
+      <div class="doc"><i class="md">MD</i><span class="dn">方向卡</span><span class="send">送到 ▾</span></div>
+      <div class="doc gen"><i class="md">MD</i><span class="dn">收敛方案 · 生成中…</span></div>
+
+      <div class="handoff-note">每站产出一份 <b>MD 文档</b>;点「送到」把它丢给 <b>议会 / 产出 / 陪练</b>。交接前你能读它、改它 —— 白箱、人在环中。</div>
+    </aside>
+
+    <!-- ===== CENTER: per-tab instrument ===== -->
+    <main class="col center" id="center">
+      <!-- search -->
+      <section class="stage" data-stage="search">
+        <div class="stage-head">事实侦察雷达</div>
+        <div class="stage-sub">扫描竞品 · 需求 · 定价 · 痛点 —— 给点子找证据落点</div>
+        <div class="stage-canvas">
+          <div class="radar">
+            <div class="ring"></div><div class="ring r2"></div><div class="ring r3"></div>
+            <div class="sweep"></div>
+            <div class="blip" style="top:64px;left:96px"></div>
+            <div class="blip b2" style="top:150px;left:206px"></div>
+            <div class="blip b3" style="top:212px;left:120px"></div>
+            <div class="radar-cap">扫描中 · 已命中 3 条证据</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- relay -->
+      <section class="stage" data-stage="relay">
+        <div class="stage-head">跨模型接力 · 想清楚</div>
+        <div class="stage-sub">点子在 6 个模型间逐棒传递,每棒接受核心 + 扩大思考范围</div>
+        <div class="stage-canvas">
+          <div class="chain">
+            <div class="chain-rail">
+              <div class="barge"></div>
+              <div class="node seed"><div class="ball">立框</div><div class="who">Claude</div><div class="lens">立框</div></div>
+              <div class="node"><div class="ball">假设</div><div class="who">OpenAI</div><div class="lens">假设猎手</div></div>
+              <div class="node"><div class="ball">漂移</div><div class="who">DeepSeek</div><div class="lens">漂移·反方</div></div>
+              <div class="node"><div class="ball">市场</div><div class="who">Qwen</div><div class="lens">市场场景</div></div>
+              <div class="node"><div class="ball">共识</div><div class="who">Kimi</div><div class="lens">共识整理</div></div>
+              <div class="node synth"><div class="ball">收棒</div><div class="who">Claude</div><div class="lens">出方向卡</div></div>
+            </div>
+            <div class="grow-card">
+              <div class="ol"><b>一句话内核 ·</b> 一个 AI 工作台,帮独立开发者把碎片灵感整理成能动手的项目计划</div>
+              <div class="angles">
+                <span class="chip">第一个用户是谁</span>
+                <span class="chip">和 Notion 的边界</span>
+                <span class="chip new">MVP 只做"灵感→任务"</span>
+                <span class="chip new">定价:按项目还是月费</span>
+                <span class="chip new">别一上来做协作</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- council -->
+      <section class="stage active" data-stage="council">
+        <div class="stage-head">议会 · 多 AI 审议</div>
+        <div class="stage-sub">主脑立靶 → 反方并行开火 → 红线=分歧 → 主席综述 · 当前:拷问档</div>
+        <div class="stage-canvas">
+          <div class="orb-wrap">
+            <svg viewBox="0 0 330 330">
+              <circle cx="165" cy="165" r="150" fill="none" stroke="#143a55" stroke-width="1"/>
+              <circle cx="165" cy="165" r="118" fill="none" stroke="#16314e" stroke-width="1" stroke-dasharray="3 6">
+                <animateTransform attributeName="transform" type="rotate" from="0 165 165" to="360 165 165" dur="22s" repeatCount="indefinite"/>
+              </circle>
+              <circle cx="165" cy="165" r="86" fill="none" stroke="#1c517a" stroke-width="1" stroke-dasharray="2 8">
+                <animateTransform attributeName="transform" type="rotate" from="360 165 165" to="0 165 165" dur="16s" repeatCount="indefinite"/>
+              </circle>
+              <g stroke-width="1.4">
+                <line x1="165" y1="165" x2="55" y2="80" stroke="#ff5d6e">
+                  <animate attributeName="opacity" values="0.2;0.9;0.2" dur="2.4s" repeatCount="indefinite"/></line>
+                <line x1="165" y1="165" x2="285" y2="120" stroke="#ff5d6e">
+                  <animate attributeName="opacity" values="0.9;0.3;0.9" dur="3s" repeatCount="indefinite"/></line>
+                <line x1="165" y1="165" x2="95" y2="270" stroke="#ffb158">
+                  <animate attributeName="opacity" values="0.3;0.8;0.3" dur="2.7s" repeatCount="indefinite"/></line>
+                <line x1="165" y1="165" x2="255" y2="255" stroke="#3fe3a0" opacity="0.5"/>
+              </g>
+              <circle cx="165" cy="165" r="30" fill="#0a1c2e" stroke="#48dcff" stroke-width="1.5">
+                <animate attributeName="r" values="28;33;28" dur="3.4s" repeatCount="indefinite"/>
+                <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="3.4s" repeatCount="indefinite"/></circle>
+              <circle cx="165" cy="165" r="13" fill="#48dcff" opacity="0.9">
+                <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite"/></circle>
+              <circle cx="55" cy="80" r="5" fill="#ff5d6e"/><circle cx="285" cy="120" r="5" fill="#ff5d6e"/>
+              <circle cx="95" cy="270" r="5" fill="#ffb158"/><circle cx="255" cy="255" r="5" fill="#3fe3a0"/>
+            </svg>
+            <span class="seatlbl" style="top:58px;left:6px;color:var(--red)">投资人 · Kill</span>
+            <span class="seatlbl" style="top:104px;right:0;color:var(--red)">魔鬼 · Kill</span>
+            <span class="seatlbl" style="bottom:46px;left:30px;color:var(--amber)">增长 · Fix</span>
+            <span class="seatlbl" style="bottom:54px;right:18px;color:var(--green)">可行性 · Ship</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- produce -->
+      <section class="stage" data-stage="produce">
+        <div class="stage-head">产出 · 让某个 AI 生成</div>
+        <div class="stage-sub">把收敛方案交给一个模型 → 文案 / PRD / 设计文档 / 配图 / PPT</div>
+        <div class="stage-canvas">
+          <div class="produce">
+            <div class="paper">
+              <div class="ttl"></div>
+              <div class="ln"></div><div class="ln"></div><div class="ln"></div>
+              <div class="ln"></div><div class="ln"></div><div class="ln"></div>
+            </div>
+            <div class="gen-side">
+              <div class="gl">交给谁</div>
+              <div class="who-row">
+                <span class="who-pill on">Claude</span><span class="who-pill">Qwen</span>
+                <span class="who-pill">Kimi</span><span class="who-pill">DeepSeek</span>
+              </div>
+              <div class="gl" style="margin-top:8px">生成什么</div>
+              <div class="fmt on"><span class="em">📄</span>一页 PRD</div>
+              <div class="fmt"><span class="em">✍️</span>落地文案</div>
+              <div class="fmt"><span class="em">🖼️</span>概念配图</div>
+              <div class="fmt"><span class="em">📊</span>PPT 大纲</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ===== RIGHT: per-tab output ===== -->
+    <aside class="col right">
+      <!-- search -->
+      <div class="out" data-out="search">
+        <div class="eyebrow">证据 · EVIDENCE <span class="live"><span class="blink"></span>3 命中</span></div>
+        <div class="out-scroll">
+          <div class="ev"><div class="top"><span class="cat">竞品</span><span class="cred">可信度 高</span></div>
+            <div class="claim">Notion AI、Mem 已做"想法整理",但弱在"灵感→可执行任务"这一步</div>
+            <div class="src">🔗 techcrunch.com · 跳转原文</div></div>
+          <div class="ev"><div class="top"><span class="cat">需求</span><span class="cred" style="color:var(--amber)">可信度 中</span></div>
+            <div class="claim">独立开发者社区高频抱怨"点子太多、落不了地"</div>
+            <div class="src">🔗 v2ex.com · 跳转原文</div></div>
+          <div class="ev"><div class="top"><span class="cat">定价</span><span class="cred">可信度 高</span></div>
+            <div class="claim">同类工具月费 $8–15,项目制付费罕见</div>
+            <div class="src">🔗 producthunt.com · 跳转原文</div></div>
+        </div>
+      </div>
+      <!-- relay -->
+      <div class="out" data-out="relay">
+        <div class="eyebrow">接力轨迹 · RELAY</div>
+        <div class="out-scroll">
+          <div class="card2"><h4>方向卡 · 需你拍板</h4>
+            <ul><li>第一个用户:全职独立开发者,还是兼职做副业的人?</li>
+            <li>和 Notion / Linear 的边界划在哪?</li>
+            <li>MVP 只做"灵感→任务拆解",先不碰协作?</li></ul></div>
+          <div class="vp"><div class="top"><span class="who">棒2 OpenAI</span><span class="role">假设猎手</span></div>
+            <div class="txt">+5 角度:依赖"用户愿意先结构化输入"这条假设最危险</div></div>
+          <div class="vp"><div class="top"><span class="who">棒4 Qwen</span><span class="role">市场场景</span></div>
+            <div class="txt">+5 角度:第一场景=周末灵感冲动时,手机上 30 秒记一条</div></div>
+        </div>
+      </div>
+      <!-- council -->
+      <div class="out active" data-out="council">
+        <div class="eyebrow">署名观点 · TRANSCRIPT <span class="live"><span class="blink"></span>对线中</span></div>
+        <div class="out-scroll">
+          <div class="vp kill"><div class="top"><span class="who">投资人</span><span class="role">moat</span><span class="stance kill">Kill</span></div>
+            <div class="txt">"整理灵感"不是付费点,留存撑不起订阅。护城河在哪?</div></div>
+          <div class="vp kill"><div class="top"><span class="who">魔鬼代言人</span><span class="role">devil</span><span class="stance kill">Kill</span></div>
+            <div class="txt">用户根本不会先把灵感结构化 —— 这是产品的死亡假设。</div></div>
+          <div class="vp fix"><div class="top"><span class="who">增长</span><span class="role">growth</span><span class="stance fix">Fix</span></div>
+            <div class="txt">分发可走独立开发者社区,但要一个"啊哈"瞬间才传得开。</div></div>
+          <div class="vp ship"><div class="top"><span class="who">可行性</span><span class="role">feasibility</span><span class="stance ship">Ship</span></div>
+            <div class="txt">技术上 1 周能出 MVP,接力的方向卡已经够清。</div></div>
+        </div>
+      </div>
+      <!-- produce -->
+      <div class="out" data-out="produce">
+        <div class="eyebrow">交付物 · ARTIFACTS</div>
+        <div class="out-scroll">
+          <div class="art"><div class="top"><span class="ty">一页 PRD</span><span class="by">Claude · 候选</span></div>
+            <div class="pv"># 灵感工作台 MVP\n目标用户:独立开发者\n核心流:记灵感 → AI 拆任务 → 看板…</div></div>
+          <div class="art"><div class="top"><span class="ty">配图</span><span class="by">生图 · 候选</span></div>
+            <div class="pv">[ 概念图:碎片便签 → 汇成一条清晰路径 ]</div></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ===== bottom composer ===== -->
+  <footer class="composer">
+    <div class="ta" id="ta"><span class="ph" id="ph">插一句:回应、辩护、给反方一个新角度…</span><div class="hint" id="hint">写得越细,议会挑得越准</div></div>
+    <div class="btncol" id="btncol">
+      <div class="btn primary" id="b1">送进产出 →</div>
+      <div class="btn sm" id="b2">继续审议</div>
+      <div class="btn sm" id="b3">🔍 侦察证据</div>
+    </div>
+  </footer>
+</div>
+
+<script>
+const CFG = {
+  search:  {ph:"输入你的点子,开始事实侦察…", hint:"会扫竞品/需求/定价/痛点,给证据评可信度", b1:"开始搜索 →", b2:"送到陪练", b3:"送到议会"},
+  relay:   {ph:"补充 / 纠正你的想法,会按最新理解重新接力…", hint:"6 棒跨模型:Claude 立框 → … → Claude 收棒出方向卡", b1:"补充并重接 →", b2:"送进议会", b3:"送去产出"},
+  council: {ph:"插一句:回应、辩护、给反方一个新角度…", hint:"写得越细,议会挑得越准", b1:"送进产出 →", b2:"继续审议", b3:"🔍 侦察证据"},
+  produce: {ph:"给生成一句指令(风格 / 受众 / 长度)…", hint:"把收敛方案交给某个 AI,产出文案/PRD/图/PPT", b1:"生成 →", b2:"改这一稿", b3:"另选一个 AI"},
+};
+function activate(tab){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
+  document.querySelectorAll('.stage').forEach(s=>s.classList.toggle('active',s.dataset.stage===tab));
+  document.querySelectorAll('.out').forEach(o=>o.classList.toggle('active',o.dataset.out===tab));
+  const c=CFG[tab];
+  document.getElementById('ph').textContent=c.ph;
+  document.getElementById('hint').textContent=c.hint;
+  document.getElementById('b1').textContent=c.b1;
+  document.getElementById('b2').textContent=c.b2;
+  document.getElementById('b3').textContent=c.b3;
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>activate(t.dataset.tab)));
+document.querySelectorAll('.pl-row').forEach(r=>r.addEventListener('click',()=>activate(r.dataset.go)));
+</script>
+</body>
+</html>

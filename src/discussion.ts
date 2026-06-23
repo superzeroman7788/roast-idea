@@ -260,3 +260,58 @@ export const ROLE_COLOR: Record<string, string> = {
   feasibility: "#c9a0ff",
   user: "#dcecf6",
 };
+
+// ===== 四站工作台:搜索/陪练/议会/产出(相互独立 + MD 文档交接) =====
+export type Tab = "search" | "relay" | "council" | "produce";
+export const TAB_ORDER: Tab[] = ["search", "relay", "council", "produce"];
+export const TAB_LABEL: Record<Tab, string> = { search: "搜索", relay: "陪练", council: "议会", produce: "产出" };
+export const TAB_SUB: Record<Tab, string> = { search: "事实侦察", relay: "想清楚", council: "温和/拷问", produce: "生图/文/PPT" };
+
+// 议会内部强度:温和(council)⇄ 拷问(roast)
+export type CouncilIntensity = "council" | "roast";
+export const INTENSITY_LABEL: Record<CouncilIntensity, string> = { council: "温和", roast: "拷问" };
+
+// 工作台文档(交接载荷):每站产出序列化成一份规范 MD
+export type StationDoc = { station: Tab; name: string; md: string };
+
+export function evidenceToMd(pack: EvidencePack | null): string {
+  if (!pack || !pack.items?.length) return "";
+  const L: string[] = ["# 证据简报", ""];
+  for (const it of pack.items) {
+    if (it.excluded) continue;
+    L.push(`## [${it.category}] ${it.claim}`);
+    if (it.impact) L.push(`- 意味:${it.impact}`);
+    L.push(`- 来源:${it.source}${it.url ? ` (${it.url})` : ""} · 可信度 ${it.credibility}`);
+    L.push("");
+  }
+  return L.join("\n").trim();
+}
+
+export function cardToMd(card: DirectionCard | null): string {
+  if (!card) return "";
+  const L: string[] = ["# 方向卡", "", `**一句话内核**:${card.oneLine}`, ""];
+  const sec = (title: string, items?: string[]) => {
+    if (items && items.length) { L.push(`## ${title}`); items.forEach((x) => L.push(`- ${x}`)); L.push(""); }
+  };
+  sec("已稳定", card.clear);
+  sec("接力铺开的新角度", card.expandedAngles);
+  sec("关键假设", card.assumptions);
+  if (card.paths?.length) { L.push("## 路径"); card.paths.forEach((p) => L.push(`- **${p.name}**:契合 ${p.fit} / 风险 ${p.risk}`)); L.push(""); }
+  if (card.firstNarrowing) { L.push("## 推荐先收窄", card.firstNarrowing, ""); }
+  sec("需你拍板", card.decisionsForYou);
+  if (card.inviteYourInput) { L.push("## 邀你补充", card.inviteYourInput, ""); }
+  sec("现在先别建", card.dontBuildYet);
+  return L.join("\n").trim();
+}
+
+export function convergedToMd(c: ConvergedOutput | null): string {
+  if (!c) return "";
+  const L: string[] = ["# 收敛方案", "", c.clarified, ""];
+  if (c.addressed?.length) { L.push("## 已应对"); c.addressed.forEach((a) => L.push(`- ${a.tag ? `[${a.tag}] ` : ""}${a.point} → ${a.response}`)); L.push(""); }
+  if (c.unsilenceable?.length) { L.push("## 不可静音(即使搁置也保留)"); c.unsilenceable.forEach((x) => L.push(`- ${x}`)); L.push(""); }
+  if (c.setAside?.length) { L.push("## 暂搁置"); c.setAside.forEach((s) => L.push(`- ${s.point} — ${s.reason}`)); L.push(""); }
+  if (c.openQuestions?.length) { L.push("## 待你验证的开放问题"); c.openQuestions.forEach((x) => L.push(`- ${x}`)); L.push(""); }
+  if (c.cheapestTests?.length) { L.push("## 最便宜的验证"); c.cheapestTests.forEach((x) => L.push(`- ${x}`)); L.push(""); }
+  if (c.aiTake) { L.push("## AI 视角(仅参考)", c.aiTake); }
+  return L.join("\n").trim();
+}

@@ -261,14 +261,17 @@ const server = http.createServer(async (req, res) => {
         const runConfig = body.runConfig && typeof body.runConfig === "object" ? body.runConfig : undefined;
         const posture = body.posture || runConfig?.posture || "roast";
         sseSend(res, "deliberate-start", { discussionId: d.id, posture });
+        // 用户补充/纠正(陪练「补充并重接」)+ 上游交接文档(MD,如 方向卡→议会 / 证据简报→陪练)都折进 brief,本站按"最新理解"跑。
+        const clarification = typeof body.clarification === "string" ? body.clarification.trim() : "";
+        if (clarification) { try { addTurn({ discussionId: d.id, round: 0, speaker: "you", role: "user", body: clarification, citations: [] }); } catch (e) { console.error("[roast-api] addTurn(clarify) failed:", e?.message || e); } }
+        const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
+        const fresh = getDiscussion(d.id);
+        const userClar = (fresh?.turns || []).filter((t) => t.role === "user" || t.speaker === "you").map((t) => String(t.body || "").trim()).filter(Boolean);
+        let effBrief = d.brief;
+        if (userClar.length) effBrief += `\n\n用户后续补充/纠正(按此理解,优先于上面的初稿):\n${userClar.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
+        if (handoffDoc) effBrief += `\n\n上一站交接来的文档(请基于它推进):\n${handoffDoc}`;
         if (posture === "clarify") {
           // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
-          // 用户补充/纠正:存为 turn,并把所有用户补充并进 brief,让接力按"最新理解"重跑(而非原始 brief)。
-          const clarification = typeof body.clarification === "string" ? body.clarification.trim() : "";
-          if (clarification) { try { addTurn({ discussionId: d.id, round: 0, speaker: "you", role: "user", body: clarification, citations: [] }); } catch (e) { console.error("[roast-api] addTurn(clarify) failed:", e?.message || e); } }
-          const fresh = getDiscussion(d.id);
-          const userClar = (fresh?.turns || []).filter((t) => t.role === "user" || t.speaker === "you").map((t) => String(t.body || "").trim()).filter(Boolean);
-          const effBrief = userClar.length ? `${d.brief}\n\n用户后续补充/纠正(按此理解,优先于上面的初稿):\n${userClar.map((c, i) => `${i + 1}. ${c}`).join("\n")}` : d.brief;
           const relayRes = await runRelay(
             { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys, runConfig },
             (ev, data) => {
@@ -281,7 +284,7 @@ const server = http.createServer(async (req, res) => {
           try { saveRelay(d.id, relayRes); } catch (e) { console.error("[roast-api] saveRelay failed:", e?.message || e); }
         } else {
         await runDeliberation(
-          { mode: d.mode, brief: d.brief, evidence: evidenceForAgents, byoKeys, runConfig, posture },
+          { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys, runConfig, posture },
           (ev, data) => {
             if (ev === "viewpoint") {
               // 引用校验:丢弃不存在于信息板的证据 id(不编造)
@@ -367,6 +370,8 @@ const server = http.createServer(async (req, res) => {
       const providerId = String(body.provider || "");
       const fromArtifactId = body.fromArtifactId ? String(body.fromArtifactId) : null;
       const instruction = body.instruction ? String(body.instruction).slice(0, 2000) : "";
+      // 交接来的方案文档(MD,如 方向卡/收敛方案 → 产出):优先作为产出的"方案源"
+      const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
       const validTypes = ["copy", "prd", "design_doc", "code_sketch", "image"];
       if (!validTypes.includes(type)) return json(res, 400, { ok: false, error: "invalid type" });
       if (!providerId) return json(res, 400, { ok: false, error: "provider required" });
@@ -386,7 +391,7 @@ const server = http.createServer(async (req, res) => {
           type,
           mode,
           brief: d.brief,
-          conclusion: d.conclusion,
+          conclusion: handoffDoc || d.conclusion,
           evidence: d.evidencePack?.items || [],
           sourceContent,
           instruction,
