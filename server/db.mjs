@@ -122,6 +122,7 @@ export function getDb() {
   try { db.exec(`ALTER TABLE viewpoints ADD COLUMN verification TEXT`); } catch {}
   try { db.exec(`ALTER TABLE discussions ADD COLUMN converged TEXT`); } catch {}
   try { db.exec(`ALTER TABLE discussions ADD COLUMN clarify TEXT`); } catch {} // 想清楚(clarify)结构化产出
+  try { db.exec(`ALTER TABLE discussions ADD COLUMN relay TEXT`); } catch {} // 跨模型接力(hops + 方向卡)
   return db;
 }
 
@@ -263,6 +264,7 @@ export function getDiscussion(id) {
     conclusion: d.conclusion,
     converged: d.converged ? JSON.parse(d.converged) : null,
     clarify: d.clarify ? JSON.parse(d.clarify) : null,
+    relay: d.relay ? JSON.parse(d.relay) : null,
     evidencePack: d.evidence_pack ? JSON.parse(d.evidence_pack) : null,
     roles: d.roles ? JSON.parse(d.roles) : null,
     createdAt: d.created_at,
@@ -290,6 +292,13 @@ export function saveClarify(id, clarify) {
   getDb()
     .prepare(`UPDATE discussions SET clarify = ?, updated_at = ? WHERE id = ?`)
     .run(clarify ? JSON.stringify(clarify) : null, new Date().toISOString(), id);
+}
+
+// 跨模型接力产出落库(hops + 方向卡;可重跑覆盖)
+export function saveRelay(id, relay) {
+  getDb()
+    .prepare(`UPDATE discussions SET relay = ?, updated_at = ? WHERE id = ?`)
+    .run(relay ? JSON.stringify(relay) : null, new Date().toISOString(), id);
 }
 
 export function finalizeDiscussion(id, conclusion, converged) {

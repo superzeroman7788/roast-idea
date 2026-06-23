@@ -21,6 +21,9 @@ import {
   CurationStatus,
   ConvergedOutput,
   ClarifyOutput,
+  RelayHop,
+  DirectionCard,
+  RELAY_LENS_CN,
   Posture,
   POSTURE_LABEL,
   POSTURE_HINT,
@@ -196,7 +199,9 @@ function App() {
   const [replyOpen, setReplyOpen] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [converged, setConverged] = useState<ConvergedOutput | null>(null);
-  const [clarify, setClarify] = useState<ClarifyOutput | null>(null); // 想清楚(clarify)结构化产出
+  const [clarify, setClarify] = useState<ClarifyOutput | null>(null); // 想清楚(旧单脑,保留兼容)
+  const [relayHops, setRelayHops] = useState<RelayHop[]>([]); // 跨模型接力轨迹
+  const [relayCard, setRelayCard] = useState<DirectionCard | null>(null); // 方向卡
   // 选角配置(§2.1)
   const [showSeatConfig, setShowSeatConfig] = useState(false);
   const [personaLib, setPersonaLib] = useState<{ functional: PersonaInfo[]; opinionated: { idea: PersonaInfo[]; copy: PersonaInfo[] }; providers: { id: string; label: string }[] } | null>(null);
@@ -262,7 +267,7 @@ function App() {
     setRunError(""); setBusy(true); setReconActive(true);
     setPack(null); setExcludedIds(new Set());
     setDiscussion(null); setTurns([]); setConclusion(""); setConverged(null);
-    setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
     setAttachments([]); setPhase("opening"); setReconElapsed(0);
     const t0 = Date.now();
     const tick = setInterval(() => { if (!cancelled(t)) setReconElapsed(Math.round((Date.now() - t0) / 1000)); }, 250);
@@ -309,7 +314,7 @@ function App() {
     const t = ++token.current;
     setReconActive(false);
     setRunError(""); setBusy(true); setDeliberating(true); setDiscussion(null); setTurns([]); setPack(null); setConclusion(""); setConverged(null);
-    setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
     setAttachments([]); setPhase("opening"); startTimer();
     let newId: string | null = null;
     let serverErr = "";
@@ -336,6 +341,8 @@ function App() {
           else if (ev === "verification") setViewpoints((p) => p.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v)));
           else if (ev === "deliberation") setDeliberation(d as Deliberation);
           else if (ev === "clarify") setClarify(d as ClarifyOutput);
+          else if (ev === "relay-hop") setRelayHops((p) => [...p, d as RelayHop]);
+          else if (ev === "relay-card") setRelayCard(d as DirectionCard);
           else if (ev === "seat-failed") setDelibFails((p) => [...p, { seat: d.seat, roleAngle: d.roleAngle, error: d.error || "" }]);
           else if (ev === "error") setRunError(d.error);
         },
@@ -410,7 +417,7 @@ function App() {
     setDiscussion(null); setTurns([]); setPack(null); setConclusion(""); setConverged(null);
     setPhase("drafting"); setUserInput(""); setRunError(""); setAttachments([]); setExcludedIds(new Set());
     setArtifacts([]); setRefineFor(null); setRefineText(""); setProduceType("copy");
-    setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]);
+    setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]);
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
   }
@@ -441,6 +448,7 @@ function App() {
       setConverged(dis.converged || null);
       setArtifacts(dis.artifacts || []); setRefineFor(null); setRefineText("");
       setViewpoints(dis.viewpoints || []); setDeliberation(dis.deliberation || null); setClarify(dis.clarify || null); setDelibFails([]);
+      setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null);
       setCuration(deriveCuration(dis.humanSignals || [])); setReplyOpen(null); setReplyText("");
       setPhase(dis.status === "finalized" ? "finalized" : "awaiting-user");
       setShowHistory(false);
@@ -502,7 +510,7 @@ function App() {
     if (!discussion || deliberating) return;
     const usePosture = postureOverride || runConfig?.posture || "clarify";
     const t = ++token.current;
-    setDeliberating(true); setPhase("responding"); startTimer(); setRunError(""); setViewpoints([]); setDeliberation(null); setClarify(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    setDeliberating(true); setPhase("responding"); startTimer(); setRunError(""); setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
     try {
       await streamSSE(
         `/api/discussion/${discussion.id}/deliberate`,
@@ -513,6 +521,8 @@ function App() {
           else if (ev === "verification") setViewpoints((prev) => prev.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v)));
           else if (ev === "deliberation") setDeliberation(d as Deliberation);
           else if (ev === "clarify") setClarify(d as ClarifyOutput);
+          else if (ev === "relay-hop") setRelayHops((p) => [...p, d as RelayHop]);
+          else if (ev === "relay-card") setRelayCard(d as DirectionCard);
           else if (ev === "seat-failed") setDelibFails((prev) => [...prev, { seat: d.seat, roleAngle: d.roleAngle, error: d.error || "" }]);
           else if (ev === "error") setRunError(d.error);
         },
@@ -610,7 +620,7 @@ function App() {
   // 议会主屏:有审议观点(或审议中)→ 整屏切到白箱人策展专屏(综述左/分歧图中/人策展卡右)
   const posture: Posture = (runConfig?.posture as Posture) || "clarify";
   // 想清楚:只跑主脑出结构化面板;议会(council/roast):多席 orb/人策展
-  const clarifyMode = started && posture === "clarify" && !reconActive && (clarify !== null || deliberating);
+  const clarifyMode = started && posture === "clarify" && !reconActive && (relayHops.length > 0 || relayCard !== null || clarify !== null || deliberating);
   const delibMode = started && posture !== "clarify" && (viewpoints.length > 0 || deliberating);
   // 单 key 时一个厂商可兼多 persona,故策展状态按「席位 = 厂商+角色」聚合,不按厂商折叠
   const personaStatus = (seat: string, roleAngle: string): CurationStatus => {
@@ -778,6 +788,57 @@ function App() {
     );
   };
   // 想清楚(clarify §2.2):主脑结构化共创面板 —— 重述 + 关键追问 + 建设性角度 + 最尖锐张力 + 一键送进议会
+  // 方向卡(Spec §10.1 Direction Convergence Card)
+  const directionCard = (c: DirectionCard) => (
+    <div className="dir-card">
+      <div className="dc-title">方向卡 · 你现在想明白了什么</div>
+      {c.oneLine && <div className="dc-oneline">{c.oneLine}</div>}
+      <div className="dc-grid">
+        {c.clear.length > 0 && <div className="dc-sec"><div className="dc-h ok">已稳定</div><ul>{c.clear.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
+        {c.expandedAngles.length > 0 && <div className="dc-sec"><div className="dc-h cy">接力铺开的新角度</div><ul>{c.expandedAngles.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
+        {c.assumptions.length > 0 && <div className="dc-sec"><div className="dc-h am">关键假设</div><ul>{c.assumptions.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
+        {c.dontBuildYet.length > 0 && <div className="dc-sec"><div className="dc-h rd">现在先别建</div><ul>{c.dontBuildYet.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
+      </div>
+      {c.paths.length > 0 && <div className="dc-paths"><div className="dc-h">2-3 条路径</div>{c.paths.map((p, i) => <div className="dc-path" key={i}><b>{p.name}</b>{p.fit && <span className="dp-fit">{p.fit}</span>}{p.risk && <span className="dp-risk">风险:{p.risk}</span>}</div>)}</div>}
+      {c.firstNarrowing && <div className="dc-narrow"><b>推荐先收窄 →</b> {c.firstNarrowing}</div>}
+      {c.decisionsForYou.length > 0 && <div className="dc-decide"><div className="dc-h">需你拍板(AI 不替你定)</div><ul>{c.decisionsForYou.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
+      {c.inviteYourInput && <div className="dc-invite">💬 {c.inviteYourInput}</div>}
+    </div>
+  );
+  // 跨模型接力面板:接力轨迹(白箱)+ 方向卡 + 升级议会
+  const relayPanel = () => {
+    const lensCN = (l?: string | null) => (l ? (RELAY_LENS_CN[l] || l) : null);
+    if (!relayHops.length && !relayCard) return <div className="clarify-wrap"><div className="clarify-loading">{deliberating ? "接力启动中…" : "(无)"}</div></div>;
+    return (
+      <div className="clarify-wrap relay-wrap">
+        <div className="relay-trace">
+          <div className="rl-h">跨模型接力 · 想清楚{relayHops.length ? ` · ${relayHops.length} 棒` : ""}</div>
+          {relayHops.map((h) => (
+            <div className={`relay-hop hop-${h.role}${h.failed ? " failed" : ""}`} key={h.order}>
+              <div className="rh-top">
+                <span className="rh-no">棒{h.order}</span>
+                <span className="rh-seat">{h.seat}</span>
+                <span className="rh-role">{h.role === "seed" ? "立框" : h.role === "synth" ? "收棒" : "接力"}</span>
+                {h.lens && <span className="rh-lens">{lensCN(h.lens)}</span>}
+              </div>
+              {h.failed ? <div className="rh-fail">掉棒:{h.error}</div> : <>
+                {h.role === "seed" && h.framing?.oneLine && <div className="rh-frame">{h.framing.oneLine}</div>}
+                {h.accepted && <div className="rh-accept">接受核心:{h.accepted}</div>}
+                {h.added.length > 0 && <ul className="rh-added">{h.added.map((a, i) => <li key={i}>{a}</li>)}</ul>}
+              </>}
+            </div>
+          ))}
+          {deliberating && !relayCard && <div className="relay-running"><span className="blink" />接力中…(主脑立框 → 各模型扩大思考面 → 收棒出方向卡)</div>}
+        </div>
+        {relayCard && directionCard(relayCard)}
+        <div className="clarify-acts">
+          <button className="btn primary" disabled={deliberating || busy} onClick={() => switchPosture("roast")}>送进议会拷问 →</button>
+          <button className="btn ghost" disabled={deliberating || busy} onClick={() => switchPosture("council")}>温和审议</button>
+          <button className="btn ghost sm" disabled={deliberating || busy} onClick={() => deliberate("clarify")}>{deliberating ? "接力中…" : "重新接力"}</button>
+        </div>
+      </div>
+    );
+  };
   const clarifyPanel = () => {
     if (!clarify) return <div className="clarify-wrap"><div className="clarify-loading">{deliberating ? "主脑在帮你把它理清…" : "(无)"}</div></div>;
     return (
@@ -944,7 +1005,7 @@ function App() {
             <span className={`step ${phase === "finalizing" ? "now" : phase === "finalized" ? "done" : ""}`}>收敛</span>
           </div>
           {clarifyMode ? (
-            <div className="scene clarify-scene">{clarifyPanel()}</div>
+            <div className="scene clarify-scene">{relayPanel()}</div>
           ) : (
           <div className="scene">
             {delibMode ? (councilOrb() || <CouncilGraph seats={graphSeats} evidence={evNodes} phase={GRAPH_PHASE[phase]} revealed={graphSeats.length} showDissentOnly={dissentOnly} speaking={speaking} />)
@@ -1270,7 +1331,7 @@ function App() {
           ) : clarifyMode ? (
             <>
               <button className="btn primary" onClick={() => switchPosture("roast")} disabled={deliberating || busy} title="理清了 → 送进议会拷问">送进议会 →</button>
-              <button className="btn ghost sm" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="让主脑再理一轮">{deliberating ? "理清中…" : "重新理清"}</button>
+              <button className="btn ghost sm" onClick={() => deliberate("clarify")} disabled={deliberating || busy} title="再跑一轮跨模型接力">{deliberating ? "接力中…" : "重新接力"}</button>
               <button className="btn ghost sm" onClick={sendUser} disabled={busy || !userInput.trim()} title="回答主脑的追问 / 补充细节">发送</button>
               <button className="btn ghost sm" onClick={openRecon} disabled={busy || deliberating} title="打开事实侦察雷达:查看/检索证据">🔍 侦察证据</button>
             </>

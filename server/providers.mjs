@@ -10,6 +10,9 @@ import {
   buildImagePrompt,
   buildOrganizerPrompt,
   buildClarifyPrompt,
+  buildRelaySeedPrompt,
+  buildRelayHopPrompt,
+  buildRelaySynthPrompt,
   buildCriticViewpointsPrompt,
   buildChairmanSummaryPrompt,
   buildVerifierPrompt,
@@ -84,7 +87,7 @@ const ANTHROPIC = {
   label: "Claude",
   env: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
   modelEnv: "ANTHROPIC_MODEL",
-  defaultModel: "claude-3-5-haiku-latest",
+  defaultModel: "claude-haiku-4-5-20251001",
 };
 
 const ALL = [...OPENAI_COMPATIBLE, ANTHROPIC];
@@ -658,6 +661,83 @@ export async function runClarify({ mode, brief, evidence, byoKeys, runConfig }, 
     emit("seat-failed", { seat: brain.label, roleAngle: "organizer", round: 1, error: compact(e?.message || String(e)) });
     return { clarify: null, simulated: false };
   }
+}
+
+// ============ 跨模型接力(想清楚引擎;串行跑 Spec lenses)============
+// Claude 立框 → 假设猎手 → 漂移检测 → 收棒出方向卡。每棒换模型、接受核心 + 扩大思考范围。
+const RELAY_CHAIN_PREF = ["claude", "openai", "deepseek", "kimi"]; // 主力顺序;缺谁从可用池补
+const RELAY_LENS_BY_HOP = [null, "assumption-finder", "drift-detector", null]; // 中间棒戴镜头(对齐 Spec)
+
+function normFraming(o) {
+  return { oneLine: clean(o?.oneLine), clear: asStrArr(o?.clear), assumptions: asStrArr(o?.assumptions), openQuestions: asStrArr(o?.openQuestions) };
+}
+function normCard(o) {
+  const paths = (Array.isArray(o?.paths) ? o.paths : []).map((p) => ({ name: clean(p?.name), fit: clean(p?.fit), risk: clean(p?.risk) })).filter((p) => p.name);
+  return {
+    oneLine: clean(o?.oneLine), clear: asStrArr(o?.clear), expandedAngles: asStrArr(o?.expandedAngles),
+    assumptions: asStrArr(o?.assumptions), paths, firstNarrowing: clean(o?.firstNarrowing),
+    decisionsForYou: asStrArr(o?.decisionsForYou), inviteYourInput: clean(o?.inviteYourInput), dontBuildYet: asStrArr(o?.dontBuildYet),
+  };
+}
+
+export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, onEvent) {
+  const emit = (ev, data) => onEvent && onEvent(ev, data);
+  const configured = getConfiguredProviders(byoKeys);
+  if (configured.length < 2) { emit("error", { error: "接力至少需要 2 家可用模型" }); return { hops: [], card: null, models: [] }; }
+  // 按主力顺序排链(Claude→OpenAI→DeepSeek→Kimi),缺的从可用池补,去重取前 4
+  const byId = new Map(configured.map((e) => [e.provider.id, e]));
+  const chain = [];
+  for (const id of RELAY_CHAIN_PREF) { const e = byId.get(id); if (e && !chain.includes(e)) chain.push(e); }
+  for (const e of configured) { if (chain.length >= 4) break; if (!chain.includes(e)) chain.push(e); }
+  const links = chain.slice(0, Math.min(4, chain.length));
+  const N = links.length;
+  const models = links.map((l) => l.provider.label);
+  const hops = [];
+  let framing = null;
+  const allAdded = [];
+  for (let i = 0; i < N; i++) {
+    const { provider, apiKey } = links[i];
+    const isSeed = i === 0;
+    const isSynth = i === N - 1; // 最后一棒收棒(N≥2)
+    const lens = (!isSeed && !isSynth) ? (RELAY_LENS_BY_HOP[i] || "assumption-finder") : null;
+    const role = isSeed ? "seed" : isSynth ? "synth" : "expand";
+    const started = Date.now();
+    try {
+      if (isSeed) {
+        const out = await chatJSON(provider, apiKey, buildRelaySeedPrompt({ mode, brief, evidence }));
+        framing = normFraming(out);
+        const hop = { order: i + 1, seat: provider.label, role, lens: null, added: [], framing, latencyMs: Date.now() - started };
+        hops.push(hop); emit("relay-hop", hop);
+      } else if (isSynth) {
+        // 收棒:依次尝试(本棒模型 → 主脑 → 其余),单模型 429/挂掉不丢方向卡
+        const synthOrder = [links[i], links[0], ...links].filter((v, idx, a) => a.indexOf(v) === idx);
+        let card = null, synthSeat = provider.label, lastErr = "";
+        for (const cand of synthOrder) {
+          try {
+            const out = await chatJSON(cand.provider, cand.apiKey, buildRelaySynthPrompt({ mode, brief, framing, allAdded }));
+            card = normCard(out); synthSeat = cand.provider.label; break;
+          } catch (e) { lastErr = compact(e?.message || String(e)); }
+        }
+        const hop = { order: i + 1, seat: synthSeat, role, lens, added: [], failed: !card, error: card ? undefined : lastErr, latencyMs: Date.now() - started };
+        hops.push(hop); emit("relay-hop", hop);
+        if (card) emit("relay-card", card);
+        return { hops, card, models };
+      } else {
+        const out = await chatJSON(provider, apiKey, buildRelayHopPrompt({ framing, lens }));
+        const added = asStrArr(out?.added);
+        if (out?.framing) framing = normFraming(out.framing);
+        allAdded.push(...added);
+        const hop = { order: i + 1, seat: provider.label, role, lens, accepted: clean(out?.accepted), added, framing, latencyMs: Date.now() - started };
+        hops.push(hop); emit("relay-hop", hop);
+      }
+    } catch (e) {
+      const hop = { order: i + 1, seat: provider.label, role, lens, added: [], failed: true, error: compact(e?.message || String(e)), latencyMs: Date.now() - started };
+      hops.push(hop); emit("relay-hop", hop);
+      if (isSeed) { emit("error", { error: "立框失败:" + hop.error }); return { hops, card: null, models }; }
+      // 中间棒失败:跳过继续(framing 不更新);收棒失败:无 card
+    }
+  }
+  return { hops, card: null, models };
 }
 
 export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfig, posture }, onEvent) {

@@ -13,6 +13,7 @@ import {
   listProduceProviders,
   runDeliberation,
   runClarify,
+  runRelay,
   runConverge,
   listPersonas,
 } from "./providers.mjs";
@@ -32,6 +33,7 @@ import {
   saveViewpoint,
   saveDeliberation,
   saveClarify,
+  saveRelay,
   clearViewpoints,
   updateViewpointVerification,
   saveSignal,
@@ -260,17 +262,17 @@ const server = http.createServer(async (req, res) => {
         const posture = body.posture || runConfig?.posture || "roast";
         sseSend(res, "deliberate-start", { discussionId: d.id, posture });
         if (posture === "clarify") {
-          // 想清楚(§2.2):只跑主脑出结构化共创白箱,不召反方/不裁决
-          await runClarify(
+          // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
+          const relayRes = await runRelay(
             { mode: d.mode, brief: d.brief, evidence: evidenceForAgents, byoKeys, runConfig },
             (ev, data) => {
-              if (ev === "clarify") {
-                try { saveClarify(d.id, data); } catch (e) { console.error("[roast-api] saveClarify failed:", e?.message || e); }
-                sseSend(res, "clarify", data);
-              } else if (ev === "seat-failed") sseSend(res, "seat-failed", data);
+              if (ev === "relay-hop") sseSend(res, "relay-hop", data);
+              else if (ev === "relay-card") sseSend(res, "relay-card", data);
+              else if (ev === "seat-failed") sseSend(res, "seat-failed", data);
               else if (ev === "error") sseSend(res, "error", data);
             },
           );
+          try { saveRelay(d.id, relayRes); } catch (e) { console.error("[roast-api] saveRelay failed:", e?.message || e); }
         } else {
         await runDeliberation(
           { mode: d.mode, brief: d.brief, evidence: evidenceForAgents, byoKeys, runConfig, posture },

@@ -66,6 +66,7 @@ export type Discussion = {
   deliberation?: Deliberation | null;
   converged?: ConvergedOutput | null;
   clarify?: ClarifyOutput | null;
+  relay?: RelayOutput | null;
 };
 
 // 透明投票(裁决不由主席独断;展示全 tally,标"仅参考")
@@ -110,6 +111,45 @@ export type ClarifyOutput = {
   constructiveAngles: string[]; // 建设性角度:怎么把它做得更强
   sharpestTension: string;      // 最尖锐的一个张力/待解(诚实,但"待解决"非"杀死")
   createdAt?: string;
+};
+
+// 跨模型接力(想清楚引擎):方案在 4 家模型间逐棒传递,每棒接受核心 + 扩大思考范围(非盯小处)
+export type RelayFraming = { oneLine: string; clear: string[]; assumptions: string[]; openQuestions: string[] };
+export type RelayHop = {
+  order: number;        // 1..N
+  seat: string;         // 出品厂商 label(Claude/OpenAI/DeepSeek/Kimi)
+  lens?: string | null; // 思考镜头(某一棒戴):drift-detector / assumption-finder …
+  role: "seed" | "expand" | "synth";
+  accepted?: string;    // 接受的扎实核心(expand 棒)
+  added: string[];      // 这一棒新铺开的角度/维度(扩大思考范围的产物)
+  framing?: RelayFraming | null; // 该棒修订后的框架(seed/expand)
+  failed?: boolean;
+  error?: string;
+  latencyMs?: number;
+};
+// 方向卡(两层:AI 向你发问定方向 + 邀你主动补判断)。MVP 人驱动。
+export type DirectionCard = {
+  oneLine: string;                 // 一句话内核
+  clear: string[];                 // 已稳定(几棒没动的共识核)
+  expandedAngles: string[];        // 接力铺开的新角度
+  assumptions: string[];           // 关键假设
+  paths: { name: string; fit: string; risk: string }[]; // 2-3 条路径带权衡
+  firstNarrowing: string;          // 推荐先收窄哪一刀
+  decisionsForYou: string[];       // AI → 你:需你拍板的决策
+  inviteYourInput: string;         // 邀你基于具体情况主动补的判断
+  dontBuildYet: string[];          // 现在先别建什么
+};
+export type RelayOutput = {
+  hops: RelayHop[];
+  card: DirectionCard | null;
+  models: string[];
+  createdAt?: string;
+};
+
+export const RELAY_LENS_CN: Record<string, string> = {
+  "drift-detector": "漂移检测",
+  "assumption-finder": "假设猎手",
+  "focus-finder": "聚焦",
 };
 
 // 审议引擎(白箱):结构化署名观点 + Fusion 式审议综述
