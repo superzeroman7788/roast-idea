@@ -25,8 +25,6 @@ import {
   DirectionCard,
   RELAY_LENS_CN,
   Posture,
-  POSTURE_LABEL,
-  POSTURE_HINT,
   RunConfig,
   PersonaInfo,
   Tab,
@@ -39,7 +37,6 @@ import {
   cardToMd,
   convergedToMd,
 } from "./discussion";
-import { CouncilGraph, GraphPhase, GraphSeat } from "./CouncilGraph";
 import { Landing } from "./Landing";
 import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
 
@@ -139,36 +136,6 @@ async function streamSSE(
   }
 }
 
-// 讨论区固定排序:赞成方在前、反对方在后。
-// 你的话 → 主大脑(主持)→ 建设者 → 反对者(需求/可行性/魔鬼,依次)。
-const ROLE_ORDER: Record<string, number> = {
-  user: -1,
-  host: 0,
-  builder: 1,
-  "demand-skeptic": 2,
-  feasibility: 3,
-  "devils-advocate": 4,
-  system: 9,
-};
-function sortTurns(turns: Turn[]): Turn[] {
-  return [...turns].sort((a, b) => {
-    if (a.round !== b.round) return a.round - b.round; // 轮次先后不变
-    const ra = ROLE_ORDER[a.role] ?? 8;
-    const rb = ROLE_ORDER[b.role] ?? 8;
-    if (ra !== rb) return ra - rb; // 同一轮内按角色:赞成在前、反对在后
-    return (a.seq ?? 0) - (b.seq ?? 0);
-  });
-}
-
-const GRAPH_PHASE: Record<Phase, GraphPhase> = {
-  drafting: "idle",
-  opening: "debating",
-  "awaiting-user": "verdict",
-  responding: "debating",
-  finalizing: "verdict",
-  finalized: "verdict",
-};
-
 function App() {
   const [mode, setMode] = useState<DiscussionMode>("idea");
   const [brief, setBrief] = useState(SAMPLE_BRIEF.idea);
@@ -257,6 +224,16 @@ function App() {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [turns, conclusion]);
 
+  // 「送到 ▾」下拉:点击别处 / Esc 关闭
+  useEffect(() => {
+    if (!sendMenuFor) return;
+    const onDown = (e: MouseEvent) => { const el = e.target as HTMLElement; if (el.closest(".send") || el.closest(".send-menu")) return; setSendMenuFor(null); };
+    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") setSendMenuFor(null); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onEsc); };
+  }, [sendMenuFor]);
+
   function stopTimer() { if (timer.current) clearInterval(timer.current); timer.current = null; }
   function startTimer() {
     stopTimer();
@@ -277,117 +254,6 @@ function App() {
 
   function removeAttach(i: number) {
     setAttachments((prev) => prev.filter((_, idx) => idx !== i));
-  }
-
-  // 事实侦察(议会前):/api/discussion/start 只建讨论 + 检索证据(不审议),进雷达页;审完证据再开议会。
-  // 证据 id 在这一次建讨论时定稿(E1..En 稳定),雷达上的逐条排除经 excludedIds 传给后续 /deliberate 精确生效。
-  async function scout() {
-    const toSend = attachments.slice();
-    const t = ++token.current;
-    setRunError(""); setBusy(true); setReconActive(true);
-    setPack(null); setExcludedIds(new Set());
-    setDiscussion(null); setTurns([]); setConclusion(""); setConverged(null);
-    setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
-    setAttachments([]); setPhase("opening"); setReconElapsed(0);
-    const t0 = Date.now();
-    const tick = setInterval(() => { if (!cancelled(t)) setReconElapsed(Math.round((Date.now() - t0) / 1000)); }, 250);
-    let serverErr = "";
-    try {
-      await streamSSE(
-        "/api/discussion/start",
-        { mode, brief, redacted: false, skipOpening: true, attachments: toSend, excludedIds: [], runConfig: runConfig || undefined },
-        (ev, d) => {
-          if (cancelled(t)) return;
-          if (ev === "board") setPack(d.pack);
-          else if (ev === "discussion") setDiscussion({ id: d.id, title: d.title, seats: d.seats });
-          else if (ev === "error") { serverErr = d.error; setRunError(d.error); }
-        },
-        () => cancelled(t),
-      );
-      if (!cancelled(t) && serverErr) throw new Error(serverErr);
-    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
-    finally { clearInterval(tick); if (!cancelled(t)) setBusy(false); }
-  }
-
-  // 雷达页 →「开议会(基于证据)」:复用现有 discussion(scout 已建)直接审议,带上排除的证据。
-  function proceedFromRecon() { setReconActive(false); deliberate(); }
-
-  // 常驻「侦察证据」入口:已有证据 → 直接看雷达(不重抓、不破坏当前讨论);没有 → 检索。
-  function openRecon() {
-    if (busy || deliberating) return;
-    if (discussion && pack?.items?.length) setReconActive(true);
-    else scout();
-  }
-
-  // 顶部姿态段控:切 posture;已有讨论则按新姿态即时重跑(随时切共创↔对抗)
-  function switchPosture(p: Posture) {
-    if (p === posture) return;
-    setRunConfig((rc) => (rc ? { ...rc, posture: p } : rc));
-    if (discussion && started && !busy && !deliberating) { setReconActive(false); deliberate(p); }
-  }
-
-  // 议会主屏:开场 → 建讨论(跳过对话开场)→ 直接白箱审议(R1/R2/Verifier/综述),一个 token 串起来。
-  // redactedOverride:不检索直接开议会传 true(onClick 直连收到的是事件对象,非 boolean → 回落 !retrieve)。
-  async function openCouncil(redactedOverride?: boolean) {
-    const redacted = typeof redactedOverride === "boolean" ? redactedOverride : !retrieve;
-    const toSend = attachments.slice();
-    const t = ++token.current;
-    setReconActive(false);
-    setRunError(""); setBusy(true); setDeliberating(true); setDiscussion(null); setTurns([]); setPack(null); setConclusion(""); setConverged(null);
-    setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
-    setAttachments([]); setPhase("opening"); startTimer();
-    let newId: string | null = null;
-    let serverErr = "";
-    try {
-      await streamSSE(
-        "/api/discussion/start",
-        { mode, brief, redacted, skipOpening: true, attachments: toSend, excludedIds: [...excludedIds], runConfig: runConfig || undefined },
-        (ev, d) => {
-          if (cancelled(t)) return;
-          if (ev === "board") setPack(d.pack);
-          else if (ev === "discussion") { newId = d.id; setDiscussion({ id: d.id, title: d.title, seats: d.seats }); }
-          else if (ev === "error") { serverErr = d.error; setRunError(d.error); }
-        },
-        () => cancelled(t),
-      );
-      if (cancelled(t) || !newId) throw new Error(serverErr || "未能建立讨论");
-      setPhase("responding");
-      await streamSSE(
-        `/api/discussion/${newId}/deliberate`,
-        { runConfig: runConfig || undefined, posture: runConfig?.posture || "clarify" },
-        (ev, d) => {
-          if (cancelled(t)) return;
-          if (ev === "viewpoint") setViewpoints((p) => [...p, d as Viewpoint]);
-          else if (ev === "verification") setViewpoints((p) => p.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v)));
-          else if (ev === "deliberation") setDeliberation(d as Deliberation);
-          else if (ev === "clarify") setClarify(d as ClarifyOutput);
-          else if (ev === "relay-hop") setRelayHops((p) => [...p, d as RelayHop]);
-          else if (ev === "relay-card") setRelayCard(d as DirectionCard);
-          else if (ev === "seat-failed") setDelibFails((p) => [...p, { seat: d.seat, roleAngle: d.roleAngle, error: d.error || "" }]);
-          else if (ev === "error") setRunError(d.error);
-        },
-        () => cancelled(t),
-      );
-      if (!cancelled(t)) setPhase("awaiting-user");
-    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("drafting"); } }
-    finally { if (!cancelled(t)) { setBusy(false); setDeliberating(false); stopTimer(); } }
-  }
-
-  async function respond(text: string, soloVal: boolean = solo, atts: AttachFile[] = []) {
-    if (!discussion) return;
-    const t = ++token.current;
-    setBusy(true); setRunError(""); setPhase("responding"); startTimer();
-    const nextRound = Math.max(0, ...turns.map((x) => x.round)) + 1;
-    if (text) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text, citations: [] });
-    try {
-      await streamSSE(`/api/discussion/${discussion.id}/respond`, { userTurn: text, solo: soloVal, attachments: atts }, (ev, d) => {
-        if (cancelled(t)) return;
-        if (ev === "turn") appendTurn(d);
-        else if (ev === "round-done") setPhase("awaiting-user");
-        else if (ev === "error") setRunError(d.error);
-      }, () => cancelled(t));
-    } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
-    finally { if (!cancelled(t)) { setBusy(false); stopTimer(); } }
   }
 
   async function finalize() {
@@ -440,6 +306,9 @@ function App() {
     setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]);
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
+    // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = "";
+    setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
   async function refreshHistory() {
@@ -471,6 +340,10 @@ function App() {
       setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null);
       setCuration(deriveCuration(dis.humanSignals || [])); setReplyOpen(null); setReplyText("");
       setPhase(dis.status === "finalized" ? "finalized" : "awaiting-user");
+      // 按恢复内容选落点 tab + 清挂起交接/下拉 + 复位议会强度
+      const landTab: Tab = (dis.converged || dis.viewpoints?.length) ? "council" : dis.relay?.card ? "relay" : dis.evidencePack?.items?.length ? "search" : "relay";
+      setTab(landTab); setSendMenuFor(null); pendingHandoff.current = "";
+      setCouncilIntensity((dis.viewpoints || []).some((v: Viewpoint) => v.isHardestKill) ? "roast" : "council");
       setShowHistory(false);
     } catch (e) {
       setRunError((e as Error).message);
@@ -491,10 +364,11 @@ function App() {
     const t = ++token.current;
     setProducing(true); setRunError("");
     setRefineFor(null); setRefineText("");
+    const ho = pendingHandoff.current; pendingHandoff.current = ""; // 一次性消费,与 relay/council 一致
     try {
       await streamSSE(
         `/api/discussion/${discussion.id}/produce`,
-        { type, provider: providerId, fromArtifactId, instruction, handoff: pendingHandoff.current || undefined },
+        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
@@ -598,18 +472,10 @@ function App() {
     setReplyOpen(null); setReplyText("");
   }
 
-  function sendUser() {
-    const text = userInput.trim();
-    if ((!text && !attachments.length) || busy) return;
-    const toSend = attachments.slice();
-    setUserInput("");
-    setAttachments([]);
-    respond(text, solo, toSend);
-  }
-
   // ===== 四站编排:一个工作台,四站共用同一 discussion;缺则惰性建(顺带检索证据)=====
-  async function ensureDiscussion(): Promise<string | null> {
-    if (discussion) return discussion.id;
+  async function ensureDiscussion(force = false, briefOverride?: string): Promise<string | null> {
+    if (!force && discussion) return discussion.id;
+    const useBrief = briefOverride ?? brief;
     const toSend = attachments.slice();
     const t = ++token.current;
     setRunError(""); setAttachments([]);
@@ -617,7 +483,7 @@ function App() {
     try {
       await streamSSE(
         "/api/discussion/start",
-        { mode, brief, redacted: !retrieve, skipOpening: true, attachments: toSend, excludedIds: [], runConfig: runConfig || undefined },
+        { mode, brief: useBrief, redacted: !retrieve, skipOpening: true, attachments: toSend, excludedIds: [], runConfig: runConfig || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "board") setPack(d.pack);
@@ -632,14 +498,23 @@ function App() {
     } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); return null; }
   }
 
-  // 搜索站:建讨论(顺带检索证据)。证据已在场就只切过去看。
+  // 搜索站:建讨论(顺带检索证据)。已有讨论 → 「重新搜索」强制重建 + 重抓(输入框编辑内容回写 brief)。
   async function runSearch() {
-    setTab("search"); setSendMenuFor(null);
-    if (discussion && pack) return;
+    setTab("search"); setSendMenuFor(null); setRunError("");
+    if (busy || deliberating) return;
+    const rebuild = !!discussion;
+    const edited = userInput.trim();
+    const nb = edited || brief;
+    if (edited) { setBrief(edited); setUserInput(""); }
+    if (rebuild) {
+      setDiscussion(null); setPack(null); setExcludedIds(new Set());
+      setViewpoints([]); setDeliberation(null); setConverged(null); setConclusion("");
+      setRelayHops([]); setRelayCard(null); setArtifacts([]); setCuration({}); setDelibFails([]);
+    }
     setBusy(true); setReconElapsed(0);
     const t0 = Date.now();
     const tick = setInterval(() => setReconElapsed(Math.round((Date.now() - t0) / 1000)), 250);
-    await ensureDiscussion();
+    await ensureDiscussion(rebuild, nb);
     clearInterval(tick); setBusy(false);
   }
 
@@ -651,14 +526,14 @@ function App() {
     if (id) deliberate("clarify", clarification, id, ho || undefined);
   }
 
-  // 议会站:温和/拷问审议。
-  async function runCouncil(intensity: CouncilIntensity = councilIntensity) {
+  // 议会站:温和/拷问审议。clarification=底部补的一句背景(折进 brief)。
+  async function runCouncil(intensity: CouncilIntensity = councilIntensity, clarification?: string) {
     setTab("council"); setSendMenuFor(null);
     setCouncilIntensity(intensity);
     setRunConfig((rc) => (rc ? { ...rc, posture: intensity } : rc));
     const ho = pendingHandoff.current; pendingHandoff.current = "";
     const id = await ensureDiscussion();
-    if (id) deliberate(intensity, undefined, id, ho || undefined);
+    if (id) deliberate(intensity, clarification, id, ho || undefined);
   }
 
   // 议会内部:温和⇄拷问(已有观点则按新强度重跑)
@@ -685,6 +560,9 @@ function App() {
     if (t === "council") return converged || viewpoints.length > 0 ? "done" : "idle";
     return artifacts.length > 0 ? "done" : "idle";
   }
+  // 纯切站(浏览):清旧站报错 + 收下拉(run 函数会另行清,无冲突)
+  function switchTab(tk: Tab) { setTab(tk); setSendMenuFor(null); setRunError(""); }
+
   // 交接:把 from 站的 MD 当输入送到 to 站,切到 to 并运行
   function sendHandoff(from: Tab, to: Tab) {
     const md = docFor(from);
@@ -693,45 +571,10 @@ function App() {
     setSendMenuFor(null);
     if (to === "relay") runRelay();
     else if (to === "council") runCouncil();
-    else setTab(to); // 产出由厂商按钮触发,handoff 待用
+    else switchTab(to); // 产出由厂商按钮触发,handoff 待用
   }
 
-  // 图谱席位:讨论席位 + 最近一条发言的引用 → 复用图谱引用连线
-  const graphSeats: GraphSeat[] = useMemo(() => {
-    const all = discussion?.seats || [];
-    const seats = solo ? all.filter((s) => s.role === "host") : all; // solo:图谱只显主脑
-    return seats.map((s) => {
-      const last = [...turns].reverse().find((x) => x.speaker === s.label && !x.failed);
-      return {
-        provider: s.label,
-        roleAngle: s.role,
-        stance: "",
-        objections: (last?.citations || []).map((c) => ({ evidenceId: c.evidenceId, valid: c.valid })),
-      };
-    });
-  }, [discussion, turns, solo]);
-
-  const evNodes = useMemo(
-    () => (pack?.items || []).map((i) => ({ id: i.id, source: i.source, credibility: i.credibility })),
-    [pack],
-  );
-  const orderedTurns = useMemo(() => sortTurns(turns), [turns]);
-
-  // 当前发言者(最近一条非失败的 agent 发言),运行中高光对应节点
-  const speaking = useMemo(() => {
-    if (!busy) return "";
-    for (let i = turns.length - 1; i >= 0; i--) {
-      if (!turns[i].failed && turns[i].role !== "user") return turns[i].speaker;
-    }
-    return "";
-  }, [turns, busy]);
-
   const started = phase !== "drafting";
-  // 议会主屏:有审议观点(或审议中)→ 整屏切到白箱人策展专屏(综述左/分歧图中/人策展卡右)
-  const posture: Posture = (runConfig?.posture as Posture) || "clarify";
-  // 想清楚:只跑主脑出结构化面板;议会(council/roast):多席 orb/人策展
-  const clarifyMode = started && posture === "clarify" && !reconActive && (relayHops.length > 0 || relayCard !== null || clarify !== null || deliberating);
-  const delibMode = started && posture !== "clarify" && (viewpoints.length > 0 || deliberating);
   // 单 key 时一个厂商可兼多 persona,故策展状态按「席位 = 厂商+角色」聚合,不按厂商折叠
   const personaStatus = (seat: string, roleAngle: string): CurationStatus => {
     const sv = viewpoints.filter((x) => x.seat === seat && x.roleAngle === roleAngle);
@@ -797,106 +640,6 @@ function App() {
       </svg>
     );
   };
-  // 事实侦察雷达页(对照 ui-mockup-search.html):真实 pack 映射成光点(按可信度 高青/中琥珀/低红)+ 类别条 + 证据流(可逐条排除)
-  const RECON_CAT: Record<string, string> = {
-    competitor: "竞品", oss: "开源", demand: "需求", pricing: "定价", pain: "痛点",
-    viral: "爆款", userVoice: "用户声音", competitorCopy: "竞品文案", platform: "平台", risk: "风险",
-  };
-  const credCls = (c: string) => (c === "high" ? "cy" : c === "medium" ? "am" : "rd");
-  const credCN = (c: string) => (c === "high" ? "高" : c === "medium" ? "中" : "低");
-  const reconScreen = () => {
-    const items = pack?.items || [];
-    const kept = items.filter((it) => !excludedIds.has(it.id));
-    const catCounts: Record<string, number> = {};
-    kept.forEach((it) => { catCounts[it.category] = (catCounts[it.category] || 0) + 1; });
-    const cats = Object.entries(catCounts).sort((a, b) => b[1] - a[1]);
-    const maxCat = Math.max(1, ...cats.map((c) => c[1]));
-    const sources = [...new Set(kept.map((it) => it.source))];
-    const C = 220;
-    return (
-      <div className="recon-app">
-        <div className="chrome">
-          <div className="dot r" /><div className="dot y" /><div className="dot g" />
-          <div className="title">ROAST · <b>事实侦察</b> · FACT RECON</div>
-          <div className="conn">{busy ? <><span className="blink" />扫描中…</> : <span style={{ color: "var(--green)" }}>✓ 侦察完成 · {kept.length} 条证据待审</span>}</div>
-        </div>
-        <div className="recon-top">
-          <div className="rt-l">侦察目标 · TARGET</div>
-          <div className="rt-t">{brief || "(未填写)"}</div>
-        </div>
-        <div className="recon-grid">
-          <div className="recon-stage">
-            <svg className="radar-svg" viewBox="0 0 440 440" preserveAspectRatio="xMidYMid meet">
-              {[200, 150, 95, 44].map((r, i) => <circle key={i} cx={C} cy={C} r={r} fill="none" stroke={i === 0 ? "#13283e" : "#12253a"} />)}
-              <line x1={C} y1="24" x2={C} y2="416" stroke="#1c3a55" opacity="0.5" />
-              <line x1="24" y1={C} x2="416" y2={C} stroke="#1c3a55" opacity="0.5" />
-              {/* 扫描臂 + 拖尾扇形(SMIL 旋转,全浏览器稳) */}
-              <g>
-                <path d={`M${C},${C} L${C},20 A200,200 0 0,1 ${C + 200 * Math.sin(0.9)},${C - 200 * Math.cos(0.9)} Z`} fill="url(#sweepg)" opacity="0.5" />
-                <line x1={C} y1={C} x2={C} y2="20" stroke="#34e1ff" strokeWidth="1.5" opacity="0.7" />
-                <animateTransform attributeName="transform" type="rotate" from={`0 ${C} ${C}`} to={`360 ${C} ${C}`} dur="3.6s" repeatCount="indefinite" />
-              </g>
-              <defs><radialGradient id="sweepg"><stop offset="0%" stopColor="#34e1ff" stopOpacity="0.35" /><stop offset="100%" stopColor="#34e1ff" stopOpacity="0" /></radialGradient></defs>
-              {/* 证据光点:角度黄金角散布、半径按可信度(高=靠核心) */}
-              {kept.map((it, i) => {
-                const ang = i * 2.39996;
-                const rad = 50 + (it.credibility === "high" ? 0.45 : it.credibility === "medium" ? 0.7 : 0.92) * 150;
-                const x = C + rad * Math.cos(ang), y = C + rad * Math.sin(ang);
-                const col = it.credibility === "high" ? "#34e1ff" : it.credibility === "medium" ? "#ffb44d" : "#ff5c6a";
-                return <circle key={it.id} cx={x} cy={y} r="4.5" fill={col} style={{ filter: `drop-shadow(0 0 6px ${col})` }}><animate attributeName="opacity" values="0;1" dur="0.5s" begin={`${0.15 * i}s`} fill="freeze" /></circle>;
-              })}
-              {/* 来源标签(雷达外缘,随 viewBox 缩放) */}
-              {sources.slice(0, 6).map((s, i) => {
-                const a = (-90 + i * 60) * (Math.PI / 180);
-                const x = C + 204 * Math.cos(a), y = C + 204 * Math.sin(a);
-                return <text key={i} x={x} y={y} textAnchor="middle" fontFamily="var(--mono)" fontSize="11" fill="#8aa1bc">{s.length > 9 ? s.slice(0, 9) : s}</text>;
-              })}
-              <circle cx={C} cy={C} r="7" fill="#bfefff" style={{ filter: "drop-shadow(0 0 10px #34e1ff)" }} />
-              <text x={C} y={C + 26} textAnchor="middle" fontFamily="var(--mono)" fontSize="11" fill="#8aa1bc">RECON · 核心</text>
-            </svg>
-          </div>
-          <div className="recon-right">
-            <div className="rr-h">
-              <div className="rr-title">侦察状态</div>
-              <div className="rr-nums"><span>类 <b className="c">{cats.length}</b></span><span>来源 <b>{sources.length}</b></span><span>证据 <b className="a">{kept.length}</b></span><span>用时 <b>{reconElapsed}s</b></span></div>
-            </div>
-            <div className="rr-cats">
-              {cats.map(([cat, n]) => (
-                <div className="cbar" key={cat}><span className="nm">{RECON_CAT[cat] || cat}</span><div className="track"><div className="fill" style={{ width: `${(n / maxCat) * 100}%` }} /></div><span className="v">{n}</span></div>
-              ))}
-              {!cats.length && <div className="rr-empty">{busy ? "扫描中…" : "未检索到证据"}</div>}
-            </div>
-            <div className="rr-feed">
-              <div className="feedh">证据流 · LIVE</div>
-              {items.map((it) => {
-                const ex = excludedIds.has(it.id);
-                return (
-                  <div className={`ev${ex ? " ex" : ""}`} key={it.id}>
-                    <span className={`cd ${credCls(it.credibility)}`} />
-                    <div className="evc">
-                      {it.url
-                        ? <a className="cl" href={it.url} target="_blank" rel="noreferrer" title={it.title || it.url}>{it.claim || it.title} ↗</a>
-                        : <div className="cl">{it.claim || it.title}</div>}
-                      <div className="m">{(it.source || "WEB").toUpperCase()}{it.engagement ? ` · ▲${it.engagement.value}` : ""} · {credCN(it.credibility)}{ex ? " · 已排除" : it.credibility === "low" ? " · 可排除" : ""}</div>
-                    </div>
-                    <button className="ev-x" title={ex ? "恢复(进议会)" : "排除(不进议会)"} onClick={() => setExcludedIds((p) => { const n = new Set(p); n.has(it.id) ? n.delete(it.id) : n.add(it.id); return n; })}>{ex ? "↺" : "✕"}</button>
-                  </div>
-                );
-              })}
-              {!items.length && <div className="rr-empty">{busy ? "扫描中…" : "未检索到证据 — 可直接开议会"}</div>}
-            </div>
-          </div>
-        </div>
-        <div className="recon-bar">
-          <button className="ghost" onClick={() => setReconActive(false)} disabled={busy} title="退出雷达,回到刚才的界面(不丢当前讨论)">← 返回</button>
-          {runError ? <span className="recon-err">{runError}</span> : <span className="recon-hint">{busy ? "侦察中,稍候…" : "审完证据,点右侧「开议会」才进入议会 →"}</span>}
-          <button className="ghost" onClick={() => scout()} disabled={busy}>重新侦察</button>
-          <button className="ghost" onClick={() => openCouncil(true)} disabled={busy}>不检索直接开议会</button>
-          <button className="btn primary" onClick={proceedFromRecon} disabled={busy || !discussion || kept.length === 0}>开议会(基于证据) ›</button>
-        </div>
-      </div>
-    );
-  };
   // 想清楚(clarify §2.2):主脑结构化共创面板 —— 重述 + 关键追问 + 建设性角度 + 最尖锐张力 + 一键送进议会
   // 方向卡(Spec §10.1 Direction Convergence Card)
   const directionCard = (c: DirectionCard) => (
@@ -941,21 +684,6 @@ function App() {
           {deliberating && !relayCard && <div className="relay-running"><span className="blink" />接力中…(主脑立框 → 各模型扩大思考面 → 收棒出方向卡)</div>}
         </div>
         {relayCard && directionCard(relayCard)}
-      </div>
-    );
-  };
-  const clarifyPanel = () => {
-    if (!clarify) return <div className="clarify-wrap"><div className="clarify-loading">{deliberating ? "主脑在帮你把它理清…" : "(无)"}</div></div>;
-    return (
-      <div className="clarify-wrap">
-        <div className="clarify-card cl-restate"><div className="cl-h">主脑 · 结构化重述</div><div className="cl-body">{clarify.restate}</div></div>
-        {clarify.keyQuestions.length > 0 && <div className="clarify-card cl-q"><div className="cl-h">关键追问 · 决定成败</div><ol className="cl-list">{clarify.keyQuestions.map((q, i) => <li key={i}>{q}</li>)}</ol></div>}
-        {clarify.constructiveAngles.length > 0 && <div className="clarify-card cl-angle"><div className="cl-h">建设性角度 · 怎么更强</div><ul className="cl-list">{clarify.constructiveAngles.map((a, i) => <li key={i}>{a}</li>)}</ul></div>}
-        {clarify.sharpestTension && <div className="clarify-card cl-tension"><div className="cl-h">最尖锐的待解</div><div className="cl-body">{clarify.sharpestTension}</div></div>}
-        <div className="clarify-acts">
-          <button className="btn primary" disabled={deliberating || busy} onClick={() => switchPosture("roast")}>送进议会拷问 →</button>
-          <button className="btn ghost" disabled={deliberating || busy} onClick={() => switchPosture("council")}>温和审议</button>
-        </div>
       </div>
     );
   };
@@ -1264,7 +992,7 @@ function App() {
       {TAB_ORDER.map((tk, i) => (
         <React.Fragment key={tk}>
           {i > 0 && <span className="flow-arrow">→</span>}
-          <button className={`tab${tab === tk ? " active" : ""}${pipeStatus(tk) === "done" ? " done" : ""}`} onClick={() => { setTab(tk); setSendMenuFor(null); }}>
+          <button className={`tab${tab === tk ? " active" : ""}${pipeStatus(tk) === "done" ? " done" : ""}`} onClick={() => switchTab(tk)}>
             <span className="n">{i + 1}</span>{TAB_LABEL[tk]}<span className="sub">{TAB_SUB[tk]}</span>
           </button>
         </React.Fragment>
@@ -1292,7 +1020,7 @@ function App() {
         {TAB_ORDER.map((k) => {
           const st = pipeStatus(k);
           return (
-            <button className={`pl-row${tab === k ? " on" : ""}`} key={k} onClick={() => { setTab(k); setSendMenuFor(null); }}>
+            <button className={`pl-row${tab === k ? " on" : ""}`} key={k} onClick={() => switchTab(k)}>
               <span className={`st ${st}`}>{st === "done" ? "✓" : st === "run" ? "●" : "—"}</span>
               <span className="nm">{TAB_LABEL[k]}</span><span className="meta">{meta[k]}</span>
             </button>
@@ -1305,7 +1033,7 @@ function App() {
           return (
             <div className={`doc${gen ? " gen" : ""}`} key={t}>
               <i className="md">MD</i>
-              <span className="dn" onClick={() => ready && setTab(t)}>{name}{gen ? " · 生成中…" : ready ? "" : " · 未生成"}</span>
+              <span className="dn" onClick={() => ready && switchTab(t)}>{name}{gen ? " · 生成中…" : ready ? "" : " · 未生成"}</span>
               {ready && onwardOf[t].length > 0 && (
                 <span className="send" onClick={() => setSendMenuFor(sendMenuFor === t ? null : t)}>送到 ▾
                   {sendMenuFor === t && (
@@ -1444,16 +1172,18 @@ function App() {
   // 底部输入条:每站不同
   const composerBar = () => {
     const drafting = !discussion;
+    const bindBrief = drafting && tab !== "produce";
+    const needIdea = drafting && !brief.trim(); // 仅起步(无讨论)才必须先有点子;之后再跑不需要输入
     const relayLabel = drafting ? "开始想清楚 →" : deliberating ? "接力中…" : relayCard ? "补充并重接 →" : "重新接力 →";
     const runRelayBtn = () => { const tx = userInput.trim(); if (!drafting && tx) { setUserInput(""); runRelay(tx); } else runRelay(); };
+    const runCouncilBtn = () => { const tx = userInput.trim(); if (!drafting && tx) { setUserInput(""); runCouncil(councilIntensity, tx); } else runCouncil(); };
     const cfg: Record<Tab, { ph: string; hint: string; run: () => void; label: string; disabled: boolean }> = {
-      search: { ph: "描述你的点子,开始事实侦察…", hint: "扫竞品/需求/定价/痛点,给证据评可信度", run: runSearch, label: busy ? "侦察中…" : pack ? "重新搜索 →" : "开始搜索 →", disabled: !brief.trim() || busy },
-      relay: { ph: drafting ? "描述你的点子,开始想清楚…" : "补充/纠正你的想法,会按最新理解重新接力…", hint: "6 棒跨模型:Claude 立框 → … → Claude 收棒出方向卡", run: runRelayBtn, label: relayLabel, disabled: !brief.trim() || deliberating || busy },
-      council: { ph: drafting ? "描述你的点子,送进议会…" : "(议会主要靠右栏策展;这里可补一句背景)", hint: "温和=多视角综述;拷问=强制魔鬼 + R3 交叉", run: () => runCouncil(), label: deliberating ? "审议中…" : viewpoints.length ? "再审一轮 →" : "送进议会 →", disabled: !brief.trim() || deliberating || busy },
+      search: { ph: "描述你的点子,开始事实侦察…", hint: "扫竞品/需求/定价/痛点,给证据评可信度", run: runSearch, label: busy ? "侦察中…" : pack ? "重新搜索 →" : "开始搜索 →", disabled: needIdea || busy },
+      relay: { ph: drafting ? "描述你的点子,开始想清楚…" : "补充/纠正你的想法,会按最新理解重新接力…", hint: "6 棒跨模型:Claude 立框 → … → Claude 收棒出方向卡", run: runRelayBtn, label: relayLabel, disabled: needIdea || deliberating || busy },
+      council: { ph: drafting ? "描述你的点子,送进议会…" : "可补一句背景再审议(留空直接审)", hint: "温和=多视角综述;拷问=强制魔鬼 + R3 交叉", run: runCouncilBtn, label: deliberating ? "审议中…" : viewpoints.length ? "再审一轮 →" : "送进议会 →", disabled: needIdea || deliberating || busy },
       produce: { ph: "在中央选「格式」+ 模型生成;改稿在卡片上点「改」", hint: "把方案交给某个 AI 产出文案/PRD/图", run: () => {}, label: "在中央选模型生成", disabled: true },
     };
     const c = cfg[tab];
-    const bindBrief = drafting && tab !== "produce";
     return (
       <div className="bar">
         <div className="composer">

@@ -266,7 +266,13 @@ const server = http.createServer(async (req, res) => {
         if (clarification) { try { addTurn({ discussionId: d.id, round: 0, speaker: "you", role: "user", body: clarification, citations: [] }); } catch (e) { console.error("[roast-api] addTurn(clarify) failed:", e?.message || e); } }
         const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
         const fresh = getDiscussion(d.id);
-        const userClar = (fresh?.turns || []).filter((t) => t.role === "user" || t.speaker === "you").map((t) => String(t.body || "").trim()).filter(Boolean);
+        // 只折入显式纠正(陪练「补充并重接」= round 0 的 user turn),排除自由聊天(respond 的 round>=1);去重 + 限最近 8 条
+        const seenClar = new Set();
+        const userClar = (fresh?.turns || [])
+          .filter((t) => t.round === 0 && (t.role === "user" || t.speaker === "you"))
+          .map((t) => String(t.body || "").trim())
+          .filter((c) => c && !seenClar.has(c) && seenClar.add(c))
+          .slice(-8);
         let effBrief = d.brief;
         if (userClar.length) effBrief += `\n\n用户后续补充/纠正(按此理解,优先于上面的初稿):\n${userClar.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
         if (handoffDoc) effBrief += `\n\n上一站交接来的文档(请基于它推进):\n${handoffDoc}`;
