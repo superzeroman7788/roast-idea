@@ -722,3 +722,7 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .cv-role{font-family:var(--mono);font-size:10px;color:var(--tx3)}
 .cv-body{font-size:13px;color:var(--tx2);line-height:1.55;white-space:pre-wrap}
 .cv-ask{margin-top:6px;font-size:12.5px;color:var(--amber);line-height:1.5}
+.cv-pin{margin-left:auto;font-size:12px;line-height:1;padding:2px 7px;border-radius:6px;border:1px solid #1d3350;background:transparent;cursor:pointer;opacity:.4;filter:grayscale(1)}
+.cv-pin:hover{opacity:.9;filter:none;border-color:#1c4d6e}
+.cv-pin.on{opacity:1;filter:none;border-color:var(--amber);background:#1a140a}
+.cv-turn.pinned{border-left-color:var(--amber);background:#15110a}

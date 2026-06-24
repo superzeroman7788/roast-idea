@@ -123,6 +123,7 @@ export function getDb() {
   try { db.exec(`ALTER TABLE discussions ADD COLUMN converged TEXT`); } catch {}
   try { db.exec(`ALTER TABLE discussions ADD COLUMN clarify TEXT`); } catch {} // 想清楚(clarify)结构化产出
   try { db.exec(`ALTER TABLE discussions ADD COLUMN relay TEXT`); } catch {} // 跨模型接力(hops + 方向卡)
+  try { db.exec(`ALTER TABLE discussion_turns ADD COLUMN pinned INTEGER DEFAULT 0`); } catch {} // 对话点赞:用户重视的发言
   return db;
 }
 
@@ -248,6 +249,24 @@ export function addTurn({ discussionId, round, speaker, role, body, citations, l
   return { id, seq, createdAt: now };
 }
 
+// 对话点赞:标记/取消某条发言为"用户重视"
+export function setTurnPinned(turnId, pinned) {
+  const database = getDb();
+  const row = database.prepare(`SELECT discussion_id FROM discussion_turns WHERE id = ?`).get(turnId);
+  if (!row) return false;
+  database.prepare(`UPDATE discussion_turns SET pinned = ? WHERE id = ?`).run(pinned ? 1 : 0, turnId);
+  return true;
+}
+
+// 取某讨论"用户重视(pinned)"的发言正文(喂主脑/合成优先照顾)
+export function listPinnedTurns(discussionId) {
+  const database = getDb();
+  return database
+    .prepare(`SELECT speaker, role, body FROM discussion_turns WHERE discussion_id = ? AND pinned = 1 ORDER BY seq ASC`)
+    .all(discussionId)
+    .map((t) => ({ speaker: t.speaker, role: t.role, body: t.body }));
+}
+
 export function getDiscussion(id) {
   const database = getDb();
   const d = database.prepare(`SELECT * FROM discussions WHERE id = ?`).get(id);
@@ -278,6 +297,7 @@ export function getDiscussion(id) {
       body: t.body,
       citations: JSON.parse(t.citations || "[]"),
       latencyMs: t.latency_ms,
+      pinned: !!t.pinned,
       createdAt: t.created_at,
     })),
     artifacts: listArtifacts(id),

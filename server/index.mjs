@@ -37,6 +37,8 @@ import {
   clearViewpoints,
   updateViewpointVerification,
   saveSignal,
+  setTurnPinned,
+  listPinnedTurns,
   getRunConfig,
   saveRunConfig,
 } from "./db.mjs";
@@ -187,12 +189,15 @@ const server = http.createServer(async (req, res) => {
         const attachCtx = await buildAttachmentContext(body.attachments, byoKeys);
         const effUserTurn = (userTurn + attachCtx).trim();
         if (userTurn || attachCtx) {
-          addTurn({ discussionId: d.id, round, speaker: "you", role: "user", body: userTurn || "(已附附件)", citations: [] });
+          const savedUser = addTurn({ discussionId: d.id, round, speaker: "you", role: "user", body: userTurn || "(已附附件)", citations: [] });
+          // 回推带 id 的用户发言,前端替换乐观条 → 可被点赞
+          sseSend(res, "turn", { id: savedUser.id, seq: savedUser.seq, round, speaker: "you", role: "user", body: userTurn || "(已附附件)", citations: [], pinned: false });
         }
         const priorTurns = userTurn || attachCtx ? [...d.turns, { speaker: "you", role: "user", body: effUserTurn }] : d.turns;
         const transcript = buildTranscript(priorTurns);
+        const roundBrief = clarify ? d.brief + pinnedBlock(d.id) : d.brief; // 点赞的点喂主脑优先照顾
         await runDiscussionRound(
-          { mode: d.mode, brief: d.brief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round, fallback },
+          { mode: d.mode, brief: roundBrief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round, fallback },
           (turn) => emitTurn(res, d.id, turn, d.evidencePack),
         );
         sseSend(res, "round-done", { discussionId: d.id, round });
@@ -279,6 +284,7 @@ const server = http.createServer(async (req, res) => {
         const convo = buildTranscript(d.turns || [], 40);
         let effBrief = d.brief;
         if (convo) effBrief += `\n\n想清楚阶段的完整对话(理解这个项目的根基,优先于初稿):\n${convo}`;
+        effBrief += pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
         if (handoffDoc) effBrief += `\n\n上一站交接来的方案文档(请基于它推进):\n${handoffDoc}`;
         if (posture === "clarify") {
           // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
@@ -344,6 +350,16 @@ const server = http.createServer(async (req, res) => {
       }
       const saved = saveSignal({ discussionId: d.id, viewpointId, action, note });
       return json(res, 200, { ok: true, signal: { ...saved, viewpointId, action, note } });
+    }
+
+    // 对话点赞:标记/取消某条发言为"用户重视"(主脑回应 + 出卡都会优先照顾)
+    const pinTurn = url.pathname.match(/^\/api\/discussion\/([^/]+)\/turn\/([^/]+)\/pin$/);
+    if (req.method === "POST" && pinTurn) {
+      const d = getDiscussion(pinTurn[1]);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const body = await readJson(req);
+      const ok = setTurnPinned(pinTurn[2], Boolean(body.pinned));
+      return json(res, ok ? 200 : 404, { ok, pinned: Boolean(body.pinned) });
     }
 
     // ============ 产出层(交付物)============
@@ -579,6 +595,14 @@ function buildTranscript(turns, limit = 12) {
     .slice(-limit)
     .map((t) => `${t.speaker}(${t.role}): ${t.body}`)
     .join("\n");
+}
+
+// 用户点赞(重视)的发言 → 高权重优先项,喂主脑/合成
+function pinnedBlock(discussionId) {
+  const pins = listPinnedTurns(discussionId);
+  if (!pins.length) return "";
+  const lines = pins.map((p, i) => `${i + 1}. ${p.role === "user" || p.speaker === "you" ? "你强调:" : p.speaker + "(被你点赞):"}${String(p.body || "").slice(0, 300)}`);
+  return `\n\n⭐ 用户特别重视/点赞的几点(请优先照顾,务必体现在回应与最终方案里):\n${lines.join("\n")}`;
 }
 
 // 单条发言:校验引用 → 落库(失败不阻断)→ SSE 推;失败 agent 只推降级、不落库、不伪造。

@@ -528,12 +528,29 @@ function App() {
     try {
       await streamSSE(`/api/discussion/${did}/respond`, { userTurn: text, clarify: true, participants: dialogueN }, (ev, d) => {
         if (cancelled(tk)) return;
-        if (ev === "turn") appendTurn(d as Turn);
+        if (ev === "turn") {
+          const turn = d as Turn;
+          // 后端回推带 id 的用户发言 → 替换乐观条(同正文、无 id),让它可被点赞;AI 发言直接追加
+          setTurns((prev) => {
+            if (turn.role === "user") {
+              const idx = prev.findIndex((x) => !x.id && x.role === "user" && x.body === turn.body);
+              if (idx >= 0) { const n = [...prev]; n[idx] = turn; return n; }
+            }
+            return [...prev, turn];
+          });
+        }
         else if (ev === "round-done") setPhase("awaiting-user");
         else if (ev === "error") setRunError(d.error);
       }, () => cancelled(tk));
     } catch (e) { if (!cancelled(tk)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
     finally { if (!cancelled(tk)) setBusy(false); }
+  }
+  // 对话点赞:标记/取消"用户重视"(主脑回应 + 出卡都会优先照顾)
+  async function togglePin(t: Turn) {
+    if (!discussion || !t.id) return;
+    const next = !t.pinned;
+    setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, pinned: next } : x)));
+    try { await fetch(`/api/discussion/${discussion.id}/turn/${t.id}/pin`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned: next }) }); } catch {}
   }
   // 发送一句(drafting 时首句即点子,建讨论后再对话)
   async function sendClarify(text: string) {
@@ -1158,8 +1175,13 @@ function App() {
     return (
       <>
         {turns.map((t, i) => (
-          <div className={`cv-turn${t.role === "user" ? " me" : ""}${t.failed ? " failed" : ""}`} key={t.id || i}>
-            <div className="cv-who">{t.role === "user" ? "你" : <>{t.speaker}<span className="cv-role">{ROLE_LABEL[t.role] || t.role}</span></>}</div>
+          <div className={`cv-turn${t.role === "user" ? " me" : ""}${t.failed ? " failed" : ""}${t.pinned ? " pinned" : ""}`} key={t.id || i}>
+            <div className="cv-who">
+              {t.role === "user" ? "你" : <>{t.speaker}<span className="cv-role">{ROLE_LABEL[t.role] || t.role}</span></>}
+              {t.id && !t.failed && (
+                <button className={`cv-pin${t.pinned ? " on" : ""}`} title={t.pinned ? "已重视 · 主脑会优先照顾、出卡纳入(点击取消)" : "点赞:让主脑重视这条、收进方案"} onClick={() => togglePin(t)}>👍</button>
+              )}
+            </div>
             <div className="cv-body">{t.failed ? `(未响应:${(t.error || "").slice(0, 50)})` : t.body}</div>
             {t.askUser && !t.failed && <div className="cv-ask">↳ {t.askUser}</div>}
           </div>

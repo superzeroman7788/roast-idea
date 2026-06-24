@@ -43,6 +43,7 @@ export type Turn = {
   latencyMs?: number;
   failed?: boolean;
   error?: string;
+  pinned?: boolean; // 用户点赞:这条主脑会重视、出卡优先纳入
 };
 
 export type Phase =
