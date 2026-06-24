@@ -386,38 +386,40 @@ function parseTurnJson(rawText) {
 
 // 跑一轮讨论:每个 seat(角色)并行发一条,完成即 onTurn 回调(真实顺序);失败进降级不伪造。
 export async function runDiscussionRound(
-  { mode, brief, evidence, transcript, userTurn, seats, byoKeys, round },
+  { mode, brief, evidence, transcript, userTurn, seats, byoKeys, round, fallback = [] },
   onTurn,
 ) {
   const results = [];
   await Promise.all(
     seats.map(async (seat) => {
-      const provider = ALL.find((p) => p.id === seat.id);
-      const apiKey = provider ? resolveKey(provider, byoKeys) : "";
-      if (!provider || !apiKey) {
-        if (onTurn) onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: "not configured" });
-        return;
-      }
+      // 本席 → 兜底脑(掉线/过载续上,如陪练主脑 Claude 529 → 副脑接);council 不传 fallback,行为不变
+      const chain = [seat, ...fallback.filter((f) => f.id !== seat.id)];
       const started = Date.now();
-      try {
-        const messages = buildTurnPrompt({ mode, provider: seat.label, role: seat.role, brief, evidence, transcript, userTurn });
-        const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true });
-        const parsed = parseTurnJson(rawText);
-        const turn = {
-          ok: true,
-          speaker: seat.label,
-          role: seat.role,
-          round,
-          body: parsed.body,
-          citations: parsed.citations,
-          askUser: parsed.askUser,
-          latencyMs: Date.now() - started,
-        };
-        results.push(turn);
-        if (onTurn) onTurn(turn);
-      } catch (e) {
-        if (onTurn) onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: compact(e?.message || String(e)) });
+      let lastErr = "not configured";
+      for (const cand of chain) {
+        const provider = ALL.find((p) => p.id === cand.id);
+        const apiKey = provider ? resolveKey(provider, byoKeys) : "";
+        if (!provider || !apiKey) continue;
+        try {
+          const messages = buildTurnPrompt({ mode, provider: cand.label, role: seat.role, brief, evidence, transcript, userTurn });
+          const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true });
+          const parsed = parseTurnJson(rawText);
+          const turn = {
+            ok: true,
+            speaker: cand.label,
+            role: seat.role,
+            round,
+            body: parsed.body,
+            citations: parsed.citations,
+            askUser: parsed.askUser,
+            latencyMs: Date.now() - started,
+          };
+          results.push(turn);
+          if (onTurn) onTurn(turn);
+          return;
+        } catch (e) { lastErr = compact(e?.message || String(e)); }
       }
+      if (onTurn) onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: lastErr });
     }),
   );
   return results;

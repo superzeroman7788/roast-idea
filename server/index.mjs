@@ -162,15 +162,23 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
       const userTurn = String(body.userTurn || "").trim();
-      // clarify(想清楚):N 个协同搭子(同模型不同角度,host/builder,非对抗);solo:只主脑;否则全议会
+      // clarify(想清楚):N 个协同搭子(host/builder,非对抗);solo:只主脑;否则全议会
       const clarify = Boolean(body.clarify);
       const participants = Math.max(1, Math.min(3, Number(body.participants) || 1));
       const solo = Boolean(body.solo);
       const allSeats = d.roles?.length ? d.roles : assignDiscussionSeats(byoKeys);
       const CLARIFY_ROLES = ["host", "builder", "builder"];
+      // 陪练对话固定脑序:主脑 Claude → 副脑 OpenAI → 第三脑 DeepSeek;缺谁用其它已配置席补位
+      const CLARIFY_BRAINS = ["claude", "openai", "deepseek"];
+      const seatById = new Map(allSeats.map((s) => [s.id, s]));
+      const clarifyPicks = [];
+      for (const id of CLARIFY_BRAINS) { const s = seatById.get(id); if (s && !clarifyPicks.includes(s)) clarifyPicks.push(s); }
+      for (const s of allSeats) { if (clarifyPicks.length >= 3) break; if (!clarifyPicks.includes(s)) clarifyPicks.push(s); }
       const seats = clarify
-        ? allSeats.slice(0, participants).map((s, i) => ({ ...s, role: CLARIFY_ROLES[i] || "builder" }))
+        ? clarifyPicks.slice(0, participants).map((s, i) => ({ ...s, role: CLARIFY_ROLES[i] || "builder" }))
         : solo ? allSeats.filter((s) => s.role === "host") : allSeats;
+      // 陪练兜底:某脑过载/掉线 → 用其它已配置席补上(council 不传,失败照常降级不伪造)
+      const fallback = clarify ? allSeats.filter((s) => !seats.some((seat) => seat.id === s.id)) : [];
       const round = Math.max(0, ...d.turns.map((t) => t.round)) + 1;
 
       sseHead(res);
@@ -184,7 +192,7 @@ const server = http.createServer(async (req, res) => {
         const priorTurns = userTurn || attachCtx ? [...d.turns, { speaker: "you", role: "user", body: effUserTurn }] : d.turns;
         const transcript = buildTranscript(priorTurns);
         await runDiscussionRound(
-          { mode: d.mode, brief: d.brief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round },
+          { mode: d.mode, brief: d.brief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round, fallback },
           (turn) => emitTurn(res, d.id, turn, d.evidencePack),
         );
         sseSend(res, "round-done", { discussionId: d.id, round });

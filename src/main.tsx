@@ -1133,9 +1133,10 @@ function App() {
               <div className="ch-seats">
                 <span className="ch-lab">对话搭子</span>
                 {[1, 2, 3].map((n) => (
-                  <button key={n} className={`ch-seat${dialogueN === n ? " on" : ""}`} disabled={busy} onClick={() => setDialogueN(n)}>{n === 1 ? "主脑" : `${n} 人`}</button>
+                  <button key={n} className={`ch-seat${dialogueN === n ? " on" : ""}`} disabled={busy} onClick={() => setDialogueN(n)} title={["主脑 Claude", "主脑 Claude + 副脑 OpenAI", "Claude + OpenAI + DeepSeek"][n - 1]}>{n === 1 ? "主脑" : `${n} 脑`}</button>
                 ))}
               </div>
+              <div className="ch-lineup">{["Claude", "Claude · OpenAI", "Claude · OpenAI · DeepSeek"][dialogueN - 1]}</div>
               <div className="ch-hint">{turns.length ? "聊清楚了就召多脑出卡 ↓" : "在下方说说你的点子,搭子会专注回应、帮你想清楚"}</div>
               <button className="btn primary" disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>理清了 → 出方向卡</button>
             </div>
