@@ -12,6 +12,7 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "@vitejs/plugin-react": "^5.0.0",
     "docx": "^9.7.1",
     "lucide-react": "^0.468.0",

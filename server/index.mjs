@@ -61,7 +61,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         ok: providers.some((provider) => provider.configured),
         providers,
-        runs: safeCount(),
+        runs: await safeCount(),
         authRequired: Boolean(process.env.ROAST_ACCESS_PASSWORD),
       });
     }
@@ -115,7 +115,7 @@ const server = http.createServer(async (req, res) => {
         const fullBrief = brief + attachCtx;
 
         const title = brief.split("\n")[0].slice(0, 60);
-        const discussionId = createDiscussion({ mode, title, brief: fullBrief, evidencePack: pack, roles: seats });
+        const discussionId = await createDiscussion({ mode, title, brief: fullBrief, evidencePack: pack, roles: seats });
         sseSend(res, "discussion", { id: discussionId, mode, title, seats });
 
         // skipOpening:议会主屏(白箱审议为主)只建讨论+board,开场轮由前端接着调 /deliberate
@@ -138,27 +138,27 @@ const server = http.createServer(async (req, res) => {
 
     // 历史列表:过往讨论(标题/模式/状态/时间),供前端「历史」面板浏览
     if (req.method === "GET" && url.pathname === "/api/discussions") {
-      return json(res, 200, { ok: true, discussions: listDiscussions(100) });
+      return json(res, 200, { ok: true, discussions: await listDiscussions(100) });
     }
 
     // 恢复会话
     const detail = url.pathname.match(/^\/api\/discussion\/([^/]+)$/);
     if (req.method === "GET" && detail) {
-      const d = getDiscussion(detail[1]);
+      const d = await getDiscussion(detail[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       return json(res, 200, { ok: true, discussion: d });
     }
 
     // 删除一场讨论(本地数据,用户主动清理)
     if (req.method === "DELETE" && detail) {
-      const ok = deleteDiscussion(detail[1]);
+      const ok = await deleteDiscussion(detail[1]);
       return json(res, ok ? 200 : 404, { ok });
     }
 
     // 用户插话(userTurn 为空 = "再辩一轮")→ 跑一轮 agent 回应
     const respond = url.pathname.match(/^\/api\/discussion\/([^/]+)\/respond$/);
     if (req.method === "POST" && respond) {
-      const d = getDiscussion(respond[1]);
+      const d = await getDiscussion(respond[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       if (d.status === "finalized") return json(res, 400, { ok: false, error: "discussion finalized" });
       const body = await readJson(req);
@@ -189,13 +189,13 @@ const server = http.createServer(async (req, res) => {
         const attachCtx = await buildAttachmentContext(body.attachments, byoKeys);
         const effUserTurn = (userTurn + attachCtx).trim();
         if (userTurn || attachCtx) {
-          const savedUser = addTurn({ discussionId: d.id, round, speaker: "you", role: "user", body: userTurn || "(已附附件)", citations: [] });
+          const savedUser = await addTurn({ discussionId: d.id, round, speaker: "you", role: "user", body: userTurn || "(已附附件)", citations: [] });
           // 回推带 id 的用户发言,前端替换乐观条 → 可被点赞
           sseSend(res, "turn", { id: savedUser.id, seq: savedUser.seq, round, speaker: "you", role: "user", body: userTurn || "(已附附件)", citations: [], pinned: false });
         }
         const priorTurns = userTurn || attachCtx ? [...d.turns, { speaker: "you", role: "user", body: effUserTurn }] : d.turns;
         const transcript = buildTranscript(priorTurns);
-        const roundBrief = clarify ? d.brief + pinnedBlock(d.id) : d.brief; // 点赞的点喂主脑优先照顾
+        const roundBrief = clarify ? d.brief + await pinnedBlock(d.id) : d.brief; // 点赞的点喂主脑优先照顾
         await runDiscussionRound(
           { mode: d.mode, brief: roundBrief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round, fallback },
           (turn) => emitTurn(res, d.id, turn, d.evidencePack),
@@ -211,7 +211,7 @@ const server = http.createServer(async (req, res) => {
     // 收敛:synthesizer 出方案
     const finalize = url.pathname.match(/^\/api\/discussion\/([^/]+)\/finalize$/);
     if (req.method === "POST" && finalize) {
-      const d = getDiscussion(finalize[1]);
+      const d = await getDiscussion(finalize[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -226,7 +226,7 @@ const server = http.createServer(async (req, res) => {
           transcript,
           byoKeys,
         });
-        finalizeDiscussion(d.id, conclusion);
+        await finalizeDiscussion(d.id, conclusion);
         sseSend(res, "conclusion", { discussionId: d.id, conclusion });
       } catch (error) {
         sseSend(res, "error", { error: error?.message || "finalize failed" });
@@ -238,7 +238,7 @@ const server = http.createServer(async (req, res) => {
     // 人-steered 收敛(D):只吃人策展集合,反共识硬规则,输出重定义。落 conclusion(派生 md)+ converged。
     const converge = url.pathname.match(/^\/api\/discussion\/([^/]+)\/converge$/);
     if (req.method === "POST" && converge) {
-      const d = getDiscussion(converge[1]);
+      const d = await getDiscussion(converge[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -251,7 +251,7 @@ const server = http.createServer(async (req, res) => {
           signals: d.humanSignals || [],
           byoKeys,
         });
-        finalizeDiscussion(d.id, conclusion, converged);
+        await finalizeDiscussion(d.id, conclusion, converged);
         sseSend(res, "converged", { discussionId: d.id, converged, conclusion });
       } catch (error) {
         sseSend(res, "error", { error: error?.message || "converge failed" });
@@ -263,14 +263,14 @@ const server = http.createServer(async (req, res) => {
     // ============ 审议引擎(白箱):结构化观点 + 审议综述 ============
     const deliberate = url.pathname.match(/^\/api\/discussion\/([^/]+)\/deliberate$/);
     if (req.method === "POST" && deliberate) {
-      const d = getDiscussion(deliberate[1]);
+      const d = await getDiscussion(deliberate[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
 
       sseHead(res);
       try {
-        clearViewpoints(d.id); // 重跑覆盖旧观点
+        await clearViewpoints(d.id); // 重跑覆盖旧观点
         // 事实侦察雷达页排除的证据(excludedIds)在此过滤,不喂给席位;校验仍只认进场的证据 id
         const excluded = new Set(Array.isArray(body.excludedIds) ? body.excludedIds : []);
         const evidenceForAgents = (d.evidencePack?.items || []).filter((it) => !excluded.has(it.id));
@@ -284,7 +284,7 @@ const server = http.createServer(async (req, res) => {
         const convo = buildTranscript(d.turns || [], 40);
         let effBrief = d.brief;
         if (convo) effBrief += `\n\n想清楚阶段的完整对话(理解这个项目的根基,优先于初稿):\n${convo}`;
-        effBrief += pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
+        effBrief += await pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
         if (handoffDoc) effBrief += `\n\n上一站交接来的方案文档(请基于它推进):\n${handoffDoc}`;
         if (posture === "clarify") {
           // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
@@ -297,29 +297,29 @@ const server = http.createServer(async (req, res) => {
               else if (ev === "error") sseSend(res, "error", data);
             },
           );
-          try { saveRelay(d.id, relayRes); } catch (e) { console.error("[roast-api] saveRelay failed:", e?.message || e); }
+          try { await saveRelay(d.id, relayRes); } catch (e) { console.error("[roast-api] saveRelay failed:", e?.message || e); }
         } else {
         await runDeliberation(
           { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys, runConfig, posture },
-          (ev, data) => {
+          async (ev, data) => {
             if (ev === "viewpoint") {
               // 引用校验:丢弃不存在于信息板的证据 id(不编造)
               const evidenceIds = (data.evidenceIds || []).filter((id) => validIds.has(id));
               let saved = null;
-              try { saved = saveViewpoint({ discussionId: d.id, ...data, evidenceIds }); }
+              try { saved = await saveViewpoint({ discussionId: d.id, ...data, evidenceIds }); }
               catch (e) { console.error("[roast-api] saveViewpoint failed:", e?.message || e); }
               if (data.round === 2) round2Ids.push(saved?.id || null);
               sseSend(res, "viewpoint", saved || { ...data, evidenceIds });
             } else if (ev === "verification") {
               const id = round2Ids[data.index];
               if (id) {
-                try { updateViewpointVerification(id, data.verification); }
+                try { await updateViewpointVerification(id, data.verification); }
                 catch (e) { console.error("[roast-api] updateViewpointVerification failed:", e?.message || e); }
                 sseSend(res, "verification", { id, verification: data.verification });
               }
             } else if (ev === "deliberation") {
               let saved = null;
-              try { saved = saveDeliberation({ discussionId: d.id, ...data }); }
+              try { saved = await saveDeliberation({ discussionId: d.id, ...data }); }
               catch (e) { console.error("[roast-api] saveDeliberation failed:", e?.message || e); }
               sseSend(res, "deliberation", saved || data);
             } else if (ev === "seat-failed") {
@@ -339,7 +339,7 @@ const server = http.createServer(async (req, res) => {
     // 人策展:对一条观点 认领/搁置/钉死/反驳(append-only 落库 = 偏好数据)
     const signal = url.pathname.match(/^\/api\/discussion\/([^/]+)\/signal$/);
     if (req.method === "POST" && signal) {
-      const d = getDiscussion(signal[1]);
+      const d = await getDiscussion(signal[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const viewpointId = String(body.viewpointId || "");
@@ -348,17 +348,17 @@ const server = http.createServer(async (req, res) => {
       if (!viewpointId || !["endorse", "setAside", "pin", "reply", "clear"].includes(action)) {
         return json(res, 400, { ok: false, error: "bad signal" });
       }
-      const saved = saveSignal({ discussionId: d.id, viewpointId, action, note });
+      const saved = await saveSignal({ discussionId: d.id, viewpointId, action, note });
       return json(res, 200, { ok: true, signal: { ...saved, viewpointId, action, note } });
     }
 
     // 对话点赞:标记/取消某条发言为"用户重视"(主脑回应 + 出卡都会优先照顾)
     const pinTurn = url.pathname.match(/^\/api\/discussion\/([^/]+)\/turn\/([^/]+)\/pin$/);
     if (req.method === "POST" && pinTurn) {
-      const d = getDiscussion(pinTurn[1]);
+      const d = await getDiscussion(pinTurn[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
-      const ok = setTurnPinned(pinTurn[2], Boolean(body.pinned));
+      const ok = await setTurnPinned(pinTurn[2], Boolean(body.pinned));
       return json(res, ok ? 200 : 404, { ok, pinned: Boolean(body.pinned) });
     }
 
@@ -376,19 +376,19 @@ const server = http.createServer(async (req, res) => {
     // 选角配置持久化(按模式)
     if (req.method === "GET" && url.pathname === "/api/run-config") {
       const mode = url.searchParams.get("mode") === "copy" ? "copy" : "idea";
-      return json(res, 200, { ok: true, runConfig: getRunConfig(mode) });
+      return json(res, 200, { ok: true, runConfig: await getRunConfig(mode) });
     }
     if (req.method === "POST" && url.pathname === "/api/run-config") {
       const body = await readJson(req);
       const mode = body.mode === "copy" ? "copy" : "idea";
       if (!body.runConfig || typeof body.runConfig !== "object") return json(res, 400, { ok: false, error: "runConfig required" });
-      return json(res, 200, { ok: true, runConfig: saveRunConfig(mode, body.runConfig) });
+      return json(res, 200, { ok: true, runConfig: await saveRunConfig(mode, body.runConfig) });
     }
 
     // 产出一版交付物(SSE):draft / refine(fromArtifactId) / image
     const produce = url.pathname.match(/^\/api\/discussion\/([^/]+)\/produce$/);
     if (req.method === "POST" && produce) {
-      const d = getDiscussion(produce[1]);
+      const d = await getDiscussion(produce[1]);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -407,7 +407,7 @@ const server = http.createServer(async (req, res) => {
         let sourceContent = "";
         let mode = "draft";
         if (fromArtifactId) {
-          const src = getArtifact(fromArtifactId);
+          const src = await getArtifact(fromArtifactId);
           if (src) {
             sourceContent = src.content || "";
             mode = "refine";
@@ -432,9 +432,9 @@ const server = http.createServer(async (req, res) => {
           const fname = `${randomUUID()}.png`;
           fs.writeFileSync(path.join(dir, fname), Buffer.from(out.b64, "base64"));
           const imagePath = path.join("artifacts", d.id, fname);
-          saved = saveArtifact({ discussionId: d.id, type, provider: out.provider, imagePath, parentId: fromArtifactId, mode, instruction });
+          saved = await saveArtifact({ discussionId: d.id, type, provider: out.provider, imagePath, parentId: fromArtifactId, mode, instruction });
         } else {
-          saved = saveArtifact({ discussionId: d.id, type, provider: out.provider, content: out.content, parentId: fromArtifactId, mode, instruction });
+          saved = await saveArtifact({ discussionId: d.id, type, provider: out.provider, content: out.content, parentId: fromArtifactId, mode, instruction });
         }
         sseSend(res, "artifact", { ...saved, latencyMs: out.latencyMs });
         sseSend(res, "produce-done", { discussionId: d.id });
@@ -448,14 +448,14 @@ const server = http.createServer(async (req, res) => {
     // 采用某一版(同 type 内单选)
     const choose = url.pathname.match(/^\/api\/artifact\/([^/]+)\/choose$/);
     if (req.method === "POST" && choose) {
-      const a = chooseArtifact(choose[1]);
+      const a = await chooseArtifact(choose[1]);
       return json(res, a ? 200 : 404, { ok: Boolean(a), artifact: a });
     }
 
     // 取交付物图片(本服务器首个二进制端点)
     const artImg = url.pathname.match(/^\/api\/artifact\/([^/]+)\/image$/);
     if (req.method === "GET" && artImg) {
-      const a = getArtifact(artImg[1]);
+      const a = await getArtifact(artImg[1]);
       if (!a || !a.imagePath) return json(res, 404, { ok: false, error: "not found" });
       try {
         const buf = fs.readFileSync(path.join(DATA_DIR, a.imagePath));
@@ -470,7 +470,7 @@ const server = http.createServer(async (req, res) => {
     // 删一条候选交付物(+ 删图文件)
     const artDel = url.pathname.match(/^\/api\/artifact\/([^/]+)$/);
     if (req.method === "DELETE" && artDel) {
-      const { deleted, imagePath } = deleteArtifact(artDel[1]);
+      const { deleted, imagePath } = await deleteArtifact(artDel[1]);
       if (deleted && imagePath) {
         try { fs.unlinkSync(path.join(DATA_DIR, imagePath)); } catch {}
       }
@@ -519,9 +519,9 @@ server.listen(port, () => {
   );
 });
 
-function safeCount() {
+async function safeCount() {
   try {
-    return countRunRecords();
+    return await countRunRecords();
   } catch {
     return 0;
   }
@@ -598,15 +598,15 @@ function buildTranscript(turns, limit = 12) {
 }
 
 // 用户点赞(重视)的发言 → 高权重优先项,喂主脑/合成
-function pinnedBlock(discussionId) {
-  const pins = listPinnedTurns(discussionId);
+async function pinnedBlock(discussionId) {
+  const pins = await listPinnedTurns(discussionId);
   if (!pins.length) return "";
   const lines = pins.map((p, i) => `${i + 1}. ${p.role === "user" || p.speaker === "you" ? "你强调:" : p.speaker + "(被你点赞):"}${String(p.body || "").slice(0, 300)}`);
   return `\n\n⭐ 用户特别重视/点赞的几点(请优先照顾,务必体现在回应与最终方案里):\n${lines.join("\n")}`;
 }
 
 // 单条发言:校验引用 → 落库(失败不阻断)→ SSE 推;失败 agent 只推降级、不落库、不伪造。
-function emitTurn(res, discussionId, turn, pack) {
+async function emitTurn(res, discussionId, turn, pack) {
   if (turn.failed) {
     sseSend(res, "turn", { failed: true, speaker: turn.speaker, role: turn.role, round: turn.round, error: turn.error });
     return;
@@ -614,7 +614,7 @@ function emitTurn(res, discussionId, turn, pack) {
   const citations = validateCitations(turn.citations, pack);
   let stored = null;
   try {
-    stored = addTurn({
+    stored = await addTurn({
       discussionId,
       round: turn.round,
       speaker: turn.speaker,

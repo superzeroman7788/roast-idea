@@ -415,11 +415,11 @@ export async function runDiscussionRound(
             latencyMs: Date.now() - started,
           };
           results.push(turn);
-          if (onTurn) onTurn(turn);
+          if (onTurn) await onTurn(turn);
           return;
         } catch (e) { lastErr = compact(e?.message || String(e)); }
       }
-      if (onTurn) onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: lastErr });
+      if (onTurn) await onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: lastErr });
     }),
   );
   return results;
@@ -639,14 +639,14 @@ export function listPersonas() {
 // onEvent(ev,data):ev ∈ viewpoint | seat-failed | deliberation。逐步冒泡,失败降级不伪造。
 // 想清楚(clarify §2.2):只跑主脑,产出结构化共创白箱(无反方/无裁决/无不可静音)。
 export async function runClarify({ mode, brief, evidence, byoKeys, runConfig }, onEvent) {
-  const emit = (ev, data) => onEvent && onEvent(ev, data);
+  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
   const seats = assignDeliberationSeats(byoKeys, runConfig || DEFAULT_RUN_CONFIG(mode));
   let brain = seats.organizer;
   if (!brain) {
     const first = getConfiguredProviders(byoKeys)[0];
     if (first) brain = { id: first.provider.id, label: first.provider.label };
   }
-  if (!brain) { emit("error", { error: "no configured provider" }); return { clarify: null, simulated: true }; }
+  if (!brain) { await emit("error", { error: "no configured provider" }); return { clarify: null, simulated: true }; }
   const prov = ALL.find((p) => p.id === brain.id);
   const apiKey = resolveKey(prov, byoKeys);
   try {
@@ -657,10 +657,10 @@ export async function runClarify({ mode, brief, evidence, byoKeys, runConfig }, 
       constructiveAngles: asStrArr(out.constructiveAngles),
       sharpestTension: clean(out.sharpestTension),
     };
-    emit("clarify", clarify);
+    await emit("clarify", clarify);
     return { clarify, simulated: false, brain: brain.label };
   } catch (e) {
-    emit("seat-failed", { seat: brain.label, roleAngle: "organizer", round: 1, error: compact(e?.message || String(e)) });
+    await emit("seat-failed", { seat: brain.label, roleAngle: "organizer", round: 1, error: compact(e?.message || String(e)) });
     return { clarify: null, simulated: false };
   }
 }
@@ -691,9 +691,9 @@ function normCard(o) {
 }
 
 export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, onEvent) {
-  const emit = (ev, data) => onEvent && onEvent(ev, data);
+  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
   const configured = getConfiguredProviders(byoKeys);
-  if (configured.length < 2) { emit("error", { error: "接力至少需要 2 家可用模型" }); return { hops: [], card: null, models: [] }; }
+  if (configured.length < 2) { await emit("error", { error: "接力至少需要 2 家可用模型" }); return { hops: [], card: null, models: [] }; }
   // 解析 6 个角色槽位:首选 slot.id;掉线则从补位池顶上(expand 棒尽量用不同模型;seed/synth 允许复用主脑)
   const byId = new Map(configured.map((e) => [e.provider.id, e]));
   const usedExpand = new Set();
@@ -729,13 +729,13 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
         }
         if (!seeded) {
           const hop = { order: i + 1, seat: provider.label, role, lens: null, added: [], failed: true, error: lastErr, latencyMs: Date.now() - started };
-          hops.push(hop); emit("relay-hop", hop);
-          emit("error", { error: "立框失败:" + lastErr });
+          hops.push(hop); await emit("relay-hop", hop);
+          await emit("error", { error: "立框失败:" + lastErr });
           return { hops, card: null, models };
         }
         framing = seeded;
         const hop = { order: i + 1, seat: seedSeat, role, lens: null, added: [], framing, latencyMs: Date.now() - started };
-        hops.push(hop); emit("relay-hop", hop);
+        hops.push(hop); await emit("relay-hop", hop);
       } else if (isSynth) {
         // 收棒:依次尝试(本棒模型 → 主脑 → 其余),单模型 429/挂掉不丢方向卡
         const synthOrder = [links[i], links[0], ...links].filter((v, idx, a) => a.indexOf(v) === idx);
@@ -747,8 +747,8 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
           } catch (e) { lastErr = compact(e?.message || String(e)); }
         }
         const hop = { order: i + 1, seat: synthSeat, role, lens, added: [], failed: !card, error: card ? undefined : lastErr, latencyMs: Date.now() - started };
-        hops.push(hop); emit("relay-hop", hop);
-        if (card) emit("relay-card", card);
+        hops.push(hop); await emit("relay-hop", hop);
+        if (card) await emit("relay-card", card);
         return { hops, card, models };
       } else {
         const out = await chatJSON(provider, apiKey, buildRelayHopPrompt({ framing, lens }));
@@ -756,12 +756,12 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
         if (out?.framing) framing = normFraming(out.framing);
         allAdded.push(...added);
         const hop = { order: i + 1, seat: provider.label, role, lens, accepted: clean(out?.accepted), added, framing, latencyMs: Date.now() - started };
-        hops.push(hop); emit("relay-hop", hop);
+        hops.push(hop); await emit("relay-hop", hop);
       }
     } catch (e) {
       const hop = { order: i + 1, seat: provider.label, role, lens, added: [], failed: true, error: compact(e?.message || String(e)), latencyMs: Date.now() - started };
-      hops.push(hop); emit("relay-hop", hop);
-      if (isSeed) { emit("error", { error: "立框失败:" + hop.error }); return { hops, card: null, models }; }
+      hops.push(hop); await emit("relay-hop", hop);
+      if (isSeed) { await emit("error", { error: "立框失败:" + hop.error }); return { hops, card: null, models }; }
       // 中间棒失败:跳过继续(framing 不更新);收棒失败:无 card
     }
   }
@@ -770,7 +770,7 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
 
 export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfig, posture }, onEvent) {
   const seats = assignDeliberationSeats(byoKeys, runConfig || DEFAULT_RUN_CONFIG(mode));
-  const emit = (ev, data) => onEvent && onEvent(ev, data);
+  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
   const stance = posture || runConfig?.posture || "roast"; // roast=全套对抗;council=温和(不强制魔鬼kill/不跑R3)
   const isRoast = stance === "roast";
   const collected = [];
@@ -787,9 +787,9 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
       const evIds = [...new Set((plan.keyPoints || []).flatMap((k) => (Array.isArray(k?.evidenceIds) ? k.evidenceIds : [])))].filter(Boolean);
       const vp = { seat: seats.organizer.label, roleAngle: "organizer", stance: null, text: organizerPlan, evidenceIds: evIds, isHardestKill: false, round: 1, latencyMs: Date.now() - started };
       collected.push(vp);
-      emit("viewpoint", vp);
+      await emit("viewpoint", vp);
     } catch (e) {
-      emit("seat-failed", { seat: seats.organizer.label, roleAngle: "organizer", round: 1, error: compact(e?.message || String(e)) });
+      await emit("seat-failed", { seat: seats.organizer.label, roleAngle: "organizer", round: 1, error: compact(e?.message || String(e)) });
     }
   }
 
@@ -808,7 +808,7 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
             personaId: "domain-expert",
             persona: { id: "domain-expert", cn: clean(det.cn) || "领域专家", system: `${PERSONAS["domain-expert"].system}\nDomain focus: ${clean(det.systemFocus)}` },
           });
-          emit("seat-added", { roleAngle: "domain-expert", cn: clean(det.cn) || "领域专家", domain });
+          await emit("seat-added", { roleAngle: "domain-expert", cn: clean(det.cn) || "领域专家", domain });
         }
       }
     } catch {}
@@ -835,10 +835,10 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
           if (isHK) devilMarked = true;
           const vp = { seat: c.label, roleAngle: c.personaId, stance: v.stance, text: v.text, evidenceIds: v.evidenceIds, isHardestKill: isHK, round: 2, latencyMs: Date.now() - started };
           collected.push(vp);
-          emit("viewpoint", vp);
+          await emit("viewpoint", vp);
         }
       } catch (e) {
-        emit("seat-failed", { seat: c.label, roleAngle: c.personaId, round: 2, error: compact(e?.message || String(e)) });
+        await emit("seat-failed", { seat: c.label, roleAngle: c.personaId, round: 2, error: compact(e?.message || String(e)) });
       }
     }),
   );
@@ -858,10 +858,10 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
         if (!verdict) continue;
         const verification = { verdict, note: clean(ch.note) };
         r2[idx].verification = verification;
-        emit("verification", { index: idx, verification });
+        await emit("verification", { index: idx, verification });
       }
     } catch (e) {
-      emit("seat-failed", { seat: seats.verifier.label, roleAngle: "verifier", round: 2, error: compact(e?.message || String(e)) });
+      await emit("seat-failed", { seat: seats.verifier.label, roleAngle: "verifier", round: 2, error: compact(e?.message || String(e)) });
     }
   }
 
@@ -886,10 +886,10 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
           for (const v of vps) {
             const vp = { seat: c.label, roleAngle: c.personaId, stance: v.stance, text: v.text, evidenceIds: v.evidenceIds, isHardestKill: false, round: 3, latencyMs: Date.now() - started };
             collected.push(vp);
-            emit("viewpoint", vp);
+            await emit("viewpoint", vp);
           }
         } catch (e) {
-          emit("seat-failed", { seat: c.label, roleAngle: c.personaId, round: 3, error: compact(e?.message || String(e)) });
+          await emit("seat-failed", { seat: c.label, roleAngle: c.personaId, round: 3, error: compact(e?.message || String(e)) });
         }
       }),
     );
@@ -910,9 +910,9 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
         blindSpots: asStrArr(s.blindSpots),
         simulated: seats.simulated,
       };
-      emit("deliberation", deliberation);
+      await emit("deliberation", deliberation);
     } catch (e) {
-      emit("seat-failed", { seat: seats.chairman.label, roleAngle: "chairman", round: 3, error: compact(e?.message || String(e)) });
+      await emit("seat-failed", { seat: seats.chairman.label, roleAngle: "chairman", round: 3, error: compact(e?.message || String(e)) });
     }
   }
 

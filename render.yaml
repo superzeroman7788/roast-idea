@@ -3,7 +3,10 @@
 #   1) render.com 注册/登录(免费,不需信用卡)→ New + → Blueprint
 #   2) 连接 GitHub 仓库 superzeroman7788/roast-idea,Render 自动读本文件建服务
 #   3) 部署后到该服务 Environment,填下面标 sync:false 的密钥(从本地 .env.local 拷过去)
-# 注:免费层会在闲置 ~15 分钟后休眠,下次访问冷启动 ~50s;且无持久盘(sqlite/图片重启清,demo 够用)。
+# 注:免费层会在闲置 ~15 分钟后休眠,下次访问冷启动 ~50s。
+# 持久化:数据库走 Turso(libSQL,免费持久云端),休眠/重启不丢历史。须填下面 TURSO_* 两个密钥
+#   (turso.tech 注册 → 建 DB → turso db show <db> 拿 URL、turso db tokens create <db> 拿 token)。
+#   不填 TURSO_* 时回落到 /data 本地 sqlite(免费层会被清,仅临时)。图片仍在 /data(无持久盘会清,可后续接对象存储)。
 services:
   - type: web
     name: roast-idea
@@ -16,6 +19,11 @@ services:
     envVars:
       - key: ROAST_DATA_DIR
         value: /data
+      # ↓↓ Turso 持久数据库(免费层重启不丢历史)。turso.tech 注册后填这两个;不填则回落临时 sqlite。
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
       # ↓↓ 密钥/密码:绝不进 git。部署后在 Render Dashboard → Environment 手填(值从 .env.local 拷)
       - key: ROAST_ACCESS_PASSWORD
         sync: false

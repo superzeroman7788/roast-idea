@@ -1,7 +1,8 @@
-// SQLite 落库层 —— 唯一会复利的资产(护城河数据集)。
-// 用 Node 内置 node:sqlite(零依赖)。DB 文件本地存放、已被 .gitignore 排除。
-// 隐私(P7):brief 为原始点子,默认本地落库;ROAST_PERSIST_BRIEF=0 可关闭存正文。
-import { DatabaseSync } from "node:sqlite";
+// 落库层 —— 唯一会复利的资产(护城河数据集)。
+// 用 libSQL/Turso:本地 TURSO_DATABASE_URL 未设 → file:(同 SQLite,持久在磁盘);
+// 线上设 TURSO_DATABASE_URL=libsql://…turso… + TURSO_AUTH_TOKEN → 持久云端,Render 免费层重启也不丢。
+// 隐私(P7):brief 为原始点子,默认落库;ROAST_PERSIST_BRIEF=0 可关闭存正文。
+import { createClient } from "@libsql/client";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -9,540 +10,342 @@ import path from "node:path";
 const DB_PATH =
   process.env.ROAST_DB_PATH ||
   path.join(process.env.ROAST_DATA_DIR || path.join(process.cwd(), "data"), "roast.db");
+const DB_URL = process.env.TURSO_DATABASE_URL || `file:${DB_PATH}`;
 
-let db = null;
+if (DB_URL.startsWith("file:")) {
+  try { fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); } catch {}
+}
+const client = createClient({ url: DB_URL, authToken: process.env.TURSO_AUTH_TOKEN });
 
-export function getDb() {
-  if (db) return db;
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  db = new DatabaseSync(DB_PATH);
-  db.exec(`
+// 建表 + 幂等迁移,只跑一次(并发安全:缓存同一 promise)
+let readyPromise = null;
+function ensureReady() {
+  if (!readyPromise) readyPromise = migrate();
+  return readyPromise;
+}
+async function migrate() {
+  await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS run_record (
-      id            TEXT PRIMARY KEY,
-      mode          TEXT NOT NULL,
-      brief         TEXT,                 -- 可被 redacted(P7)
-      evidence_pack TEXT,                 -- JSON: EvidencePack
-      seats         TEXT NOT NULL,        -- JSON: CouncilSeat[]
-      verdict       TEXT NOT NULL,        -- JSON: Verdict
-      created_at    TEXT NOT NULL,        -- ISO
-      outcome       TEXT                  -- JSON;未来回填"后来成没成"
+      id TEXT PRIMARY KEY, mode TEXT NOT NULL, brief TEXT, evidence_pack TEXT,
+      seats TEXT NOT NULL, verdict TEXT NOT NULL, created_at TEXT NOT NULL, outcome TEXT
     );
     CREATE TABLE IF NOT EXISTS evidence_cache (
-      query     TEXT PRIMARY KEY,         -- 归一化检索词
-      pack      TEXT NOT NULL,            -- JSON: EvidencePack(降成本降延迟)
-      cached_at TEXT NOT NULL             -- ISO
+      query TEXT PRIMARY KEY, pack TEXT NOT NULL, cached_at TEXT NOT NULL
     );
-    -- 讨论式陪练(讨论重构):一场讨论 + 多方轮流发言
     CREATE TABLE IF NOT EXISTS discussions (
-      id            TEXT PRIMARY KEY,
-      mode          TEXT NOT NULL,            -- idea | copy
-      title         TEXT NOT NULL,
-      brief         TEXT,                     -- 原始点子/文案(P7 可 redact)
-      status        TEXT NOT NULL DEFAULT 'open',  -- open | finalized
-      conclusion    TEXT NOT NULL DEFAULT '', -- finalize/收敛 产出的方案(markdown,喂下游产出层/导出)
-      converged     TEXT,                     -- JSON: ConvergedOutput(人-steered 白箱收敛)
-      evidence_pack TEXT,                     -- JSON: 信息板快照(整场复用)
-      roles         TEXT,                     -- JSON: 角色→provider 固定映射(host 跨轮稳定)
-      created_at    TEXT NOT NULL,
-      updated_at    TEXT NOT NULL
+      id TEXT PRIMARY KEY, mode TEXT NOT NULL, title TEXT NOT NULL, brief TEXT,
+      status TEXT NOT NULL DEFAULT 'open', conclusion TEXT NOT NULL DEFAULT '',
+      converged TEXT, evidence_pack TEXT, roles TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS discussion_turns (
-      id            TEXT PRIMARY KEY,
-      discussion_id TEXT NOT NULL,
-      seq           INTEGER NOT NULL,         -- 全场顺序
-      round         INTEGER NOT NULL DEFAULT 0,
-      speaker       TEXT NOT NULL,            -- provider label | 'you' | 'system'
-      role          TEXT NOT NULL DEFAULT '', -- host/builder/devils-advocate/...
-      body          TEXT NOT NULL,
-      citations     TEXT NOT NULL DEFAULT '[]', -- JSON: [{evidenceId, valid}]
-      latency_ms    INTEGER,
-      created_at    TEXT NOT NULL
+      id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL, seq INTEGER NOT NULL,
+      round INTEGER NOT NULL DEFAULT 0, speaker TEXT NOT NULL, role TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL, citations TEXT NOT NULL DEFAULT '[]', latency_ms INTEGER, created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_turns_discussion ON discussion_turns(discussion_id, seq);
-    -- 产出层(交付物):把方案变成文案/PRD/设计文档/代码草稿/配图;支持比稿(同 type 多候选)+ 改稿(parent 谱系)
     CREATE TABLE IF NOT EXISTS artifacts (
-      id            TEXT PRIMARY KEY,
-      discussion_id TEXT NOT NULL,
-      type          TEXT NOT NULL,                     -- copy | prd | design_doc | code_sketch | image
-      provider      TEXT NOT NULL,                     -- 出品厂商 label
-      content       TEXT,                              -- 文字交付物正文(markdown/代码);图为空
-      image_path    TEXT,                              -- 图片相对路径(相对 data/);文字为空
-      parent_id     TEXT,                              -- 改稿:指向上一版 artifact id(谱系)
-      mode          TEXT NOT NULL DEFAULT 'draft',     -- draft | refine
-      instruction   TEXT,                              -- 改稿指令/用户备注
-      status        TEXT NOT NULL DEFAULT 'candidate', -- candidate | chosen
-      created_at    TEXT NOT NULL
+      id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL, type TEXT NOT NULL, provider TEXT NOT NULL,
+      content TEXT, image_path TEXT, parent_id TEXT, mode TEXT NOT NULL DEFAULT 'draft',
+      instruction TEXT, status TEXT NOT NULL DEFAULT 'candidate', created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_artifacts_discussion ON artifacts(discussion_id, type);
-    -- 审议引擎(白箱):结构化署名观点 + Fusion 式审议综述
     CREATE TABLE IF NOT EXISTS viewpoints (
-      id              TEXT PRIMARY KEY,
-      discussion_id   TEXT NOT NULL,
-      seat            TEXT NOT NULL,                 -- 出品厂商 label
-      role_angle      TEXT NOT NULL,                 -- organizer | demand | feasibility | devils-advocate
-      stance          TEXT,                          -- Ship | Fix | Pause | Kill(结构字段,非裁决)
-      text            TEXT NOT NULL,
-      evidence_ids    TEXT NOT NULL DEFAULT '[]',     -- JSON: ["E1",...](经引用校验)
-      is_hardest_kill INTEGER NOT NULL DEFAULT 0,     -- 强制反方的最强 kill,收敛时不可静音
-      round           INTEGER NOT NULL DEFAULT 2,     -- 1=立靶 2=独立开火 3=交叉
-      verification    TEXT,                            -- JSON: {verdict,note}(Verifier 事实核查)
-      latency_ms      INTEGER,
-      created_at      TEXT NOT NULL
+      id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL, seat TEXT NOT NULL, role_angle TEXT NOT NULL,
+      stance TEXT, text TEXT NOT NULL, evidence_ids TEXT NOT NULL DEFAULT '[]',
+      is_hardest_kill INTEGER NOT NULL DEFAULT 0, round INTEGER NOT NULL DEFAULT 2,
+      verification TEXT, latency_ms INTEGER, created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_viewpoints_discussion ON viewpoints(discussion_id, round);
     CREATE TABLE IF NOT EXISTS deliberations (
-      id              TEXT PRIMARY KEY,
-      discussion_id   TEXT NOT NULL,
-      consensus       TEXT NOT NULL DEFAULT '[]',
-      contradictions  TEXT NOT NULL DEFAULT '[]',
-      partial_coverage TEXT NOT NULL DEFAULT '[]',
-      unique_insights TEXT NOT NULL DEFAULT '[]',     -- JSON: [{seat,text}]
-      blind_spots     TEXT NOT NULL DEFAULT '[]',
-      simulated       INTEGER NOT NULL DEFAULT 0,
-      created_at      TEXT NOT NULL
+      id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL, consensus TEXT NOT NULL DEFAULT '[]',
+      contradictions TEXT NOT NULL DEFAULT '[]', partial_coverage TEXT NOT NULL DEFAULT '[]',
+      unique_insights TEXT NOT NULL DEFAULT '[]', blind_spots TEXT NOT NULL DEFAULT '[]',
+      simulated INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
     );
-    -- 人策展信号(append-only 偏好日志 = 护城河):对每条观点 认领/搁置/钉死/反驳
     CREATE TABLE IF NOT EXISTS human_signals (
-      id            TEXT PRIMARY KEY,
-      discussion_id TEXT NOT NULL,
-      viewpoint_id  TEXT NOT NULL,
-      action        TEXT NOT NULL,            -- endorse | setAside | pin | reply | clear
-      note          TEXT,
-      created_at    TEXT NOT NULL
+      id TEXT PRIMARY KEY, discussion_id TEXT NOT NULL, viewpoint_id TEXT NOT NULL,
+      action TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_signals_discussion ON human_signals(discussion_id);
-    -- 选角配置持久化(按模式;无用户概念时即应用级默认)
     CREATE TABLE IF NOT EXISTS run_configs (
-      mode       TEXT PRIMARY KEY,   -- idea | copy
-      config     TEXT NOT NULL,      -- JSON: RunConfig
-      updated_at TEXT NOT NULL
+      mode TEXT PRIMARY KEY, config TEXT NOT NULL, updated_at TEXT NOT NULL
     );
   `);
-  // 幂等迁移:给已存在的表补新列(列已存在则吞掉)。
-  try { db.exec(`ALTER TABLE viewpoints ADD COLUMN verification TEXT`); } catch {}
-  try { db.exec(`ALTER TABLE discussions ADD COLUMN converged TEXT`); } catch {}
-  try { db.exec(`ALTER TABLE discussions ADD COLUMN clarify TEXT`); } catch {} // 想清楚(clarify)结构化产出
-  try { db.exec(`ALTER TABLE discussions ADD COLUMN relay TEXT`); } catch {} // 跨模型接力(hops + 方向卡)
-  try { db.exec(`ALTER TABLE discussion_turns ADD COLUMN pinned INTEGER DEFAULT 0`); } catch {} // 对话点赞:用户重视的发言
-  return db;
+  // 幂等迁移:给已存在的表补新列(列已存在则吞掉)
+  for (const stmt of [
+    `ALTER TABLE viewpoints ADD COLUMN verification TEXT`,
+    `ALTER TABLE discussions ADD COLUMN converged TEXT`,
+    `ALTER TABLE discussions ADD COLUMN clarify TEXT`,
+    `ALTER TABLE discussions ADD COLUMN relay TEXT`,
+    `ALTER TABLE discussion_turns ADD COLUMN pinned INTEGER DEFAULT 0`,
+  ]) {
+    try { await client.execute(stmt); } catch {}
+  }
 }
 
-// 落库一条 RunRecord(契约见 PRD §4)。失败抛出由调用方兜底,绝不静默伪装成功。
-export function saveRunRecord(record) {
-  const database = getDb();
-  const persistBrief = process.env.ROAST_PERSIST_BRIEF !== "0";
-  const stmt = database.prepare(`
-    INSERT INTO run_record (id, mode, brief, evidence_pack, seats, verdict, created_at, outcome)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  stmt.run(
-    record.id,
-    record.mode,
-    persistBrief ? record.brief : null,
-    record.evidencePack ? JSON.stringify(record.evidencePack) : null,
-    JSON.stringify(record.seats ?? []),
-    JSON.stringify(record.verdict ?? {}),
-    record.createdAt,
-    record.outcome ? JSON.stringify(record.outcome) : null,
+// 查询封装(libSQL 异步)
+async function all(sql, args = []) { await ensureReady(); return (await client.execute({ sql, args })).rows; }
+async function get(sql, args = []) { await ensureReady(); return (await client.execute({ sql, args })).rows[0] || null; }
+async function run(sql, args = []) { await ensureReady(); return client.execute({ sql, args }); }
+
+// 启动期可显式预热(可选);兼容旧调用名
+export async function getDb() { await ensureReady(); return client; }
+
+const persistBrief = () => process.env.ROAST_PERSIST_BRIEF !== "0";
+
+// ---- RunRecord(旧议会裁决落库)----
+export async function saveRunRecord(record) {
+  await run(
+    `INSERT INTO run_record (id, mode, brief, evidence_pack, seats, verdict, created_at, outcome)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      record.id, record.mode, persistBrief() ? record.brief : null,
+      record.evidencePack ? JSON.stringify(record.evidencePack) : null,
+      JSON.stringify(record.seats ?? []), JSON.stringify(record.verdict ?? {}),
+      record.createdAt, record.outcome ? JSON.stringify(record.outcome) : null,
+    ],
   );
   return record.id;
 }
 
-export function listRunRecords(limit = 50) {
-  const database = getDb();
-  const rows = database
-    .prepare(`SELECT * FROM run_record ORDER BY created_at DESC LIMIT ?`)
-    .all(limit);
+export async function listRunRecords(limit = 50) {
+  const rows = await all(`SELECT * FROM run_record ORDER BY created_at DESC LIMIT ?`, [limit]);
   return rows.map((row) => ({
-    id: row.id,
-    mode: row.mode,
-    brief: row.brief,
+    id: row.id, mode: row.mode, brief: row.brief,
     evidencePack: row.evidence_pack ? JSON.parse(row.evidence_pack) : null,
-    seats: JSON.parse(row.seats),
-    verdict: JSON.parse(row.verdict),
-    createdAt: row.created_at,
-    outcome: row.outcome ? JSON.parse(row.outcome) : undefined,
+    seats: JSON.parse(row.seats), verdict: JSON.parse(row.verdict),
+    createdAt: row.created_at, outcome: row.outcome ? JSON.parse(row.outcome) : undefined,
   }));
 }
 
-export function countRunRecords() {
-  return getDb().prepare(`SELECT COUNT(*) AS n FROM run_record`).get().n;
+export async function countRunRecords() {
+  return (await get(`SELECT COUNT(*) AS n FROM run_record`)).n;
 }
 
-// 证据缓存:同一检索词 24h 内复用,降成本降延迟(P2)。
+// ---- 证据缓存(24h)----
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-
-export function getCachedPack(query, nowMs) {
-  const row = getDb()
-    .prepare(`SELECT pack, cached_at FROM evidence_cache WHERE query = ?`)
-    .get(query);
+export async function getCachedPack(query, nowMs) {
+  const row = await get(`SELECT pack, cached_at FROM evidence_cache WHERE query = ?`, [query]);
   if (!row) return null;
   if (nowMs - Date.parse(row.cached_at) > CACHE_TTL_MS) return null;
-  try {
-    return JSON.parse(row.pack);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(row.pack); } catch { return null; }
+}
+export async function setCachedPack(query, pack, nowIso) {
+  await run(
+    `INSERT INTO evidence_cache (query, pack, cached_at) VALUES (?, ?, ?)
+     ON CONFLICT(query) DO UPDATE SET pack = excluded.pack, cached_at = excluded.cached_at`,
+    [query, JSON.stringify(pack), nowIso],
+  );
 }
 
-export function setCachedPack(query, pack, nowIso) {
-  getDb()
-    .prepare(
-      `INSERT INTO evidence_cache (query, pack, cached_at) VALUES (?, ?, ?)
-       ON CONFLICT(query) DO UPDATE SET pack = excluded.pack, cached_at = excluded.cached_at`,
-    )
-    .run(query, JSON.stringify(pack), nowIso);
-}
-
-// ---- 讨论式陪练(讨论重构)----
-const persistBrief = () => process.env.ROAST_PERSIST_BRIEF !== "0";
-
-export function createDiscussion({ mode, title, brief, evidencePack, roles }) {
-  const database = getDb();
+// ---- 讨论式陪练 ----
+export async function createDiscussion({ mode, title, brief, evidencePack, roles }) {
   const id = randomUUID();
   const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO discussions (id, mode, title, brief, status, conclusion, evidence_pack, roles, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      mode,
-      title,
-      persistBrief() ? brief : null,
-      evidencePack ? JSON.stringify(evidencePack) : null,
-      roles ? JSON.stringify(roles) : null,
-      now,
-      now,
-    );
+  await run(
+    `INSERT INTO discussions (id, mode, title, brief, status, conclusion, evidence_pack, roles, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?)`,
+    [id, mode, title, persistBrief() ? brief : null, evidencePack ? JSON.stringify(evidencePack) : null, roles ? JSON.stringify(roles) : null, now, now],
+  );
   return id;
 }
 
 // 追加一条发言(seq 自增,更新讨论 updated_at)。失败不静默伪装。
-export function addTurn({ discussionId, round, speaker, role, body, citations, latencyMs }) {
-  const database = getDb();
-  const exists = database.prepare(`SELECT 1 FROM discussions WHERE id = ?`).get(discussionId);
+export async function addTurn({ discussionId, round, speaker, role, body, citations, latencyMs }) {
+  const exists = await get(`SELECT 1 FROM discussions WHERE id = ?`, [discussionId]);
   if (!exists) throw new Error(`discussion ${discussionId} not found`);
   const id = randomUUID();
   const now = new Date().toISOString();
-  const seq =
-    (database.prepare(`SELECT COALESCE(MAX(seq), 0) AS m FROM discussion_turns WHERE discussion_id = ?`).get(discussionId)?.m || 0) + 1;
-  database
-    .prepare(
-      `INSERT INTO discussion_turns (id, discussion_id, seq, round, speaker, role, body, citations, latency_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      discussionId,
-      seq,
-      round ?? 0,
-      speaker,
-      role || "",
-      body,
-      JSON.stringify(citations || []),
-      latencyMs ?? null,
-      now,
-    );
-  database.prepare(`UPDATE discussions SET updated_at = ? WHERE id = ?`).run(now, discussionId);
+  const seq = ((await get(`SELECT COALESCE(MAX(seq), 0) AS m FROM discussion_turns WHERE discussion_id = ?`, [discussionId]))?.m || 0) + 1;
+  await run(
+    `INSERT INTO discussion_turns (id, discussion_id, seq, round, speaker, role, body, citations, latency_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, discussionId, seq, round ?? 0, speaker, role || "", body, JSON.stringify(citations || []), latencyMs ?? null, now],
+  );
+  await run(`UPDATE discussions SET updated_at = ? WHERE id = ?`, [now, discussionId]);
   return { id, seq, createdAt: now };
 }
 
 // 对话点赞:标记/取消某条发言为"用户重视"
-export function setTurnPinned(turnId, pinned) {
-  const database = getDb();
-  const row = database.prepare(`SELECT discussion_id FROM discussion_turns WHERE id = ?`).get(turnId);
+export async function setTurnPinned(turnId, pinned) {
+  const row = await get(`SELECT discussion_id FROM discussion_turns WHERE id = ?`, [turnId]);
   if (!row) return false;
-  database.prepare(`UPDATE discussion_turns SET pinned = ? WHERE id = ?`).run(pinned ? 1 : 0, turnId);
+  await run(`UPDATE discussion_turns SET pinned = ? WHERE id = ?`, [pinned ? 1 : 0, turnId]);
   return true;
 }
 
 // 取某讨论"用户重视(pinned)"的发言正文(喂主脑/合成优先照顾)
-export function listPinnedTurns(discussionId) {
-  const database = getDb();
-  return database
-    .prepare(`SELECT speaker, role, body FROM discussion_turns WHERE discussion_id = ? AND pinned = 1 ORDER BY seq ASC`)
-    .all(discussionId)
-    .map((t) => ({ speaker: t.speaker, role: t.role, body: t.body }));
+export async function listPinnedTurns(discussionId) {
+  const rows = await all(`SELECT speaker, role, body FROM discussion_turns WHERE discussion_id = ? AND pinned = 1 ORDER BY seq ASC`, [discussionId]);
+  return rows.map((t) => ({ speaker: t.speaker, role: t.role, body: t.body }));
 }
 
-export function getDiscussion(id) {
-  const database = getDb();
-  const d = database.prepare(`SELECT * FROM discussions WHERE id = ?`).get(id);
+export async function getDiscussion(id) {
+  const d = await get(`SELECT * FROM discussions WHERE id = ?`, [id]);
   if (!d) return null;
-  const turns = database
-    .prepare(`SELECT * FROM discussion_turns WHERE discussion_id = ? ORDER BY seq ASC`)
-    .all(id);
+  const turns = await all(`SELECT * FROM discussion_turns WHERE discussion_id = ? ORDER BY seq ASC`, [id]);
   return {
-    id: d.id,
-    mode: d.mode,
-    title: d.title,
-    brief: d.brief,
-    status: d.status,
-    conclusion: d.conclusion,
+    id: d.id, mode: d.mode, title: d.title, brief: d.brief, status: d.status, conclusion: d.conclusion,
     converged: d.converged ? JSON.parse(d.converged) : null,
     clarify: d.clarify ? JSON.parse(d.clarify) : null,
     relay: d.relay ? JSON.parse(d.relay) : null,
     evidencePack: d.evidence_pack ? JSON.parse(d.evidence_pack) : null,
     roles: d.roles ? JSON.parse(d.roles) : null,
-    createdAt: d.created_at,
-    updatedAt: d.updated_at,
+    createdAt: d.created_at, updatedAt: d.updated_at,
     turns: turns.map((t) => ({
-      id: t.id,
-      seq: t.seq,
-      round: t.round,
-      speaker: t.speaker,
-      role: t.role,
-      body: t.body,
-      citations: JSON.parse(t.citations || "[]"),
-      latencyMs: t.latency_ms,
-      pinned: !!t.pinned,
-      createdAt: t.created_at,
+      id: t.id, seq: t.seq, round: t.round, speaker: t.speaker, role: t.role, body: t.body,
+      citations: JSON.parse(t.citations || "[]"), latencyMs: t.latency_ms, pinned: !!t.pinned, createdAt: t.created_at,
     })),
-    artifacts: listArtifacts(id),
-    viewpoints: listViewpoints(id),
-    deliberation: getDeliberation(id),
-    humanSignals: listSignals(id),
+    artifacts: await listArtifacts(id),
+    viewpoints: await listViewpoints(id),
+    deliberation: await getDeliberation(id),
+    humanSignals: await listSignals(id),
   };
 }
 
-// 想清楚(clarify)产出落库(可重跑覆盖)
-export function saveClarify(id, clarify) {
-  getDb()
-    .prepare(`UPDATE discussions SET clarify = ?, updated_at = ? WHERE id = ?`)
-    .run(clarify ? JSON.stringify(clarify) : null, new Date().toISOString(), id);
+export async function saveClarify(id, clarify) {
+  await run(`UPDATE discussions SET clarify = ?, updated_at = ? WHERE id = ?`, [clarify ? JSON.stringify(clarify) : null, new Date().toISOString(), id]);
 }
-
-// 跨模型接力产出落库(hops + 方向卡;可重跑覆盖)
-export function saveRelay(id, relay) {
-  getDb()
-    .prepare(`UPDATE discussions SET relay = ?, updated_at = ? WHERE id = ?`)
-    .run(relay ? JSON.stringify(relay) : null, new Date().toISOString(), id);
+export async function saveRelay(id, relay) {
+  await run(`UPDATE discussions SET relay = ?, updated_at = ? WHERE id = ?`, [relay ? JSON.stringify(relay) : null, new Date().toISOString(), id]);
 }
-
-export function finalizeDiscussion(id, conclusion, converged) {
+export async function finalizeDiscussion(id, conclusion, converged) {
   const now = new Date().toISOString();
-  getDb()
-    .prepare(`UPDATE discussions SET status = 'finalized', conclusion = ?, converged = ?, updated_at = ? WHERE id = ?`)
-    .run(conclusion, converged ? JSON.stringify(converged) : null, now, id);
+  await run(`UPDATE discussions SET status = 'finalized', conclusion = ?, converged = ?, updated_at = ? WHERE id = ?`,
+    [conclusion, converged ? JSON.stringify(converged) : null, now, id]);
   return now;
 }
-
-export function listDiscussions(limit = 100) {
-  return getDb()
-    .prepare(`SELECT id, mode, title, status, created_at, updated_at FROM discussions ORDER BY updated_at DESC LIMIT ?`)
-    .all(limit);
+export async function listDiscussions(limit = 100) {
+  return all(`SELECT id, mode, title, status, created_at, updated_at FROM discussions ORDER BY updated_at DESC LIMIT ?`, [limit]);
 }
-
-// 删除一场讨论及其全部发言(本地数据,用户主动清理)。
-export function deleteDiscussion(id) {
-  const database = getDb();
-  database.prepare(`DELETE FROM discussion_turns WHERE discussion_id = ?`).run(id);
-  database.prepare(`DELETE FROM artifacts WHERE discussion_id = ?`).run(id);
-  database.prepare(`DELETE FROM viewpoints WHERE discussion_id = ?`).run(id);
-  database.prepare(`DELETE FROM deliberations WHERE discussion_id = ?`).run(id);
-  database.prepare(`DELETE FROM human_signals WHERE discussion_id = ?`).run(id);
-  const info = database.prepare(`DELETE FROM discussions WHERE id = ?`).run(id);
-  return info.changes > 0;
+export async function deleteDiscussion(id) {
+  await run(`DELETE FROM discussion_turns WHERE discussion_id = ?`, [id]);
+  await run(`DELETE FROM artifacts WHERE discussion_id = ?`, [id]);
+  await run(`DELETE FROM viewpoints WHERE discussion_id = ?`, [id]);
+  await run(`DELETE FROM deliberations WHERE discussion_id = ?`, [id]);
+  await run(`DELETE FROM human_signals WHERE discussion_id = ?`, [id]);
+  const info = await run(`DELETE FROM discussions WHERE id = ?`, [id]);
+  return Number(info.rowsAffected || 0) > 0;
 }
 
 // ---- 审议引擎(白箱)----
 function rowToViewpoint(row) {
   return {
-    id: row.id,
-    discussionId: row.discussion_id,
-    seat: row.seat,
-    roleAngle: row.role_angle,
-    stance: row.stance || null,
-    text: row.text,
-    evidenceIds: JSON.parse(row.evidence_ids || "[]"),
-    isHardestKill: Boolean(row.is_hardest_kill),
-    round: row.round,
+    id: row.id, discussionId: row.discussion_id, seat: row.seat, roleAngle: row.role_angle,
+    stance: row.stance || null, text: row.text, evidenceIds: JSON.parse(row.evidence_ids || "[]"),
+    isHardestKill: Boolean(row.is_hardest_kill), round: row.round,
     verification: row.verification ? JSON.parse(row.verification) : null,
-    latencyMs: row.latency_ms,
-    createdAt: row.created_at,
+    latencyMs: row.latency_ms, createdAt: row.created_at,
   };
 }
-
-export function saveViewpoint({ discussionId, seat, roleAngle, stance, text, evidenceIds, isHardestKill, round, latencyMs }) {
-  const database = getDb();
+export async function saveViewpoint({ discussionId, seat, roleAngle, stance, text, evidenceIds, isHardestKill, round, latencyMs }) {
   const id = randomUUID();
   const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO viewpoints (id, discussion_id, seat, role_angle, stance, text, evidence_ids, is_hardest_kill, round, latency_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      discussionId,
-      seat,
-      roleAngle,
-      stance ?? null,
-      text,
-      JSON.stringify(evidenceIds || []),
-      isHardestKill ? 1 : 0,
-      round ?? 2,
-      latencyMs ?? null,
-      now,
-    );
-  return rowToViewpoint(database.prepare(`SELECT * FROM viewpoints WHERE id = ?`).get(id));
+  await run(
+    `INSERT INTO viewpoints (id, discussion_id, seat, role_angle, stance, text, evidence_ids, is_hardest_kill, round, latency_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, discussionId, seat, roleAngle, stance ?? null, text, JSON.stringify(evidenceIds || []), isHardestKill ? 1 : 0, round ?? 2, latencyMs ?? null, now],
+  );
+  return rowToViewpoint(await get(`SELECT * FROM viewpoints WHERE id = ?`, [id]));
 }
-
-export function listViewpoints(discussionId) {
-  return getDb()
-    .prepare(`SELECT * FROM viewpoints WHERE discussion_id = ? ORDER BY round ASC, created_at ASC`)
-    .all(discussionId)
-    .map(rowToViewpoint);
+export async function listViewpoints(discussionId) {
+  return (await all(`SELECT * FROM viewpoints WHERE discussion_id = ? ORDER BY round ASC, created_at ASC`, [discussionId])).map(rowToViewpoint);
 }
-
-// Verifier 核查结论回写
-export function updateViewpointVerification(id, verification) {
-  getDb().prepare(`UPDATE viewpoints SET verification = ? WHERE id = ?`).run(JSON.stringify(verification || null), id);
+export async function updateViewpointVerification(id, verification) {
+  await run(`UPDATE viewpoints SET verification = ? WHERE id = ?`, [JSON.stringify(verification || null), id]);
 }
-
-// 一场讨论最多保留一份最新综述(重跑覆盖)。
-export function saveDeliberation({ discussionId, consensus, contradictions, partialCoverage, uniqueInsights, blindSpots, simulated }) {
-  const database = getDb();
-  database.prepare(`DELETE FROM deliberations WHERE discussion_id = ?`).run(discussionId);
+export async function saveDeliberation({ discussionId, consensus, contradictions, partialCoverage, uniqueInsights, blindSpots, simulated }) {
+  await run(`DELETE FROM deliberations WHERE discussion_id = ?`, [discussionId]);
   const id = randomUUID();
   const now = new Date().toISOString();
   const J = (v) => JSON.stringify(v || []);
-  database
-    .prepare(
-      `INSERT INTO deliberations (id, discussion_id, consensus, contradictions, partial_coverage, unique_insights, blind_spots, simulated, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(id, discussionId, J(consensus), J(contradictions), J(partialCoverage), J(uniqueInsights), J(blindSpots), simulated ? 1 : 0, now);
+  await run(
+    `INSERT INTO deliberations (id, discussion_id, consensus, contradictions, partial_coverage, unique_insights, blind_spots, simulated, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, discussionId, J(consensus), J(contradictions), J(partialCoverage), J(uniqueInsights), J(blindSpots), simulated ? 1 : 0, now],
+  );
   return getDeliberation(discussionId);
 }
-
-export function getDeliberation(discussionId) {
-  const row = getDb().prepare(`SELECT * FROM deliberations WHERE discussion_id = ?`).get(discussionId);
+export async function getDeliberation(discussionId) {
+  const row = await get(`SELECT * FROM deliberations WHERE discussion_id = ?`, [discussionId]);
   if (!row) return null;
   return {
-    consensus: JSON.parse(row.consensus || "[]"),
-    contradictions: JSON.parse(row.contradictions || "[]"),
-    partialCoverage: JSON.parse(row.partial_coverage || "[]"),
-    uniqueInsights: JSON.parse(row.unique_insights || "[]"),
-    blindSpots: JSON.parse(row.blind_spots || "[]"),
-    simulated: Boolean(row.simulated),
-    createdAt: row.created_at,
+    consensus: JSON.parse(row.consensus || "[]"), contradictions: JSON.parse(row.contradictions || "[]"),
+    partialCoverage: JSON.parse(row.partial_coverage || "[]"), uniqueInsights: JSON.parse(row.unique_insights || "[]"),
+    blindSpots: JSON.parse(row.blind_spots || "[]"), simulated: Boolean(row.simulated), createdAt: row.created_at,
   };
 }
-
-// 清空一场讨论的旧审议(重跑前调用):观点 id 会变,连带清旧策展信号
-export function clearViewpoints(discussionId) {
-  getDb().prepare(`DELETE FROM viewpoints WHERE discussion_id = ?`).run(discussionId);
-  getDb().prepare(`DELETE FROM human_signals WHERE discussion_id = ?`).run(discussionId);
+// 重跑前清旧审议(观点 id 会变,连带清旧策展信号)
+export async function clearViewpoints(discussionId) {
+  await run(`DELETE FROM viewpoints WHERE discussion_id = ?`, [discussionId]);
+  await run(`DELETE FROM human_signals WHERE discussion_id = ?`, [discussionId]);
 }
 
 // ---- 人策展信号(偏好数据,append-only)----
-export function saveSignal({ discussionId, viewpointId, action, note }) {
+export async function saveSignal({ discussionId, viewpointId, action, note }) {
   const id = randomUUID();
   const now = new Date().toISOString();
-  getDb()
-    .prepare(`INSERT INTO human_signals (id, discussion_id, viewpoint_id, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(id, discussionId, viewpointId, action, note ?? null, now);
+  await run(`INSERT INTO human_signals (id, discussion_id, viewpoint_id, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, discussionId, viewpointId, action, note ?? null, now]);
   return { id, createdAt: now };
 }
-
-export function listSignals(discussionId) {
-  return getDb()
-    .prepare(`SELECT * FROM human_signals WHERE discussion_id = ? ORDER BY created_at ASC`)
-    .all(discussionId)
+export async function listSignals(discussionId) {
+  return (await all(`SELECT * FROM human_signals WHERE discussion_id = ? ORDER BY created_at ASC`, [discussionId]))
     .map((r) => ({ id: r.id, viewpointId: r.viewpoint_id, action: r.action, note: r.note || "", createdAt: r.created_at }));
 }
 
 // ---- 选角配置持久化 ----
-export function getRunConfig(mode) {
-  const row = getDb().prepare(`SELECT config FROM run_configs WHERE mode = ?`).get(mode);
+export async function getRunConfig(mode) {
+  const row = await get(`SELECT config FROM run_configs WHERE mode = ?`, [mode]);
   if (!row) return null;
   try { return JSON.parse(row.config); } catch { return null; }
 }
-
-export function saveRunConfig(mode, config) {
-  getDb()
-    .prepare(`INSERT INTO run_configs (mode, config, updated_at) VALUES (?, ?, ?)
-              ON CONFLICT(mode) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`)
-    .run(mode, JSON.stringify(config || {}), new Date().toISOString());
+export async function saveRunConfig(mode, config) {
+  await run(`INSERT INTO run_configs (mode, config, updated_at) VALUES (?, ?, ?)
+             ON CONFLICT(mode) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,
+    [mode, JSON.stringify(config || {}), new Date().toISOString()]);
   return getRunConfig(mode);
 }
 
 // ---- 产出层(交付物)----
 function rowToArtifact(row) {
   return {
-    id: row.id,
-    discussionId: row.discussion_id,
-    type: row.type,
-    provider: row.provider,
-    content: row.content || "",
-    imagePath: row.image_path || null,
-    parentId: row.parent_id || null,
-    mode: row.mode,
-    instruction: row.instruction || "",
-    status: row.status,
-    createdAt: row.created_at,
+    id: row.id, discussionId: row.discussion_id, type: row.type, provider: row.provider,
+    content: row.content || "", imagePath: row.image_path || null, parentId: row.parent_id || null,
+    mode: row.mode, instruction: row.instruction || "", status: row.status, createdAt: row.created_at,
   };
 }
-
-// 落一条交付物(文字存 content / 图片存 imagePath)。返回完整对象供 SSE 推。
-export function saveArtifact({ discussionId, type, provider, content, imagePath, parentId, mode, instruction }) {
-  const database = getDb();
-  const exists = database.prepare(`SELECT 1 FROM discussions WHERE id = ?`).get(discussionId);
+export async function saveArtifact({ discussionId, type, provider, content, imagePath, parentId, mode, instruction }) {
+  const exists = await get(`SELECT 1 FROM discussions WHERE id = ?`, [discussionId]);
   if (!exists) throw new Error(`discussion ${discussionId} not found`);
   const id = randomUUID();
   const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO artifacts (id, discussion_id, type, provider, content, image_path, parent_id, mode, instruction, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?)`,
-    )
-    .run(
-      id,
-      discussionId,
-      type,
-      provider,
-      content ?? null,
-      imagePath ?? null,
-      parentId ?? null,
-      mode || "draft",
-      instruction ?? null,
-      now,
-    );
-  return rowToArtifact(database.prepare(`SELECT * FROM artifacts WHERE id = ?`).get(id));
+  await run(
+    `INSERT INTO artifacts (id, discussion_id, type, provider, content, image_path, parent_id, mode, instruction, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?)`,
+    [id, discussionId, type, provider, content ?? null, imagePath ?? null, parentId ?? null, mode || "draft", instruction ?? null, now],
+  );
+  return rowToArtifact(await get(`SELECT * FROM artifacts WHERE id = ?`, [id]));
 }
-
-export function listArtifacts(discussionId) {
-  return getDb()
-    .prepare(`SELECT * FROM artifacts WHERE discussion_id = ? ORDER BY created_at ASC`)
-    .all(discussionId)
-    .map(rowToArtifact);
+export async function listArtifacts(discussionId) {
+  return (await all(`SELECT * FROM artifacts WHERE discussion_id = ? ORDER BY created_at ASC`, [discussionId])).map(rowToArtifact);
 }
-
-export function getArtifact(id) {
-  const row = getDb().prepare(`SELECT * FROM artifacts WHERE id = ?`).get(id);
+export async function getArtifact(id) {
+  const row = await get(`SELECT * FROM artifacts WHERE id = ?`, [id]);
   return row ? rowToArtifact(row) : null;
 }
-
-// 采用:同一 discussion 同一 type 内,把这条置 chosen、其余回 candidate(单选)。
-export function chooseArtifact(id) {
-  const database = getDb();
-  const a = database.prepare(`SELECT discussion_id, type FROM artifacts WHERE id = ?`).get(id);
+// 采用:同 discussion 同 type 内,把这条置 chosen、其余回 candidate(单选)。
+export async function chooseArtifact(id) {
+  const a = await get(`SELECT discussion_id, type FROM artifacts WHERE id = ?`, [id]);
   if (!a) return null;
-  database
-    .prepare(`UPDATE artifacts SET status = 'candidate' WHERE discussion_id = ? AND type = ?`)
-    .run(a.discussion_id, a.type);
-  database.prepare(`UPDATE artifacts SET status = 'chosen' WHERE id = ?`).run(id);
+  await run(`UPDATE artifacts SET status = 'candidate' WHERE discussion_id = ? AND type = ?`, [a.discussion_id, a.type]);
+  await run(`UPDATE artifacts SET status = 'chosen' WHERE id = ?`, [id]);
   return getArtifact(id);
 }
-
 // 删一条候选;返回它的 image_path 供调用方删盘。
-export function deleteArtifact(id) {
-  const database = getDb();
-  const a = database.prepare(`SELECT image_path FROM artifacts WHERE id = ?`).get(id);
+export async function deleteArtifact(id) {
+  const a = await get(`SELECT image_path FROM artifacts WHERE id = ?`, [id]);
   if (!a) return { deleted: false, imagePath: null };
-  database.prepare(`DELETE FROM artifacts WHERE id = ?`).run(id);
+  await run(`DELETE FROM artifacts WHERE id = ?`, [id]);
   return { deleted: true, imagePath: a.image_path || null };
 }
