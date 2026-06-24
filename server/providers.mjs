@@ -13,6 +13,7 @@ import {
   buildRelaySeedPrompt,
   buildRelayHopPrompt,
   buildRelaySynthPrompt,
+  buildClarifyCardPrompt,
   buildCriticViewpointsPrompt,
   buildChairmanSummaryPrompt,
   buildVerifierPrompt,
@@ -330,7 +331,7 @@ async function fetchRetry(url, makeOpts, tries = 2) {
 }
 
 // 统一聊天调用:Anthropic vs OpenAI 兼容;jsonMode 控制是否强制 JSON(finalize 出 markdown 不用)。
-async function chatRaw(provider, apiKey, messages, { jsonMode = true } = {}) {
+async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2, timeoutMs = 45000, maxTokens = 1100 } = {}) {
   const model = process.env[provider.modelEnv] || provider.defaultModel;
   if (provider.id === "claude") {
     const [system, user] = messages;
@@ -339,13 +340,13 @@ async function chatRaw(provider, apiKey, messages, { jsonMode = true } = {}) {
       headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model,
-        max_tokens: 1100,
+        max_tokens: maxTokens,
         temperature: 0.6,
         system: system.content,
         messages: [{ role: "user", content: user.content }],
       }),
-      signal: AbortSignal.timeout(45000),
-    }));
+      signal: AbortSignal.timeout(timeoutMs),
+    }), tries);
     if (!res.ok) throw new Error(`Claude ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
     const json = await res.json();
     return json.content?.map((p) => p.text || "").join("\n") || "";
@@ -356,8 +357,8 @@ async function chatRaw(provider, apiKey, messages, { jsonMode = true } = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(45000),
-  }));
+    signal: AbortSignal.timeout(timeoutMs),
+  }), tries);
   if (!res.ok) throw new Error(`${provider.label} ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
   const json = await res.json();
   return json.choices?.[0]?.message?.content || "";
@@ -550,8 +551,8 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
 // ============ 审议引擎(白箱)============
 // Response Healing:JSON 解析失败时,自动二次请求"只返回合法 JSON"修复一次。
 // 治 OpenRouter free / 某模型 JSON 不稳;仍失败则抛 → 调用方降级不伪造。
-async function chatJSON(provider, apiKey, messages) {
-  const raw = await chatRaw(provider, apiKey, messages, { jsonMode: true });
+async function chatJSON(provider, apiKey, messages, opts = {}) {
+  const raw = await chatRaw(provider, apiKey, messages, { jsonMode: true, ...opts });
   try {
     return JSON.parse(extractJson(raw));
   } catch {
@@ -560,7 +561,7 @@ async function chatJSON(provider, apiKey, messages) {
       { role: "assistant", content: String(raw).slice(0, 2000) },
       { role: "user", content: "你上面的输出不是合法 JSON。请只输出一个合法的、能被 JSON.parse 解析的 JSON 对象,不要任何解释、不要 markdown 围栏。" },
     ];
-    const healed = await chatRaw(provider, apiKey, healMsgs, { jsonMode: true });
+    const healed = await chatRaw(provider, apiKey, healMsgs, { jsonMode: true, ...opts });
     return JSON.parse(extractJson(healed));
   }
 }
@@ -766,6 +767,37 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
     }
   }
   return { hops, card: null, models };
+}
+
+// 想清楚收口(单脑):默认 Claude 直接读「点子+完整对话」一次出方向卡;Claude 失败 → OpenAI → 其余兜底。
+// 替代 6 棒接力(用户反馈太慢/太费)。返回与 runRelay 同形 { hops, card, models },saveRelay 不变。
+export async function runClarifyCard({ mode, brief, evidence, byoKeys }, onEvent) {
+  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
+  const configured = getConfiguredProviders(byoKeys);
+  if (!configured.length) { await emit("error", { error: "没有可用模型" }); return { hops: [], card: null, models: [] }; }
+  const byId = new Map(configured.map((e) => [e.provider.id, e]));
+  // 收口优先级:Claude → OpenAI → 其余已配置(去重)
+  const order = [];
+  for (const id of ["claude", "openai"]) { const e = byId.get(id); if (e && !order.includes(e)) order.push(e); }
+  for (const e of configured) if (!order.includes(e)) order.push(e);
+  const started = Date.now();
+  let card = null, seat = null, lastErr = "";
+  for (const cand of order) {
+    const ts = Date.now();
+    try {
+      // 失败即换人(tries:1 不重试同一家)+ 28s 上限:Claude 过载/掉线就让位给 OpenAI,不再耗 ~90s(原 6 棒)。
+      // maxTokens 2000:整张卡(中文 + 多段)~1100 会被截断成非法 JSON → 触发 heal 翻倍耗时;给足一次成。
+      const out = await chatJSON(cand.provider, cand.apiKey, buildClarifyCardPrompt({ mode, brief, evidence }), { tries: 1, timeoutMs: 28000, maxTokens: 2000 });
+      card = normCard(out); seat = cand.provider.label;
+      console.log(`[clarify] ${cand.provider.label} 收口成功 ${Date.now() - ts}ms`);
+      break;
+    } catch (e) { lastErr = compact(e?.message || String(e)); console.log(`[clarify] ${cand.provider.label} 失败 ${Date.now() - ts}ms: ${lastErr.slice(0, 80)}`); }
+  }
+  const hop = { order: 1, seat: seat || order[0].provider.label, role: "synth", lens: null, added: [], framing: null, failed: !card, error: card ? undefined : lastErr, latencyMs: Date.now() - started };
+  await emit("relay-hop", hop);
+  if (card) await emit("relay-card", card);
+  else await emit("error", { error: "收口失败:" + lastErr });
+  return { hops: [hop], card, models: seat ? [seat] : [] };
 }
 
 export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfig, posture }, onEvent) {

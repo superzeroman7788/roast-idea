@@ -14,6 +14,7 @@ import {
   runDeliberation,
   runClarify,
   runRelay,
+  runClarifyCard,
   runConverge,
   listPersonas,
 } from "./providers.mjs";
@@ -312,9 +313,10 @@ const server = http.createServer(async (req, res) => {
         effBrief += await pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
         if (handoffDoc) effBrief += `\n\n上一站交接来的方案文档(请基于它推进):\n${handoffDoc}`;
         if (posture === "clarify") {
-          // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
-          const relayRes = await runRelay(
-            { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys, runConfig },
+          // 想清楚:单脑收口(Claude → OpenAI 兜底)读整段对话 → 方向卡。不召反方/不裁决。
+          // (原 6 棒跨模型接力太慢/太费,2026-06 用户改回单脑收口;runRelay 仍保留备用。)
+          const relayRes = await runClarifyCard(
+            { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys },
             (ev, data) => {
               if (ev === "relay-hop") sseSend(res, "relay-hop", data);
               else if (ev === "relay-card") sseSend(res, "relay-card", data);

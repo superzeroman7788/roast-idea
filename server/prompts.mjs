@@ -550,6 +550,34 @@ paths 给 2-3 条。` },
   ];
 }
 
+// 想清楚收口(单脑):读「点子 + 完整对话」一次产出方向卡。替代 6 棒接力——快、省、Claude 主导。
+export function buildClarifyCardPrompt({ mode, brief, evidence }) {
+  const ev = (evidence || []).slice(0, 8).map((e, i) => `[${e.id || "E" + (i + 1)}] ${e.claim || e.title}`).join("\n");
+  return [
+    { role: "system", content: `${ROAST_CONSTITUTION}
+
+${OUTPUT_LANG}
+你是主脑收口人(Spec Clarifier)。下面是一个${mode === "copy" ? "文案想法" : "点子"} + 用户与搭子的完整对话。
+独立、完整地把它想透,产出一张"方向卡",帮用户在动工前想明白:什么已经清楚、还能铺开哪些新角度、有哪些关键假设、还要决定什么、现在先别建什么。
+姿态=帮 TA 想清楚(sharp 但建设性,不批判、不找茬、不马屁)。不要给完整方案、不要替用户下结论。两层:① 你(AI)提出决定方向的关键问题 ② 邀请用户基于自己具体情况主动补判断。
+若对话里有用户「⭐特别重视」的点,务必在 clear / firstNarrowing / decisionsForYou 里优先照顾。
+只返回一个 JSON 对象,不要解释:
+{
+  "oneLine": "一句话内核",
+  "clear": ["已经稳定、清楚的点…"],
+  "expandedAngles": ["值得保留、铺开的新角度…"],
+  "assumptions": ["必须为真的关键假设…"],
+  "paths": [{"name":"路径名","fit":"它适合什么/为什么","risk":"它的风险"}],
+  "firstNarrowing": "建议第一刀先收窄什么(受众/场景/承诺/MVP 范围)",
+  "decisionsForYou": ["需要用户拍板的关键决策(口味/风险/founder-market fit 这类 AI 不该替定的)…"],
+  "inviteYourInput": "一句话:邀请用户基于自己具体情况补一条判断",
+  "dontBuildYet": ["现在先别建什么(避免过早动工浪费)…"]
+}
+paths 给 2-3 条。` },
+    { role: "user", content: `${mode === "copy" ? "文案" : "点子"}与完整对话:\n${String(brief || "").slice(0, 6000)}${ev ? `\n\n可参考证据:\n${ev}` : ""}` },
+  ];
+}
+
 // autoRecruit:判定点子是否触及受监管/专业领域,需要临时招一席领域专家反方。
 export function buildDomainDetectPrompt({ brief }) {
   return [

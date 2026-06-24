@@ -217,6 +217,10 @@ function App() {
   const [sendMenuFor, setSendMenuFor] = useState<Tab | null>(null); // 左栏「送到」下拉当前展开的文档
   const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
   const [detailId, setDetailId] = useState<string | null>(null); // 陪练:左栏点开某条 → 中央看详情(null=三脑并列列表)
+  const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
+  const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
+  // 方向卡分段折叠:key→是否收起。默认折起最长的几段(新角度/关键假设/暂不做)
+  const [cardCollapsed, setCardCollapsed] = useState<Record<string, boolean>>({ angles: true, assumptions: true, dont: true });
   const pendingHandoff = useRef(""); // 上游交接 MD,注入下一站运行后清空
 
   const token = useRef(0);
@@ -234,6 +238,13 @@ function App() {
     fetch("/api/personas").then((r) => r.json()).then((d) => { if (d.ok) setPersonaLib({ functional: d.functional, opinionated: d.opinionated, providers: d.providers || [] }); }).catch(() => {});
     return () => stopTimer();
   }, []);
+
+  // 陪练时间线:新发言进来时,若已贴底则自动滚到最新(滚上去看历史则不打扰)
+  useEffect(() => {
+    if (tab !== "relay" || !llAtBottom) return;
+    const el = llScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [turns.length, busy, tab, detailId, llAtBottom]);
 
   // 模式切换 → 从 DB 载该模式的已存配置(回落默认)
   useEffect(() => {
@@ -1348,11 +1359,16 @@ function App() {
   };
 
   const llTimeline = () => (
-    <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <div style={{ position: "relative", borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
       <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span className="label">对话时间线</span><span className="mono" style={{ fontSize: 11, color: "var(--cyan)" }}>{turns.length} 条</span>
       </div>
-      <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 11 }}>
+      {!llAtBottom && turns.length > 2 && (
+        <button className="clk" onClick={() => { const el = llScrollRef.current; if (el) el.scrollTop = el.scrollHeight; setLlAtBottom(true); }}
+          style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", zIndex: 5, padding: "6px 14px", borderRadius: 16, border: "1px solid var(--cyan)", background: "#0c1a2e", color: "var(--cyan)", fontFamily: "var(--mono)", fontSize: 11, fontWeight: 700, boxShadow: "0 6px 16px #000a", cursor: "pointer" }}>↓ 跳到最新</button>
+      )}
+      <div ref={llScrollRef} onScroll={(e) => { const el = e.currentTarget; setLlAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60); }}
+        style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 11 }}>
         {turns.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.7 }}>还没开始 —— 在右侧说说你的点子,这里会留下每一步对话轨迹。</div>}
         {turns.map((t, i) => {
           const isUser = t.role === "user"; const k = agentKey(t.speaker);
@@ -1453,7 +1469,7 @@ function App() {
               {[1, 2, 3].map((n) => <button key={n} className={dialogueN === n ? "on" : ""} disabled={busy || deliberating} onClick={() => setDialogueN(n)}>{n === 1 ? "主脑" : n + " 脑"}</button>)}
             </div>
             <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{lineup}</span>
-            <button className="amber-btn" style={{ marginLeft: "auto", padding: "9px 18px", fontSize: 13, fontFamily: "var(--mono)" }} disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>{deliberating ? "召多脑合成中…" : "理清了 · 召多脑出方向卡 ↓"}</button>
+            <button className="amber-btn" style={{ marginLeft: "auto", padding: "9px 18px", fontSize: 13, fontFamily: "var(--mono)" }} disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>{deliberating ? "主脑收口中…" : "理清了 · 出方向卡 ↓"}</button>
           </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 18, minHeight: 0 }}>
@@ -1536,26 +1552,35 @@ function App() {
     );
   };
 
-  const llDirSec = (glyph: string, gc: string, title: string, items?: string[]) => (items && items.length > 0 ? (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700, color: gc, border: "1px solid " + gc + "66", background: gc + "1a" }}>{glyph}</span>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>{title}</span>
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>{items.length}</span>
+  const toggleSec = (key: string) => setCardCollapsed((p) => ({ ...p, [key]: !p[key] }));
+  const llDirSec = (key: string, glyph: string, gc: string, title: string, items?: string[]) => {
+    if (!items || !items.length) return null;
+    const collapsed = !!cardCollapsed[key];
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="clk" onClick={() => toggleSec(key)} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700, color: gc, border: "1px solid " + gc + "66", background: gc + "1a" }}>{glyph}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>{title}</span>
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>{items.length}</span>
+          <span style={{ fontSize: 9, color: "var(--faint)", width: 10, textAlign: "center" }}>{collapsed ? "▸" : "▾"}</span>
+        </div>
+        {!collapsed && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 4 }}>
+            {items.map((t, i) => <div key={i} style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.5, display: "flex", gap: 8, alignItems: "baseline" }}><span style={{ color: gc, opacity: .7 }}>·</span><span style={{ flex: 1 }}>{t}</span></div>)}
+          </div>
+        )}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 4 }}>
-        {items.map((t, i) => <div key={i} style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.5, display: "flex", gap: 8, alignItems: "baseline" }}><span style={{ color: gc, opacity: .7 }}>·</span><span style={{ flex: 1 }}>{t}</span></div>)}
-      </div>
-    </div>
-  ) : null);
+    );
+  };
   const llDirectionCard = () => {
     const adopted = turns.filter((t) => t.pinned && t.id);
     const c = relayCard;
     return (
       <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
           <span className="label">方向卡 · DIRECTION</span>
-          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制卡片</span>}
+          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => setCardCollapsed(["clear", "angles", "assumptions", "decide", "dont"].some((k) => !cardCollapsed[k]) ? { clear: true, angles: true, assumptions: true, decide: true, dont: true } : {})}>{["clear", "angles", "assumptions", "decide", "dont"].some((k) => !cardCollapsed[k]) ? "收起全部" : "展开全部"}</span>}
+          {c && <span className="ghost-chip" style={{ padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制</span>}
         </div>
         <div style={{ padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
           <div style={{ border: "1px solid rgba(232,151,92,.35)", borderTop: "2px solid var(--c-claude)", borderRadius: 10, background: "linear-gradient(180deg,rgba(232,151,92,.08),rgba(255,255,255,.01))", padding: "13px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
@@ -1579,25 +1604,28 @@ function App() {
                     </div>); })}
                 </div>}
           </div>
-          {!c && <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>和搭子聊清楚后,点中央「理清了 · 召多脑出方向卡」—— 这里会长出:已稳定 / 新角度 / 需你拍板 / 暂不做。</div>}
+          {!c && <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>和搭子聊清楚后,点中央「理清了 · 出方向卡」—— 主脑(Claude)读整段对话收口,这里会长出:已稳定 / 新角度 / 需你拍板 / 暂不做。</div>}
           {c?.oneLine && <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "11px 13px", background: "rgba(72,220,255,.05)" }}><div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 4 }}>一句话内核</div><div style={{ fontSize: 13, color: "#DCE6EF", lineHeight: 1.5, fontWeight: 600 }}>{c.oneLine}</div></div>}
-          {llDirSec("✓", "#3FDD8A", "已稳定", c?.clear)}
-          {llDirSec("+", "#34D2E6", "接力铺开的新角度", c?.expandedAngles)}
-          {llDirSec("!", "#E8975C", "关键假设", c?.assumptions)}
+          {llDirSec("clear", "✓", "#3FDD8A", "已稳定", c?.clear)}
+          {llDirSec("angles", "+", "#34D2E6", "接力铺开的新角度", c?.expandedAngles)}
+          {llDirSec("assumptions", "!", "#E8975C", "关键假设", c?.assumptions)}
           {c && (c.firstNarrowing || (c.decisionsForYou && c.decisionsForYou.length > 0)) && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div className="clk" onClick={() => toggleSec("decide")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: "var(--cyan)", border: "1px solid rgba(52,210,230,.5)", background: "var(--cyan2)" }}>◆</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>需要你拍板</span>
+                <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--faint)", width: 10, textAlign: "center" }}>{cardCollapsed.decide ? "▸" : "▾"}</span>
               </div>
-              <div style={{ border: "1px solid rgba(232,154,42,.4)", borderRadius: 10, padding: 13, background: "rgba(232,154,42,.06)" }}>
-                {c.firstNarrowing && <div style={{ fontSize: 13.5, fontWeight: 700, color: "#EEE3D2", lineHeight: 1.4 }}>{c.firstNarrowing}</div>}
-                {c.decisionsForYou && c.decisionsForYou.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 }}>{c.decisionsForYou.map((x, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.5 }}>{x}</li>)}</ul>}
-                {c.inviteYourInput && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 10, lineHeight: 1.5 }}>💬 {c.inviteYourInput}</div>}
-              </div>
+              {!cardCollapsed.decide && (
+                <div style={{ border: "1px solid rgba(232,154,42,.4)", borderRadius: 10, padding: 13, background: "rgba(232,154,42,.06)" }}>
+                  {c.firstNarrowing && <div style={{ fontSize: 13.5, fontWeight: 700, color: "#EEE3D2", lineHeight: 1.4 }}>{c.firstNarrowing}</div>}
+                  {c.decisionsForYou && c.decisionsForYou.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 }}>{c.decisionsForYou.map((x, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.5 }}>{x}</li>)}</ul>}
+                  {c.inviteYourInput && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 10, lineHeight: 1.5 }}>💬 {c.inviteYourInput}</div>}
+                </div>
+              )}
             </div>
           )}
-          {llDirSec("–", "#7B8B9C", "暂不做", c?.dontBuildYet)}
+          {llDirSec("dont", "–", "#7B8B9C", "暂不做", c?.dontBuildYet)}
         </div>
       </div>
     );
