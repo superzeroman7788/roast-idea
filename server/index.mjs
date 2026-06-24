@@ -162,10 +162,15 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
       const userTurn = String(body.userTurn || "").trim();
-      // solo:只让主大脑(host)回应;否则全议会(引入辩论者后)
+      // clarify(想清楚):N 个协同搭子(同模型不同角度,host/builder,非对抗);solo:只主脑;否则全议会
+      const clarify = Boolean(body.clarify);
+      const participants = Math.max(1, Math.min(3, Number(body.participants) || 1));
       const solo = Boolean(body.solo);
       const allSeats = d.roles?.length ? d.roles : assignDiscussionSeats(byoKeys);
-      const seats = solo ? allSeats.filter((s) => s.role === "host") : allSeats;
+      const CLARIFY_ROLES = ["host", "builder", "builder"];
+      const seats = clarify
+        ? allSeats.slice(0, participants).map((s, i) => ({ ...s, role: CLARIFY_ROLES[i] || "builder" }))
+        : solo ? allSeats.filter((s) => s.role === "host") : allSeats;
       const round = Math.max(0, ...d.turns.map((t) => t.round)) + 1;
 
       sseHead(res);
@@ -261,21 +266,12 @@ const server = http.createServer(async (req, res) => {
         const runConfig = body.runConfig && typeof body.runConfig === "object" ? body.runConfig : undefined;
         const posture = body.posture || runConfig?.posture || "roast";
         sseSend(res, "deliberate-start", { discussionId: d.id, posture });
-        // 用户补充/纠正(陪练「补充并重接」)+ 上游交接文档(MD,如 方向卡→议会 / 证据简报→陪练)都折进 brief,本站按"最新理解"跑。
-        const clarification = typeof body.clarification === "string" ? body.clarification.trim() : "";
-        if (clarification) { try { addTurn({ discussionId: d.id, round: 0, speaker: "you", role: "user", body: clarification, citations: [] }); } catch (e) { console.error("[roast-api] addTurn(clarify) failed:", e?.message || e); } }
+        // 想清楚阶段的完整对话(用户 + 协同搭子)= 理解这个项目的根基,折进 brief 喂给本站;再加上游交接的方案文档。
         const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
-        const fresh = getDiscussion(d.id);
-        // 只折入显式纠正(陪练「补充并重接」= round 0 的 user turn),排除自由聊天(respond 的 round>=1);去重 + 限最近 8 条
-        const seenClar = new Set();
-        const userClar = (fresh?.turns || [])
-          .filter((t) => t.round === 0 && (t.role === "user" || t.speaker === "you"))
-          .map((t) => String(t.body || "").trim())
-          .filter((c) => c && !seenClar.has(c) && seenClar.add(c))
-          .slice(-8);
+        const convo = buildTranscript(d.turns || [], 40);
         let effBrief = d.brief;
-        if (userClar.length) effBrief += `\n\n用户后续补充/纠正(按此理解,优先于上面的初稿):\n${userClar.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
-        if (handoffDoc) effBrief += `\n\n上一站交接来的文档(请基于它推进):\n${handoffDoc}`;
+        if (convo) effBrief += `\n\n想清楚阶段的完整对话(理解这个项目的根基,优先于初稿):\n${convo}`;
+        if (handoffDoc) effBrief += `\n\n上一站交接来的方案文档(请基于它推进):\n${handoffDoc}`;
         if (posture === "clarify") {
           // 想清楚:跨模型接力(串行跑 Spec lenses)→ 方向卡。不召反方/不裁决。
           const relayRes = await runRelay(
@@ -393,10 +389,11 @@ const server = http.createServer(async (req, res) => {
             mode = "refine";
           }
         }
+        const convoCtx = buildTranscript(d.turns || [], 30);
         const out = await runProduce({
           type,
           mode,
-          brief: d.brief,
+          brief: convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief,
           conclusion: handoffDoc || d.conclusion,
           evidence: d.evidencePack?.items || [],
           sourceContent,

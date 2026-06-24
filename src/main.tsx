@@ -192,6 +192,7 @@ function App() {
   const [tab, setTab] = useState<Tab>("relay"); // 导航唯一真相源:搜索/陪练/议会/产出
   const [councilIntensity, setCouncilIntensity] = useState<CouncilIntensity>("council"); // 议会内部:温和⇄拷问(默认先暖)
   const [sendMenuFor, setSendMenuFor] = useState<Tab | null>(null); // 左栏「送到」下拉当前展开的文档
+  const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
   const pendingHandoff = useRef(""); // 上游交接 MD,注入下一站运行后清空
 
   const token = useRef(0);
@@ -518,12 +519,37 @@ function App() {
     clearInterval(tick); setBusy(false);
   }
 
-  // 陪练站:跨模型接力 → 方向卡。clarification=用户补充并重接;handoff=上游交接 MD(惰性取自 pendingHandoff)。
-  async function runRelay(clarification?: string) {
+  // 陪练站:专注对话(1-3 协同搭子,非对抗)。一轮 = 主脑/协同就你这句聚焦回应。
+  async function respondClarify(did: string, text: string) {
+    const tk = ++token.current;
+    setBusy(true); setRunError(""); setPhase("responding");
+    const nextRound = Math.max(0, ...turns.map((x) => x.round)) + 1;
+    if (text) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text, citations: [] });
+    try {
+      await streamSSE(`/api/discussion/${did}/respond`, { userTurn: text, clarify: true, participants: dialogueN }, (ev, d) => {
+        if (cancelled(tk)) return;
+        if (ev === "turn") appendTurn(d as Turn);
+        else if (ev === "round-done") setPhase("awaiting-user");
+        else if (ev === "error") setRunError(d.error);
+      }, () => cancelled(tk));
+    } catch (e) { if (!cancelled(tk)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
+    finally { if (!cancelled(tk)) setBusy(false); }
+  }
+  // 发送一句(drafting 时首句即点子,建讨论后再对话)
+  async function sendClarify(text: string) {
+    const t = text.trim();
+    if (!t || busy || deliberating) return;
     setTab("relay"); setSendMenuFor(null);
-    const ho = pendingHandoff.current; pendingHandoff.current = "";
-    const id = await ensureDiscussion();
-    if (id) deliberate("clarify", clarification, id, ho || undefined);
+    const drafting = !discussion;
+    if (drafting) setBrief(t);
+    setUserInput("");
+    const id = drafting ? await ensureDiscussion(false, t) : discussion!.id;
+    if (id) await respondClarify(id, t);
+  }
+  // 「理清了」→ 召多脑一轮 + 合成方向卡(读整段对话)
+  function synthesizeCard() {
+    if (!discussion || deliberating || busy) return;
+    deliberate("clarify", undefined, discussion.id);
   }
 
   // 议会站:温和/拷问审议。clarification=底部补的一句背景(折进 brief)。
@@ -563,14 +589,14 @@ function App() {
   // 纯切站(浏览):清旧站报错 + 收下拉(run 函数会另行清,无冲突)
   function switchTab(tk: Tab) { setTab(tk); setSendMenuFor(null); setRunError(""); }
 
-  // 交接:把 from 站的 MD 当输入送到 to 站,切到 to 并运行
+  // 交接:把 from 站的 MD 当输入送到 to 站
   function sendHandoff(from: Tab, to: Tab) {
     const md = docFor(from);
     if (!md) return;
-    pendingHandoff.current = md;
     setSendMenuFor(null);
-    if (to === "relay") runRelay();
-    else if (to === "council") runCouncil();
+    if (to === "relay") { switchTab("relay"); return; } // 陪练是对话:证据/上游已随讨论共享,切过去继续聊即可
+    pendingHandoff.current = md;
+    if (to === "council") runCouncil();
     else switchTab(to); // 产出由厂商按钮触发,handoff 待用
   }
 
@@ -1007,7 +1033,7 @@ function App() {
   const workspaceCol = () => {
     const meta: Record<Tab, string> = {
       search: pack?.items.length ? `${pack.items.filter((it) => !excludedIds.has(it.id)).length} 证据` : "待检索",
-      relay: relayCard ? "方向卡 ✓" : relayHops.length ? "接力中" : "待想清楚",
+      relay: relayCard ? "方向卡 ✓" : turns.length ? `对话 ${turns.length} 条` : "待想清楚",
       council: converged ? "已收敛" : viewpoints.length ? `${viewpoints.length} 观点` : "待审议",
       produce: artifacts.length ? `${artifacts.length} 交付物` : "待产出",
     };
@@ -1077,12 +1103,14 @@ function App() {
         </div>
       </div>
     );
-    if (tab === "relay") return (
+    if (tab === "relay") {
+      const synthing = deliberating || relayHops.length > 0 || relayCard;
+      return (
       <div className="station">
-        <div className="station-head">跨模型接力 · 想清楚</div>
-        <div className="station-sub">点子在 6 个模型间逐棒传递,每棒接受核心 + 扩大思考范围</div>
+        <div className="station-head">想清楚 · 陪练对话</div>
+        <div className="station-sub">{synthing ? "召集多脑合成方向卡(关键点多人参与)" : "和搭子一来一往聊清楚 → 点「理清了」召多脑出方向卡"}</div>
         <div className="station-canvas">
-          {(relayHops.length || deliberating || relayCard) ? (
+          {synthing ? (
             <div className="chain">
               <div className="chain-rail">
                 {deliberating && !relayCard && <div className="barge" />}
@@ -1096,17 +1124,26 @@ function App() {
                   );
                 })}
               </div>
-              {relayCard ? (
-                <div className="grow-card">
-                  <div className="ol"><b>一句话内核 ·</b> {relayCard.oneLine}</div>
-                  <div className="angles">{relayCard.expandedAngles.slice(0, 6).map((a, i) => <span className={`gchip${i >= relayCard.expandedAngles.length - 2 ? " new" : ""}`} key={i}>{a}</span>)}</div>
-                </div>
-              ) : <div className="grow-card"><div className="ol">接力中…(主脑立框 → 各模型扩面 → 收棒出方向卡)</div></div>}
+              {relayCard ? directionCard(relayCard)
+                : <div className="grow-card"><div className="ol">召多脑合成中…(立框 → 各模型扩面 → 收棒出方向卡)</div></div>}
             </div>
-          ) : stationEmpty("点下方「开始想清楚」—— 6 个模型接力把模糊点子立成方向卡", () => runRelay(), "开始想清楚 →")}
+          ) : (
+            <div className="clarify-hub">
+              <div className="ch-orb"><span className="ch-core" /></div>
+              <div className="ch-seats">
+                <span className="ch-lab">对话搭子</span>
+                {[1, 2, 3].map((n) => (
+                  <button key={n} className={`ch-seat${dialogueN === n ? " on" : ""}`} disabled={busy} onClick={() => setDialogueN(n)}>{n === 1 ? "主脑" : `${n} 人`}</button>
+                ))}
+              </div>
+              <div className="ch-hint">{turns.length ? "聊清楚了就召多脑出卡 ↓" : "在下方说说你的点子,搭子会专注回应、帮你想清楚"}</div>
+              <button className="btn primary" disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>理清了 → 出方向卡</button>
+            </div>
+          )}
         </div>
       </div>
-    );
+      );
+    }
     if (tab === "council") return (
       <div className="station">
         <div className="station-head">议会 · 多 AI 审议</div>
@@ -1137,6 +1174,23 @@ function App() {
     );
   };
 
+  // 陪练对话流(你 ↔ 协同搭子)
+  const clarifyConvo = () => {
+    if (!turns.length) return <div className="board-empty" style={{ padding: 16 }}>{busy ? "搭子在想…" : "说说你的点子,搭子会专注回应、帮你一步步想清楚"}</div>;
+    return (
+      <>
+        {turns.map((t, i) => (
+          <div className={`cv-turn${t.role === "user" ? " me" : ""}${t.failed ? " failed" : ""}`} key={t.id || i}>
+            <div className="cv-who">{t.role === "user" ? "你" : <>{t.speaker}<span className="cv-role">{ROLE_LABEL[t.role] || t.role}</span></>}</div>
+            <div className="cv-body">{t.failed ? `(未响应:${(t.error || "").slice(0, 50)})` : t.body}</div>
+            {t.askUser && !t.failed && <div className="cv-ask">↳ {t.askUser}</div>}
+          </div>
+        ))}
+        {busy && <div className="thinking"><span className="blink" /> 搭子在回应你这句…</div>}
+      </>
+    );
+  };
+
   // 右栏:每站专属输出
   const rightCol = () => {
     if (tab === "search") return (
@@ -1147,8 +1201,8 @@ function App() {
     );
     if (tab === "relay") return (
       <div className="col right">
-        <div className="eyebrow">接力轨迹 · RELAY</div>
-        <div className="out"><div className="out-scroll">{(relayHops.length || relayCard || deliberating) ? relayPanel() : <div className="board-empty" style={{ padding: 16 }}>开始想清楚后,这里是逐棒接力轨迹 + 方向卡</div>}</div></div>
+        <div className="eyebrow">对话 · DIALOGUE <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{turns.length ? `${turns.length} 条` : ""}</span></div>
+        <div className="out"><div className="out-scroll" ref={transcriptRef}>{clarifyConvo()}</div></div>
       </div>
     );
     if (tab === "council") return (
@@ -1174,12 +1228,10 @@ function App() {
     const drafting = !discussion;
     const bindBrief = drafting && tab !== "produce";
     const needIdea = drafting && !brief.trim(); // 仅起步(无讨论)才必须先有点子;之后再跑不需要输入
-    const relayLabel = drafting ? "开始想清楚 →" : deliberating ? "接力中…" : relayCard ? "补充并重接 →" : "重新接力 →";
-    const runRelayBtn = () => { const tx = userInput.trim(); if (!drafting && tx) { setUserInput(""); runRelay(tx); } else runRelay(); };
     const runCouncilBtn = () => { const tx = userInput.trim(); if (!drafting && tx) { setUserInput(""); runCouncil(councilIntensity, tx); } else runCouncil(); };
     const cfg: Record<Tab, { ph: string; hint: string; run: () => void; label: string; disabled: boolean }> = {
       search: { ph: "描述你的点子,开始事实侦察…", hint: "扫竞品/需求/定价/痛点,给证据评可信度", run: runSearch, label: busy ? "侦察中…" : pack ? "重新搜索 →" : "开始搜索 →", disabled: needIdea || busy },
-      relay: { ph: drafting ? "描述你的点子,开始想清楚…" : "补充/纠正你的想法,会按最新理解重新接力…", hint: "6 棒跨模型:Claude 立框 → … → Claude 收棒出方向卡", run: runRelayBtn, label: relayLabel, disabled: needIdea || deliberating || busy },
+      relay: { ph: drafting ? "说说你的点子,开始想清楚…" : "回应搭子 / 补充想法,继续往下聊…", hint: turns.length ? "一来一往聊清楚;理清了点中央「出方向卡」召多脑" : `搭子 ${dialogueN === 1 ? "主脑" : dialogueN + " 人"} 会专注回应、帮你想清楚`, run: () => sendClarify(bindBrief ? brief : userInput), label: busy ? "回应中…" : deliberating ? "出卡中…" : "发送", disabled: needIdea || busy || deliberating },
       council: { ph: drafting ? "描述你的点子,送进议会…" : "可补一句背景再审议(留空直接审)", hint: "温和=多视角综述;拷问=强制魔鬼 + R3 交叉", run: runCouncilBtn, label: deliberating ? "审议中…" : viewpoints.length ? "再审一轮 →" : "送进议会 →", disabled: needIdea || deliberating || busy },
       produce: { ph: "在中央选「格式」+ 模型生成;改稿在卡片上点「改」", hint: "把方案交给某个 AI 产出文案/PRD/图", run: () => {}, label: "在中央选模型生成", disabled: true },
     };
