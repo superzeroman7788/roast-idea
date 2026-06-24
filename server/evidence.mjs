@@ -354,7 +354,7 @@ export async function buildEvidencePack({ brief, mode = "idea", redacted, nowIso
     return { mode, items: [], byCategory: emptyByCategory, searchedAt: nowIso, redacted: false, sources: [], failures: [], query: "" };
   }
 
-  const cached = getCachedPack(cacheKey, nowMs);
+  const cached = await getCachedPack(cacheKey, nowMs);
   if (cached) return { ...cached, cached: true };
 
   // 并行检索:GitHub + HN + SearXNG(可选)
@@ -422,6 +422,6 @@ export async function buildEvidencePack({ brief, mode = "idea", redacted, nowIso
   });
 
   const pack = { mode, items, byCategory, searchedAt: nowIso, redacted: false, sources: [...sources], failures, query: cacheKey };
-  if (items.length) setCachedPack(cacheKey, pack, nowIso);
+  if (items.length) await setCachedPack(cacheKey, pack, nowIso);
   return pack;
 }

@@ -1429,6 +1429,25 @@ function speakWelcomeTTS() {
   }
 }
 
+// 错误边界:渲染崩溃时显示提示 + 刷新,而不是整页黑屏。
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err: Error | null }> {
+  constructor(props: { children: React.ReactNode }) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err: Error) { return { err }; }
+  componentDidCatch(err: Error) { console.error("[roast] 渲染崩溃:", err); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, color: "#d8e3ee", fontFamily: "var(--sans)", padding: 24, textAlign: "center" }}>
+          <div style={{ fontSize: 16 }}>页面渲染出错了</div>
+          <div style={{ fontSize: 13, color: "#93a8bf", maxWidth: 460 }}>{this.state.err.message}</div>
+          <button style={{ padding: "9px 20px", borderRadius: 10, border: "1px solid #1c5170", background: "#0c1a2e", color: "#48dcff", cursor: "pointer", fontSize: 14 }} onClick={() => location.reload()}>刷新重试</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // 门控:先启动页/密码门,解锁后进陪练台。session 内记住解锁态。
 function Root() {
   const [authed, setAuthed] = useState(() => sessionStorage.getItem("roast_auth") === "1");
@@ -1454,4 +1473,4 @@ function Root() {
 // HMR 守卫:复用同一个 root,避免热重载反复 createRoot 报警(仅开发期噪音)。
 const container = document.getElementById("root")! as HTMLElement & { _root?: ReturnType<typeof createRoot> };
 const root = container._root ?? (container._root = createRoot(container));
-root.render(<Root />);
+root.render(<ErrorBoundary><Root /></ErrorBoundary>);
