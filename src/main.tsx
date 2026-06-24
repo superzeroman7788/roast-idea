@@ -100,11 +100,17 @@ async function streamSSE(
   onEvent: (event: string, data: any) => void,
   isCancelled: () => boolean,
 ) {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // fetch 直接 reject(Failed to fetch)= 连接层失败:服务器重启/冷启动/断网
+    throw new Error("连不上服务器 —— 可能正在重启或冷启动(免费层闲置会休眠),等几秒再发一次。");
+  }
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => "");
     // 讨论在服务器上找不到(免费层无持久盘,重启/冷启动会清空 DB)→ 友好提示而非甩生 JSON
