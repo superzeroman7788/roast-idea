@@ -1195,9 +1195,9 @@ function App() {
               onChange={(e) => (bindBrief ? setBrief(e.target.value) : setUserInput(e.target.value))}
               disabled={tab === "produce"}
               placeholder={c.ph}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!c.disabled) c.run(); } }}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!c.disabled) c.run(); } }}
             />
-            <div style={{ fontSize: 11, color: "#3a5878", fontFamily: "var(--mono)", marginTop: 4 }}>{c.hint}</div>
+            <div style={{ fontSize: 11, color: "#3a5878", fontFamily: "var(--mono)", marginTop: 4 }}>{c.hint}{tab !== "produce" ? " · 回车换行,⌘/Ctrl+Enter 提交" : ""}</div>
           </div>
         </div>
         <div className="btncol">
