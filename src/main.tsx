@@ -498,9 +498,10 @@ function App() {
   }
 
   // ===== 四站编排:一个工作台,四站共用同一 discussion;缺则惰性建(顺带检索证据)=====
-  async function ensureDiscussion(force = false, briefOverride?: string): Promise<string | null> {
+  async function ensureDiscussion(force = false, briefOverride?: string, redactedOverride?: boolean): Promise<string | null> {
     if (!force && discussion) return discussion.id;
     const useBrief = briefOverride ?? brief;
+    const useRedacted = redactedOverride ?? !retrieve; // 陪练起手传 true 跳过检索(8-15s);搜索站走 retrieve 开关
     const toSend = attachments.slice();
     const t = ++token.current;
     setRunError(""); setAttachments([]);
@@ -508,7 +509,7 @@ function App() {
     try {
       await streamSSE(
         "/api/discussion/start",
-        { mode, brief: useBrief, redacted: !retrieve, skipOpening: true, attachments: toSend, excludedIds: [], runConfig: runConfig || undefined },
+        { mode, brief: useBrief, redacted: useRedacted, skipOpening: true, attachments: toSend, excludedIds: [], runConfig: runConfig || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "board") setPack(d.pack);
@@ -527,20 +528,30 @@ function App() {
   async function runSearch() {
     setTab("search"); setSendMenuFor(null); setRunError("");
     if (busy || deliberating) return;
-    const rebuild = !!discussion;
     const edited = userInput.trim();
     const nb = edited || brief;
     if (edited) { setBrief(edited); setUserInput(""); }
-    if (rebuild) {
-      setDiscussion(null); setPack(null); setExcludedIds(new Set());
-      setViewpoints([]); setDeliberation(null); setConverged(null); setConclusion("");
-      setRelayHops([]); setRelayCard(null); setArtifacts([]); setCuration({}); setDelibFails([]);
-    }
     setBusy(true); setReconElapsed(0);
     const t0 = Date.now();
     const tick = setInterval(() => setReconElapsed(Math.round((Date.now() - t0) / 1000)), 250);
-    await ensureDiscussion(rebuild, nb);
-    clearInterval(tick); setBusy(false);
+    try {
+      // 已有工作台(常见:陪练已惰性起手建了讨论)→ 把证据补进同一讨论,不新建、不丢对话/方案;
+      // 否则搜索起手 → 建讨论 + 检索(redacted 由 retrieve 开关定)。
+      if (discussion) await retrieveEvidence(discussion.id, nb);
+      else await ensureDiscussion(false, nb);
+    } finally { clearInterval(tick); setBusy(false); }
+  }
+
+  // 给已有讨论补检索:更新同一工作台的信息板(不重建讨论,保留对话/议会/产出)
+  async function retrieveEvidence(did: string, briefText: string) {
+    const tk = ++token.current;
+    try {
+      await streamSSE(`/api/discussion/${did}/retrieve`, { brief: briefText }, (ev, d) => {
+        if (cancelled(tk)) return;
+        if (ev === "board") setPack(d.pack);
+        else if (ev === "error") setRunError(d.error);
+      }, () => cancelled(tk));
+    } catch (e) { if (!cancelled(tk)) setRunError((e as Error).message); }
   }
 
   // 陪练站:专注对话(1-3 协同搭子,非对抗)。一轮 = 主脑/协同就你这句聚焦回应。
@@ -580,12 +591,16 @@ function App() {
   async function sendClarify(text: string) {
     const t = text.trim();
     if (!t || busy || deliberating) return;
-    setTab("relay"); setSendMenuFor(null);
+    setTab("relay"); setSendMenuFor(null); setDetailId(null);
     const drafting = !discussion;
     if (drafting) setBrief(t);
     setUserInput("");
-    const id = drafting ? await ensureDiscussion(false, t) : discussion!.id;
-    if (id) await respondClarify(id, t);
+    // 立即反馈:发送键转忙 + 空态显示"搭子在想…",消除「建讨论」期间的死按钮窗口(原先 busy 直到 respondClarify 才置真)
+    setBusy(true); setRunError("");
+    // 陪练起手不检索证据(redacted=true,省 8-15s);证据交给「搜索」站按需补进同一工作台
+    const id = drafting ? await ensureDiscussion(false, t, true) : discussion!.id;
+    if (!id) { setBusy(false); return; }
+    await respondClarify(id, t);
   }
   // 「理清了」→ 召多脑一轮 + 合成方向卡(读整段对话)
   function synthesizeCard() {

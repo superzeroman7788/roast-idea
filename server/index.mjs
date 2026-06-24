@@ -21,6 +21,8 @@ import { buildEvidencePack } from "./evidence.mjs";
 import {
   countRunRecords,
   createDiscussion,
+  updateDiscussionPack,
+  getDb,
   addTurn,
   getDiscussion,
   finalizeDiscussion,
@@ -131,6 +133,29 @@ const server = http.createServer(async (req, res) => {
         sseSend(res, "round-done", { discussionId, round: 1 });
       } catch (error) {
         sseSend(res, "error", { error: error?.message || "start failed" });
+      }
+      res.end();
+      return;
+    }
+
+    // 给已有讨论补检索:陪练惰性起手(不带证据)后,用户在「搜索」站把证据补进同一工作台(不新建、不丢对话)
+    const retrieve = url.pathname.match(/^\/api\/discussion\/([^/]+)\/retrieve$/);
+    if (req.method === "POST" && retrieve) {
+      const did = retrieve[1];
+      const body = await readJson(req);
+      const existing = await getDiscussion(did);
+      if (!existing) return json(res, 404, { ok: false, error: "discussion not found" });
+      const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
+      const brief = String(body.brief || existing.brief || existing.title || "").trim();
+      sseHead(res);
+      try {
+        const now = new Date();
+        const pack = await buildEvidencePack({ brief, mode: existing.mode, redacted: false, nowIso: now.toISOString(), nowMs: now.getTime(), byoKeys });
+        await updateDiscussionPack(did, pack);
+        sseSend(res, "board", { pack });
+        sseSend(res, "round-done", { discussionId: did });
+      } catch (error) {
+        sseSend(res, "error", { error: error?.message || "retrieve failed" });
       }
       res.end();
       return;
@@ -517,6 +542,9 @@ server.listen(port, () => {
   console.log(
     `[roast-api] direct providers: ${configured.length ? configured.join(", ") : "none (add keys to .env.local)"}`,
   );
+  // 启动即预热数据库:把 libSQL/Turso 的连接 + migrate(远程往返)挪到进程启动期,
+  // 而不是压在冷启动后第一个用户请求上(否则首次点击会多等这部分)。
+  getDb().then(() => console.log("[roast-api] db ready (warmed)")).catch((e) => console.error("[roast-api] db warmup failed:", e?.message || e));
 });
 
 async function safeCount() {
