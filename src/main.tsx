@@ -1294,7 +1294,7 @@ function App() {
         {rightCol()}
       </div>
 
-      {runError && <div className="err">出错:{runError}</div>}
+      {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
 
       {composerBar()}
       {showHistory && (

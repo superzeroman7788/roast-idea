@@ -577,6 +577,15 @@ function sseHead(res) {
 }
 
 function sseSend(res, event, data) {
+  // 错误消息净化:看着像 base64/二进制乱码(长 + 几乎全是 base64 字符)→ 换人话;否则截断,避免甩一墙到前端
+  if (event === "error" && data && typeof data.error === "string") {
+    let m = data.error;
+    const head = m.slice(0, 240);
+    const b64ish = m.length > 120 && /^[A-Za-z0-9+/=\s]+$/.test(head) && !/\s/.test(head.slice(0, 80));
+    if (b64ish) m = "上游返回了无法识别的内容(某个模型/上游异常)。重试一下,或换「对话搭子」数量。";
+    else if (m.length > 280) m = m.slice(0, 280) + "…";
+    data = { ...data, error: m };
+  }
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
