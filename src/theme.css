@@ -726,3 +726,58 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .cv-pin:hover{opacity:.9;filter:none;border-color:#1c4d6e}
 .cv-pin.on{opacity:1;filter:none;border-color:var(--amber);background:#1a140a}
 .cv-turn.pinned{border-left-color:var(--amber);background:#15110a}
+
+/* ================= 陪练 Prototype(liaolian redesign · 时间线/三脑并列/方向卡)================= */
+:root{
+  --c-claude:#e8975c; --c-openai:#4fd8c0; --c-deepseek:#8aa0ff;
+  --cyan2:#48dcff14; --faint:#647d96; --muted:#93a8bf;
+}
+.mono{font-family:var(--mono)}
+.label{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+.clk{cursor:pointer;transition:.14s}
+.clk:hover{filter:brightness(1.13)}
+.agent-pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;font-weight:700}
+.agent-pill .d{width:7px;height:7px;border-radius:2px}
+.ghost-chip{font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--line2);border-radius:7px;padding:6px 11px;background:rgba(255,255,255,.02);cursor:pointer;transition:.14s}
+.ghost-chip:hover{border-color:#345a7c;color:#c2ccd6}
+.amber-btn{font-family:var(--disp);font-weight:700;color:#170f04;background:linear-gradient(180deg,#e7a458,#c9852f);border:1px solid #e7a45855;border-radius:9px;cursor:pointer;transition:.14s;box-shadow:0 0 16px rgba(232,151,92,.2)}
+.amber-btn:hover{filter:brightness(1.08)}
+.amber-btn:disabled{opacity:.38;cursor:not-allowed;box-shadow:none}
+.amber-btn.send-icon{display:grid;place-items:center;width:44px;height:44px;font-size:18px;flex:0 0 auto;padding:0}
+
+/* top chrome:topbar + steps(四站共用,替代旧 chrome/tabs)*/
+.topbar{height:38px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--line);background:#060a14}
+.topbar .brand{font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:#7e97b3}
+.topbar .brand b{color:var(--cyan);font-weight:600}
+.topbar .online{margin-left:auto;display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;color:var(--green)}
+.topbar .online .dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.topbar .online.off{color:var(--tx3)} .topbar .online.off .dot{background:#52688a;box-shadow:none}
+.steps{height:52px;flex-shrink:0;display:flex;align-items:center;gap:9px;padding:0 16px;border-bottom:1px solid var(--line);background:#070d18}
+.steps .step{display:flex;align-items:center;gap:8px;padding:6px 13px;border-radius:9px;border:1px solid transparent;background:transparent;cursor:pointer;transition:.15s}
+.steps .step .num{font-family:var(--mono);font-size:11px;width:19px;height:19px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line2);color:var(--faint)}
+.steps .step b{font-family:var(--disp);font-size:14px;color:#aab8c7;font-weight:600}
+.steps .step .sub{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.steps .step:hover{background:rgba(255,255,255,.03)}
+.steps .step.done .num{border-color:var(--green);color:var(--green)}
+.steps .step.done b{color:#c2ccd6}
+.steps .step.active{background:var(--cyan2);border-color:rgba(72,220,255,.34)}
+.steps .step.active .num{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 9px rgba(72,220,255,.5)}
+.steps .step.active b{color:var(--cyan)}
+.steps .arrow{color:var(--faint);font-size:12px}
+.steps .ws{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--cyan);border:1px solid rgba(72,220,255,.3);border-radius:7px;padding:6px 11px;background:var(--cyan2)}
+
+/* liaolian 三栏体 */
+.ll{flex:1;display:grid;grid-template-columns:236px 1fr 326px;min-height:0}
+.ll .seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+.ll .seg button{padding:6px 13px;background:transparent;border:none;border-right:1px solid var(--line2);color:var(--muted);font-family:var(--mono);font-size:12px;cursor:pointer;transition:.14s}
+.ll .seg button:last-child{border-right:none}
+.ll .seg button.on{background:var(--cyan2);color:var(--cyan)}
+.ll .seg button:disabled{opacity:.45;cursor:not-allowed}
+.breath{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:blink 1.6s infinite;flex:0 0 auto}
+.viewin{animation:llIn .22s ease}
+@keyframes llIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.msg-body{color:#cdd8e3;white-space:pre-wrap;word-break:break-word}
+.ll-composer{display:flex;align-items:center;gap:10px;border:1px solid var(--line2);border-radius:12px;padding:9px 12px;background:rgba(255,255,255,.025);transition:.14s}
+.ll-composer:focus-within{border-color:rgba(72,220,255,.4)}
+.ll-composer textarea{flex:1;background:transparent;border:none;outline:none;resize:none;color:var(--tx);font-family:var(--sans);font-size:13.5px;line-height:1.5;min-height:22px;max-height:120px}
+.ll-lane-scroll{scrollbar-width:thin}

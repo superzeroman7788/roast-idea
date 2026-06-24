@@ -142,6 +142,23 @@ async function streamSSE(
   }
 }
 
+// 陪练 redesign:厂商 → 颜色/角色镜头(用于时间线/三脑并列/主脑方案配色)
+const AG: Record<string, { n: string; c: string }> = {
+  claude: { n: "Claude", c: "var(--c-claude)" },
+  openai: { n: "OpenAI", c: "var(--c-openai)" },
+  deepseek: { n: "DeepSeek", c: "var(--c-deepseek)" },
+};
+const AG_ROLE: Record<string, string> = { claude: "主脑 · 建框架", openai: "假设猎手 · 验路径", deepseek: "反方 · 找盲点" };
+function agentKey(speaker?: string): string {
+  const s = (speaker || "").toLowerCase();
+  if (s.includes("claude")) return "claude";
+  if (s.includes("openai") || s.includes("gpt")) return "openai";
+  if (s.includes("deepseek")) return "deepseek";
+  return "claude";
+}
+function agentColor(key: string): string { return AG[key]?.c || "var(--c-claude)"; }
+const LL_LINEUP = [["claude"], ["claude", "openai"], ["claude", "openai", "deepseek"]];
+
 function App() {
   const [mode, setMode] = useState<DiscussionMode>("idea");
   const [brief, setBrief] = useState(SAMPLE_BRIEF.idea);
@@ -199,6 +216,7 @@ function App() {
   const [councilIntensity, setCouncilIntensity] = useState<CouncilIntensity>("council"); // 议会内部:温和⇄拷问(默认先暖)
   const [sendMenuFor, setSendMenuFor] = useState<Tab | null>(null); // 左栏「送到」下拉当前展开的文档
   const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
+  const [detailId, setDetailId] = useState<string | null>(null); // 陪练:左栏点开某条 → 中央看详情(null=三脑并列列表)
   const pendingHandoff = useRef(""); // 上游交接 MD,注入下一站运行后清空
 
   const token = useRef(0);
@@ -314,7 +332,7 @@ function App() {
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
-    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = "";
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null);
     setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
@@ -329,7 +347,7 @@ function App() {
   // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
   async function loadDiscussion(id: string) {
     token.current++;
-    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set());
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null);
     try {
       const r = await fetch(`/api/discussion/${id}`);
       const d = await r.json();
@@ -1276,27 +1294,324 @@ function App() {
     );
   };
 
-  return (
-    <div className="app">
-      <div className="chrome">
-        <div className="dot r" /><div className="dot y" /><div className="dot g" />
-        <div className="title">ROAST · <b>SPARRING COUNCIL</b> · 点子陪练</div>
-        <div className="conn" style={{ color: conn.ok ? "var(--green)" : "var(--tx3)" }}>
-          <span className="blink" style={{ background: conn.ok ? "#46e6a0" : "#52688a", boxShadow: conn.ok ? "0 0 8px #46e6a0" : "none" }} />
-          {conn.text}
+  // ============ 陪练 redesign:顶部步骤条 + 时间线 / 三脑并列 / 方向卡 ============
+  const topChrome = () => (
+    <>
+      <div className="topbar">
+        <div className="brand">ROAST &nbsp;·&nbsp; <b>SPARRING&nbsp;COUNCIL</b> &nbsp;·&nbsp; 点子陪练</div>
+        <div className={`online${conn.ok ? "" : " off"}`}><span className="dot" />{conn.text}</div>
+      </div>
+      <div className="steps">
+        {TAB_ORDER.map((tk, i) => {
+          const st = tab === tk ? "active" : pipeStatus(tk) === "done" ? "done" : "";
+          return (
+            <React.Fragment key={tk}>
+              {i > 0 && <span className="arrow">→</span>}
+              <div className={`step ${st}`} onClick={() => switchTab(tk)}>
+                <span className="num">{i + 1}</span><b>{TAB_LABEL[tk]}</b><span className="sub">{TAB_SUB[tk]}</span>
+              </div>
+            </React.Fragment>
+          );
+        })}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          <span className="ghost-chip" onClick={() => setShowSeatConfig(true)}>席位 · {runConfig ? 3 + runConfig.seats.length : maxSeats}</span>
+          <span className="ghost-chip" onClick={() => { setShowHistory(true); refreshHistory(); }}>历史 · {history.length}</span>
+          <span className="ws">WORKSPACE · 一条点子 · 四站流转</span>
         </div>
       </div>
+    </>
+  );
 
-      {tabBar()}
-      <div className="grid work">
-        {conversationCol()}
-        <div className="col center">{centerCol()}</div>
-        {rightCol()}
+  const LikeBtn = ({ turn, small }: { turn: Turn; small?: boolean }) => {
+    const active = !!turn.pinned;
+    return (
+      <button className="clk" onClick={() => togglePin(turn)} title={active ? "已纳入主脑方案(点击移除)" : "点赞:让主脑重视这条、收进方案"}
+        style={{ display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid " + (active ? "rgba(232,154,42,.6)" : "var(--line2)"), background: active ? "rgba(232,154,42,.16)" : "rgba(255,255,255,.02)", color: active ? "#F2BF52" : "var(--muted)", borderRadius: 8, padding: small ? "6px 11px" : "8px 14px", fontFamily: "var(--mono)", fontSize: 11, fontWeight: 700, letterSpacing: ".4px", cursor: "pointer" }}>
+        <span style={{ fontSize: 12 }}>{active ? "✓" : "▲"}</span>{active ? "已纳入主脑方案" : "点赞 · 纳入主脑"}
+      </button>
+    );
+  };
+
+  const llTimeline = () => (
+    <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span className="label">对话时间线</span><span className="mono" style={{ fontSize: 11, color: "var(--cyan)" }}>{turns.length} 条</span>
       </div>
+      <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 11 }}>
+        {turns.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.7 }}>还没开始 —— 在右侧说说你的点子,这里会留下每一步对话轨迹。</div>}
+        {turns.map((t, i) => {
+          const isUser = t.role === "user"; const k = agentKey(t.speaker);
+          const rc = isUser ? "#34D2E6" : t.role === "system" ? "#7B8B9C" : agentColor(k);
+          const name = isUser ? "你" : t.role === "system" ? "系统" : t.speaker || "AI";
+          const active = detailId === t.id;
+          const short = (t.body || "").replace(/\n+/g, " ").trim().slice(0, 46);
+          return (
+            <div className="tl clk" key={t.id || i} style={{ display: "flex", gap: 10 }} onClick={() => t.id && setDetailId(t.id)}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: active ? "var(--cyan)" : "var(--faint)", boxShadow: active ? "0 0 8px var(--cyan)" : "none" }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0, border: "1px solid " + (active ? "var(--cyan)" : "var(--line)"), borderRadius: 8, padding: "9px 11px", background: active ? "var(--cyan2)" : "rgba(255,255,255,.012)" }}>
+                <span style={{ display: "inline-block", fontFamily: "var(--mono)", fontSize: 9.5, padding: "2px 7px", borderRadius: 5, marginBottom: 6, color: rc, border: "1px solid " + rc + "44", background: rc + "14" }}>{name}{t.pinned ? " ⭐" : ""}</span>
+                <div style={{ fontSize: 12, color: "#C2CCD6", lineHeight: 1.45 }}>{short || (t.failed ? "(未响应)" : "…")}</div>
+              </div>
+            </div>
+          );
+        })}
+        {busy && (
+          <div className="tl" style={{ display: "flex", gap: 10 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 }}><span className="breath" /></div>
+            <div style={{ flex: 1, border: "1px solid var(--cyan)", borderRadius: 8, padding: "9px 11px", background: "var(--cyan2)" }}>
+              <span className="mono" style={{ fontSize: 10, color: "var(--cyan)" }}>{dialogueN === 1 ? "主脑" : dialogueN + " 脑"} · 作答中…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const LaneCard = ({ turn }: { turn: Turn }) => {
+    const k = agentKey(turn.speaker); const a = AG[k]; const active = !!turn.pinned;
+    return (
+      <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", border: "1px solid " + (active ? "rgba(232,154,42,.4)" : "var(--line)"), borderTop: "2px solid " + a.c, borderRadius: 10, background: active ? "rgba(232,151,92,.045)" : "rgba(255,255,255,.018)", overflow: "hidden" }}>
+        <div style={{ padding: "10px 13px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="agent-pill" style={{ color: a.c }}><span className="d" style={{ background: a.c }} />{turn.speaker || a.n}</span>
+            {active && <span className="mono" style={{ fontSize: 9, color: "#F2BF52", border: "1px solid rgba(232,154,42,.5)", borderRadius: 5, padding: "2px 6px" }}>主脑方案</span>}
+            <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: turn.failed ? "var(--red)" : "var(--green)" }}>{turn.failed ? "未响应" : "已完成"}</span>
+          </div>
+          <span className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{AG_ROLE[k] || ROLE_LABEL[turn.role] || turn.role}</span>
+        </div>
+        <div className="msg-body ll-lane-scroll" style={{ padding: "13px 14px", fontSize: 13.5, lineHeight: 1.6, overflow: "auto", flex: 1 }}>{turn.failed ? `(未响应:${(turn.error || "").slice(0, 60)})` : turn.body}</div>
+        <div style={{ padding: "9px 12px", borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          {turn.id && !turn.failed ? <LikeBtn turn={turn} small /> : <span />}
+          <span className="mono" style={{ fontSize: 9, color: "var(--faint)", textAlign: "right" }}>{active ? "主脑围绕此观点收敛" : "觉得对就点赞"}</span>
+        </div>
+      </div>
+    );
+  };
+  const LanePending = () => (
+    <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", border: "1px solid var(--line)", borderRadius: 10, background: "rgba(255,255,255,.012)", overflow: "hidden", opacity: .75 }}>
+      <div style={{ padding: "10px 13px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="breath" /><span className="mono" style={{ fontSize: 10, color: "var(--cyan)" }}>正在作答…</span>
+      </div>
+      <div style={{ padding: "14px", flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+        {[0, 1, 2].map((i) => <div key={i} style={{ height: 8, borderRadius: 4, background: "rgba(255,255,255,.05)", width: i === 2 ? "60%" : "100%" }} />)}
+      </div>
+    </div>
+  );
+
+  const llComposer = () => {
+    const drafting = !discussion; const bind = drafting;
+    const send = () => { if (busy || deliberating) return; if (drafting && !brief.trim()) return; sendClarify(bind ? brief : userInput); };
+    return (
+      <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+        <div className="ll-composer">
+          <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
+          <textarea value={bind ? brief : userInput} disabled={busy} rows={1}
+            placeholder={drafting ? "说说你的点子,开始想清楚…" : "回应搭子 / 补充想法,继续往下聊…"}
+            onChange={(e) => (bind ? setBrief(e.target.value) : setUserInput(e.target.value))}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
+          {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
+          <button className="amber-btn send-icon" disabled={busy || deliberating || (drafting && !brief.trim())} onClick={send}>{busy ? "·" : "↑"}</button>
+        </div>
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>点左栏任意记录可展开详情 · ⌘/Ctrl+Enter 提交</div>
+      </div>
+    );
+  };
+
+  const llListView = () => {
+    const lastUserIdx = turns.map((t) => t.role).lastIndexOf("user");
+    const userBubble = lastUserIdx >= 0 ? turns[lastUserIdx] : null;
+    const replies = (lastUserIdx >= 0 ? turns.slice(lastUserIdx + 1) : turns).filter((t) => t.role !== "user" && t.role !== "system");
+    const pending = busy ? Math.max(0, dialogueN - replies.length) : 0;
+    const lineup = LL_LINEUP[dialogueN - 1].map((k) => AG[k].n).join(" · ");
+    return (
+      <div className="viewin" style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }} key="list">
+        <div style={{ padding: "13px 24px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 11 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>想清楚 · {dialogueN === 1 ? "主脑陪练" : dialogueN + "脑并列"}</div>
+            <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>{dialogueN === 1 ? "专注一来一往,帮你想清楚" : "同一个问题,多家同时答 → 你比对、追问"}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <span className="breath" /><span className="label">对话搭子</span>
+            <div className="seg">
+              {[1, 2, 3].map((n) => <button key={n} className={dialogueN === n ? "on" : ""} disabled={busy || deliberating} onClick={() => setDialogueN(n)}>{n === 1 ? "主脑" : n + " 脑"}</button>)}
+            </div>
+            <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{lineup}</span>
+            <button className="amber-btn" style={{ marginLeft: "auto", padding: "9px 18px", fontSize: 13, fontFamily: "var(--mono)" }} disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>{deliberating ? "召多脑合成中…" : "理清了 · 召多脑出方向卡 ↓"}</button>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 18, minHeight: 0 }}>
+          {turns.length === 0 ? (
+            <div className="board-empty" style={{ margin: "auto", textAlign: "center", maxWidth: 420, lineHeight: 1.8 }}>{busy ? "搭子在想…" : "在下方说说你的点子,搭子会专注回应、帮你一步步想清楚。"}</div>
+          ) : (
+            <>
+              {userBubble && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 7, alignSelf: "flex-end", maxWidth: "78%" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#5a6b7a" }}>你</span></div>
+                  <div className="msg-body" style={{ background: "rgba(63,221,138,.06)", border: "1px solid rgba(63,221,138,.18)", borderRadius: 11, padding: "13px 16px", fontSize: 13.5 }}>{userBubble.body}</div>
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="breath" /><div style={{ flex: 1, height: 2, borderRadius: 2, background: "linear-gradient(90deg,var(--cyan),transparent)" }} />
+                <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{replies.length + pending || "—"} 家{busy ? "作答中" : "已答"}</span>
+              </div>
+              <div style={{ display: "flex", gap: 14, minHeight: 300, flex: 1 }}>
+                {replies.map((t, i) => <LaneCard turn={t} key={t.id || i} />)}
+                {Array.from({ length: pending }).map((_, i) => <LanePending key={"p" + i} />)}
+              </div>
+            </>
+          )}
+        </div>
+        {llComposer()}
+      </div>
+    );
+  };
+
+  const CtxCard = ({ dir, rec }: { dir: string; rec?: Turn }) => {
+    if (!rec) return <div style={{ flex: 1 }} />;
+    const isUser = rec.role === "user"; const rc = isUser ? "#34D2E6" : rec.role === "system" ? "#7B8B9C" : agentColor(agentKey(rec.speaker));
+    return (
+      <div className="tl clk" style={{ flex: 1, minWidth: 0, border: "1px solid var(--line)", borderRadius: 9, padding: "11px 13px", background: "rgba(255,255,255,.012)" }} onClick={() => rec.id && setDetailId(rec.id)}>
+        <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)", marginBottom: 7 }}>{dir}</div>
+        <span style={{ display: "inline-block", fontFamily: "var(--mono)", fontSize: 9.5, padding: "2px 7px", borderRadius: 5, marginBottom: 6, color: rc, border: "1px solid " + rc + "44", background: rc + "14" }}>{isUser ? "你" : rec.role === "system" ? "系统" : rec.speaker}</span>
+        <div style={{ fontSize: 12.5, color: "#C2CCD6", lineHeight: 1.45 }}>{(rec.body || "").replace(/\n+/g, " ").slice(0, 48)}</div>
+      </div>
+    );
+  };
+  const llDetail = (t: Turn) => {
+    const idx = turns.findIndex((x) => x.id === t.id);
+    const prev = turns[idx - 1], next = turns[idx + 1];
+    const isUser = t.role === "user"; const k = agentKey(t.speaker);
+    const rc = isUser ? "#34D2E6" : t.role === "system" ? "#7B8B9C" : agentColor(k);
+    const paras = (t.body || "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+    const titleLine = paras[0] || t.body || "";
+    const rest = paras.slice(1);
+    return (
+      <div className="viewin" style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }} key={t.id}>
+        <div style={{ padding: "12px 26px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 14 }}>
+          <span className="clk" onClick={() => setDetailId(null)} style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--cyan)", fontSize: 13 }}>← 返回三脑并列</span>
+          <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>对话时间线 / {isUser ? "你" : t.role === "system" ? "系统" : t.speaker}</span>
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>第 {idx + 1} / {turns.length} 条</span>
+        </div>
+        <div style={{ flex: 1, overflow: "auto", padding: "26px 30px 16px", display: "flex", justifyContent: "center" }}>
+          <div style={{ width: "100%", maxWidth: 720, display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {isUser || t.role === "system" ? <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: rc }}>{isUser ? "你" : "系统"}</span>
+                : <span className="agent-pill" style={{ color: rc }}><span className="d" style={{ background: rc }} />{t.speaker}</span>}
+              {!isUser && t.role !== "system" && <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{AG_ROLE[k] || ROLE_LABEL[t.role] || t.role}</span>}
+              {t.id && !t.failed && <div style={{ marginLeft: "auto" }}><LikeBtn turn={t} small /></div>}
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#EEF2F6", lineHeight: 1.42, letterSpacing: ".2px" }}>{titleLine}</div>
+            {rest.length > 0 && <div className="msg-body" style={{ fontSize: 15, lineHeight: 1.78, display: "flex", flexDirection: "column", gap: 14 }}>{rest.map((p, i) => <p key={i} style={{ margin: 0 }}>{p}</p>)}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div className="label">上下文</div>
+              <div style={{ display: "flex", gap: 12 }}><CtxCard dir="↑ 上一条" rec={prev} /><CtxCard dir="↓ 下一条" rec={next} /></div>
+            </div>
+          </div>
+        </div>
+        <div style={{ flex: "0 0 auto", padding: "14px 30px", borderTop: "1px solid var(--line)", display: "flex", justifyContent: "center" }}>
+          <div style={{ width: "100%", maxWidth: 720, display: "flex", gap: 10, alignItems: "center" }}>
+            <button className="amber-btn" style={{ padding: "11px 20px", fontSize: 13, fontFamily: "var(--mono)" }} onClick={() => { setUserInput((u) => (u ? u + "\n\n" : "") + `> ${(t.body || "").replace(/\n+/g, " ").slice(0, 80)}…\n`); setDetailId(null); }}>↳ 追问此条</button>
+            <span className="ghost-chip" style={{ padding: "11px 16px" }} onClick={() => navigator.clipboard?.writeText(t.body || "")}>⧉ 复制内容</span>
+            <span className="clk mono" onClick={() => setDetailId(null)} style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--faint)" }}>← 跳转自左栏「对话时间线」</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const llDirSec = (glyph: string, gc: string, title: string, items?: string[]) => (items && items.length > 0 ? (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700, color: gc, border: "1px solid " + gc + "66", background: gc + "1a" }}>{glyph}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>{title}</span>
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>{items.length}</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 4 }}>
+        {items.map((t, i) => <div key={i} style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.5, display: "flex", gap: 8, alignItems: "baseline" }}><span style={{ color: gc, opacity: .7 }}>·</span><span style={{ flex: 1 }}>{t}</span></div>)}
+      </div>
+    </div>
+  ) : null);
+  const llDirectionCard = () => {
+    const adopted = turns.filter((t) => t.pinned && t.id);
+    const c = relayCard;
+    return (
+      <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
+          <span className="label">方向卡 · DIRECTION</span>
+          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制卡片</span>}
+        </div>
+        <div style={{ padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ border: "1px solid rgba(232,151,92,.35)", borderTop: "2px solid var(--c-claude)", borderRadius: 10, background: "linear-gradient(180deg,rgba(232,151,92,.08),rgba(255,255,255,.01))", padding: "13px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 2, background: "var(--c-claude)" }} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#EEE3D2" }}>主脑方案</span>
+              <span className="mono" style={{ fontSize: 9, color: "var(--faint)", letterSpacing: 1 }}>MASTER PLAN</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: adopted.length ? "#F2BF52" : "var(--faint)" }}>已纳入 {adopted.length}</span>
+            </div>
+            {adopted.length === 0
+              ? <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.55 }}>给任意搭子的回答点「点赞」→ 强制纳入主脑方案,主脑出卡时会围绕它收敛。</div>
+              : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {adopted.map((t) => { const k = agentKey(t.speaker); return (
+                    <div key={t.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.02)" }}>
+                      <span style={{ flex: "0 0 auto", width: 6, height: 6, borderRadius: 2, marginTop: 5, background: agentColor(k) }} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="mono" style={{ fontSize: 9, color: agentColor(k), marginBottom: 3 }}>{t.speaker} · 强制纳入</div>
+                        <div style={{ fontSize: 12, color: "#CCD6E0", lineHeight: 1.45 }}>{(t.body || "").slice(0, 120)}{(t.body || "").length > 120 ? "…" : ""}</div>
+                      </div>
+                      <span className="clk" onClick={() => togglePin(t)} title="移除" style={{ color: "var(--faint)", fontSize: 14, lineHeight: 1 }}>×</span>
+                    </div>); })}
+                </div>}
+          </div>
+          {!c && <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>和搭子聊清楚后,点中央「理清了 · 召多脑出方向卡」—— 这里会长出:已稳定 / 新角度 / 需你拍板 / 暂不做。</div>}
+          {c?.oneLine && <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "11px 13px", background: "rgba(72,220,255,.05)" }}><div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 4 }}>一句话内核</div><div style={{ fontSize: 13, color: "#DCE6EF", lineHeight: 1.5, fontWeight: 600 }}>{c.oneLine}</div></div>}
+          {llDirSec("✓", "#3FDD8A", "已稳定", c?.clear)}
+          {llDirSec("+", "#34D2E6", "接力铺开的新角度", c?.expandedAngles)}
+          {llDirSec("!", "#E8975C", "关键假设", c?.assumptions)}
+          {c && (c.firstNarrowing || (c.decisionsForYou && c.decisionsForYou.length > 0)) && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: "var(--cyan)", border: "1px solid rgba(52,210,230,.5)", background: "var(--cyan2)" }}>◆</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>需要你拍板</span>
+              </div>
+              <div style={{ border: "1px solid rgba(232,154,42,.4)", borderRadius: 10, padding: 13, background: "rgba(232,154,42,.06)" }}>
+                {c.firstNarrowing && <div style={{ fontSize: 13.5, fontWeight: 700, color: "#EEE3D2", lineHeight: 1.4 }}>{c.firstNarrowing}</div>}
+                {c.decisionsForYou && c.decisionsForYou.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 }}>{c.decisionsForYou.map((x, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.5 }}>{x}</li>)}</ul>}
+                {c.inviteYourInput && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 10, lineHeight: 1.5 }}>💬 {c.inviteYourInput}</div>}
+              </div>
+            </div>
+          )}
+          {llDirSec("–", "#7B8B9C", "暂不做", c?.dontBuildYet)}
+        </div>
+      </div>
+    );
+  };
+  const llBody = () => {
+    const detailTurn = detailId ? turns.find((t) => t.id === detailId) : null;
+    return (
+      <div className="ll">
+        {llTimeline()}
+        {detailTurn ? llDetail(detailTurn) : llListView()}
+        {llDirectionCard()}
+      </div>
+    );
+  };
+
+  return (
+    <div className="app">
+      {topChrome()}
+      {tab === "relay"
+        ? llBody()
+        : <div className="grid work">
+            {conversationCol()}
+            <div className="col center">{centerCol()}</div>
+            {rightCol()}
+          </div>}
 
       {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
 
-      {composerBar()}
+      {tab !== "relay" && composerBar()}
       {showHistory && (
         <div className="hist-overlay" onClick={() => setShowHistory(false)}>
           <div className="hist-panel" onClick={(e) => e.stopPropagation()}>
