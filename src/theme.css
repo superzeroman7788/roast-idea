@@ -603,8 +603,8 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .flow-arrow{color:#22405e;font-size:15px;padding:0 1px;user-select:none}
 .tabs .spacer{flex:1}
 .tabs .lens{font-family:var(--mono);font-size:11px;color:var(--tx3);letter-spacing:.1em}
-/* 四站网格列宽 */
-.grid.work{grid-template-columns:264px 1fr 320px}
+/* 四站网格列宽(左=对话根基,稍宽)*/
+.grid.work{grid-template-columns:300px 1fr 320px}
 .grid.work .col.left,.grid.work .col.right{background:#070c17}
 .grid.work .col.center{position:relative}
 /* 左栏工作台 */
@@ -703,6 +703,15 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .ch-seat.on{border-color:var(--cyan);color:var(--cyan);background:#0c1d30;box-shadow:0 0 0 1px #1c517055}
 .ch-seat:disabled{opacity:.5;cursor:not-allowed}
 .ch-lineup{font-family:var(--mono);font-size:11px;color:var(--cyan-dim);letter-spacing:.06em;margin-top:-6px}
+/* 内联交接条(各站输出底部)*/
+.handoff-bar{display:flex;align-items:center;gap:8px;padding:10px 0 2px;margin-top:10px;border-top:1px dashed #16314e;flex-shrink:0}
+.handoff-bar .hb-lab{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--tx3)}
+.hb-btn{font-family:var(--disp);font-size:12px;padding:5px 14px;border-radius:8px;border:1px solid #1c4d6e;background:#0a1c2c;color:var(--cyan);cursor:pointer}
+.hb-btn:hover{background:#0e2740}
+.hb-btn:disabled{opacity:.5;cursor:not-allowed}
+/* 左栏对话底注 */
+.conv-foot{flex-shrink:0;margin-top:8px;font-size:11px;color:var(--tx3);line-height:1.5;border-top:1px dashed #16314e;padding-top:8px}
+.conv-foot b{color:var(--cyan-dim);font-weight:500}
 .ch-hint{font-size:12.5px;color:var(--tx3);max-width:320px;line-height:1.55}
 /* 陪练对话流(右栏)*/
 .cv-turn{background:#0a1424;border:1px solid #132a44;border-radius:9px;padding:9px 12px;border-left:2px solid var(--cyan-dim)}

@@ -1028,54 +1028,31 @@ function App() {
     </nav>
   );
 
-  // 左栏工作台(四站固定)
+  // 交接目标 + 各站输出底部的「送到下一站」内联条
   const onwardOf: Record<Tab, Tab[]> = { search: ["relay", "council"], relay: ["council", "produce"], council: ["produce"], produce: [] };
-  const workspaceCol = () => {
-    const meta: Record<Tab, string> = {
-      search: pack?.items.length ? `${pack.items.filter((it) => !excludedIds.has(it.id)).length} 证据` : "待检索",
-      relay: relayCard ? "方向卡 ✓" : turns.length ? `对话 ${turns.length} 条` : "待想清楚",
-      council: converged ? "已收敛" : viewpoints.length ? `${viewpoints.length} 观点` : "待审议",
-      produce: artifacts.length ? `${artifacts.length} 交付物` : "待产出",
-    };
-    const docDefs: { t: Tab; name: string }[] = [{ t: "search", name: "证据简报" }, { t: "relay", name: "方向卡" }, { t: "council", name: "收敛方案" }];
+  const handoffBar = (from: Tab) => {
+    if (!docFor(from) || !onwardOf[from].length) return null;
     return (
-      <div className="col left">
-        <div className="eyebrow">工作台 · WORKSPACE</div>
-        <div className="subject"><span className="lab">当前点子</span>{brief || "(未填写)"}</div>
-        <div className="pl-title">流水线</div>
-        {TAB_ORDER.map((k) => {
-          const st = pipeStatus(k);
-          return (
-            <button className={`pl-row${tab === k ? " on" : ""}`} key={k} onClick={() => switchTab(k)}>
-              <span className={`st ${st}`}>{st === "done" ? "✓" : st === "run" ? "●" : "—"}</span>
-              <span className="nm">{TAB_LABEL[k]}</span><span className="meta">{meta[k]}</span>
-            </button>
-          );
-        })}
-        <div className="docs-title">文档 · 可送到下一站</div>
-        {docDefs.map(({ t, name }) => {
-          const gen = pipeStatus(t) === "run";
-          const ready = !!docFor(t);
-          return (
-            <div className={`doc${gen ? " gen" : ""}`} key={t}>
-              <i className="md">MD</i>
-              <span className="dn" onClick={() => ready && switchTab(t)}>{name}{gen ? " · 生成中…" : ready ? "" : " · 未生成"}</span>
-              {ready && onwardOf[t].length > 0 && (
-                <span className="send" onClick={() => setSendMenuFor(sendMenuFor === t ? null : t)}>送到 ▾
-                  {sendMenuFor === t && (
-                    <span className="send-menu" onClick={(e) => e.stopPropagation()}>
-                      {onwardOf[t].map((to) => <button key={to} onClick={() => sendHandoff(t, to)}>送到{TAB_LABEL[to]}</button>)}
-                    </span>
-                  )}
-                </span>
-              )}
-            </div>
-          );
-        })}
-        <div className="handoff-note">每站产出一份 <b>MD 文档</b>;点「送到」把它丢给下一站当输入 —— 交接前可读可改,白箱、人在环中。</div>
+      <div className="handoff-bar">
+        <span className="hb-lab">送到 →</span>
+        {onwardOf[from].map((to) => (
+          <button key={to} className="hb-btn" disabled={busy || deliberating} onClick={() => sendHandoff(from, to)}>{TAB_LABEL[to]}</button>
+        ))}
       </div>
     );
   };
+
+  // 左栏:对话常驻(每个 tab 都看得到 —— 它是所有 agent 理解项目的根基)
+  const conversationCol = () => (
+    <div className="col left">
+      <div className="eyebrow">对话 · 根基 <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{turns.length ? `${turns.length} 条` : ""}</span></div>
+      {discussion && <div className="subject"><span className="lab">当前点子</span>{brief || "(未填写)"}</div>}
+      <div className="out" style={{ flex: 1, minHeight: 0 }}>
+        <div className="out-scroll" ref={transcriptRef}>{clarifyConvo()}</div>
+      </div>
+      {discussion && tab !== "relay" && <div className="conv-foot">想补背景 → 回<b>陪练</b>接着聊,所有站都吃这段对话</div>}
+    </div>
+  );
 
   // 中央:每站专属仪表
   const RELAY_CHAIN = [
@@ -1124,7 +1101,7 @@ function App() {
                   );
                 })}
               </div>
-              {relayCard ? directionCard(relayCard)
+              {relayCard ? <div className="grow-card"><div className="ol"><b>✓ 方向卡已出 →</b> 右栏查看,可「送到议会 / 产出」</div></div>
                 : <div className="grow-card"><div className="ol">召多脑合成中…(立框 → 各模型扩面 → 收棒出方向卡)</div></div>}
             </div>
           ) : (
@@ -1198,12 +1175,18 @@ function App() {
       <div className="col right">
         <div className="eyebrow">证据 · EVIDENCE <span className="live"><span className="blink" />{busy ? "侦察中" : pack?.items.length ? `${pack.items.length} 命中` : "—"}</span></div>
         <div className="out"><div className="out-scroll">{evidenceBoard()}</div></div>
+        {handoffBar("search")}
       </div>
     );
     if (tab === "relay") return (
       <div className="col right">
-        <div className="eyebrow">对话 · DIALOGUE <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "var(--tx3)" }}>{turns.length ? `${turns.length} 条` : ""}</span></div>
-        <div className="out"><div className="out-scroll" ref={transcriptRef}>{clarifyConvo()}</div></div>
+        <div className="eyebrow">方向卡 · DIRECTION</div>
+        <div className="out"><div className="out-scroll">
+          {relayCard ? directionCard(relayCard)
+            : deliberating ? <div className="board-empty" style={{ padding: 16 }}>召多脑合成中…</div>
+            : <div className="board-empty" style={{ padding: 16 }}>左栏和搭子聊清楚 → 点中央「理清了」召多脑出方向卡</div>}
+        </div></div>
+        {handoffBar("relay")}
       </div>
     );
     if (tab === "council") return (
@@ -1213,6 +1196,7 @@ function App() {
           {(viewpoints.length || deliberating) ? delibBlock() : <div className="board-empty" style={{ padding: 16 }}>送进议会后,这里是各 AI 的署名观点 + 你的策展</div>}
           {convergedBlock()}
         </div></div>
+        {handoffBar("council")}
       </div>
     );
     const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
@@ -1277,7 +1261,7 @@ function App() {
 
       {tabBar()}
       <div className="grid work">
-        {workspaceCol()}
+        {conversationCol()}
         <div className="col center">{centerCol()}</div>
         {rightCol()}
       </div>
