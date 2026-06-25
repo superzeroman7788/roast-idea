@@ -769,34 +769,60 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
   return { hops, card: null, models };
 }
 
-// 想清楚收口(单脑):默认 Claude 直接读「点子+完整对话」一次出方向卡;Claude 失败 → OpenAI → 其余兜底。
-// 替代 6 棒接力(用户反馈太慢/太费)。返回与 runRelay 同形 { hops, card, models },saveRelay 不变。
+// 阶梯竞速:按 cands 顺序、每隔 delayMs 并行追加发起;返回第一张有效卡;全失败返回 null。
+// (对冲:主力慢就并行补兜底,谁先出有效卡谁赢 —— 不傻等一家超时。)
+function staggeredRace(cands, runOne, delayMs) {
+  return new Promise((resolve) => {
+    let i = 0, settled = 0, done = false;
+    const win = (v) => { if (v && !done) { done = true; resolve(v); } };
+    const allDone = () => { if (!done && settled >= cands.length) { done = true; resolve(null); } };
+    const launch = () => {
+      if (done || i >= cands.length) return;
+      const c = cands[i++];
+      Promise.resolve(runOne(c)).then(win).catch(() => {}).finally(() => { settled++; allDone(); });
+      if (i < cands.length) setTimeout(launch, delayMs);
+    };
+    launch();
+  });
+}
+
+// 想清楚收口(单脑 + 对冲):Claude 抢跑;~6s 没出卡就并行补 OpenAI,谁先出有效卡谁赢(偏好 Claude)。
+// 两家都挂 → 其余已配置依次兜底。替代 6 棒接力(太慢/太费)。返回与 runRelay 同形,saveRelay 不变。
 export async function runClarifyCard({ mode, brief, evidence, byoKeys }, onEvent) {
   const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
   const configured = getConfiguredProviders(byoKeys);
   if (!configured.length) { await emit("error", { error: "没有可用模型" }); return { hops: [], card: null, models: [] }; }
   const byId = new Map(configured.map((e) => [e.provider.id, e]));
-  // 收口优先级:Claude → OpenAI → 其余已配置(去重)
-  const order = [];
-  for (const id of ["claude", "openai"]) { const e = byId.get(id); if (e && !order.includes(e)) order.push(e); }
-  for (const e of configured) if (!order.includes(e)) order.push(e);
+  const prompt = buildClarifyCardPrompt({ mode, brief, evidence });
   const started = Date.now();
-  let card = null, seat = null, lastErr = "";
-  for (const cand of order) {
+  const GRACE_MS = 6000; // Claude 抢跑窗口:健康就它赢;过了还没出卡就并行点 OpenAI
+  const errs = [];
+  // tries:1(失败即换人)+ 30s 上限 + maxTokens 2000(整张中文卡 ~1100 会被截断成非法 JSON → heal 翻倍耗时)
+  const attempt = async (cand) => {
     const ts = Date.now();
     try {
-      // 失败即换人(tries:1 不重试同一家)+ 28s 上限:Claude 过载/掉线就让位给 OpenAI,不再耗 ~90s(原 6 棒)。
-      // maxTokens 2000:整张卡(中文 + 多段)~1100 会被截断成非法 JSON → 触发 heal 翻倍耗时;给足一次成。
-      const out = await chatJSON(cand.provider, cand.apiKey, buildClarifyCardPrompt({ mode, brief, evidence }), { tries: 1, timeoutMs: 28000, maxTokens: 2000 });
-      card = normCard(out); seat = cand.provider.label;
+      const out = await chatJSON(cand.provider, cand.apiKey, prompt, { tries: 1, timeoutMs: 30000, maxTokens: 2000 });
       console.log(`[clarify] ${cand.provider.label} 收口成功 ${Date.now() - ts}ms`);
-      break;
-    } catch (e) { lastErr = compact(e?.message || String(e)); console.log(`[clarify] ${cand.provider.label} 失败 ${Date.now() - ts}ms: ${lastErr.slice(0, 80)}`); }
+      return { card: normCard(out), seat: cand.provider.label };
+    } catch (e) { const m = compact(e?.message || String(e)); errs.push(m); console.log(`[clarify] ${cand.provider.label} 失败 ${Date.now() - ts}ms: ${m.slice(0, 60)}`); return null; }
+  };
+
+  // 主力两家对冲:Claude + OpenAI(都配了才对冲;否则有谁跑谁)
+  const claude = byId.get("claude"), openai = byId.get("openai");
+  const primary = [claude, openai].filter(Boolean);
+  let result = null;
+  if (primary.length >= 2) result = await staggeredRace(primary, attempt, GRACE_MS);
+  else if (primary.length === 1) result = await attempt(primary[0]);
+  // 主力没出卡 → 其余已配置依次兜底
+  if (!result) {
+    for (const cand of configured.filter((e) => e !== claude && e !== openai)) { result = await attempt(cand); if (result) break; }
   }
-  const hop = { order: 1, seat: seat || order[0].provider.label, role: "synth", lens: null, added: [], framing: null, failed: !card, error: card ? undefined : lastErr, latencyMs: Date.now() - started };
+
+  const seat = result?.seat || null, card = result?.card || null;
+  const hop = { order: 1, seat: seat || (primary[0] || configured[0]).provider.label, role: "synth", lens: null, added: [], framing: null, failed: !card, error: card ? undefined : (errs[0] || "收口失败"), latencyMs: Date.now() - started };
   await emit("relay-hop", hop);
   if (card) await emit("relay-card", card);
-  else await emit("error", { error: "收口失败:" + lastErr });
+  else await emit("error", { error: "收口失败:" + (errs[0] || "") });
   return { hops: [hop], card, models: seat ? [seat] : [] };
 }
 
