@@ -409,6 +409,8 @@ export async function runDiscussionRound(
           const turn = {
             ok: true,
             speaker: cand.label,
+            // 兜底接棒:本席(如主脑 Claude)过载/掉线,链上别家顶上 → 记原席,白箱告知"X 过载 · Y 接棒"
+            standInFor: cand.id !== seat.id ? seat.label : null,
             role: seat.role,
             round,
             body: parsed.body,

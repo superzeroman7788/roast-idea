@@ -77,6 +77,7 @@ export type Turn = {
   seq?: number;
   round: number;
   speaker: string; // provider label | "you" | "system"
+  standInFor?: string | null; // 兜底接棒:原指派席(如 Claude)过载时,实际答题的 speaker 顶替了它 → 白箱标注
   role: string; // host/builder/devils-advocate/demand-skeptic/feasibility/user
   body: string;
   citations: Citation[];

@@ -698,6 +698,7 @@ async function emitTurn(res, discussionId, turn, pack) {
     id: stored?.id,
     seq: stored?.seq,
     speaker: turn.speaker,
+    standInFor: turn.standInFor || null,
     role: turn.role,
     round: turn.round,
     body: turn.body,

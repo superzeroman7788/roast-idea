@@ -204,6 +204,7 @@ function App() {
   const [viewpoints, setViewpoints] = useState<Viewpoint[]>([]);
   const [deliberation, setDeliberation] = useState<Deliberation | null>(null);
   const [deliberating, setDeliberating] = useState(false);
+  const [delibPhase, setDelibPhase] = useState(""); // 议会分阶段进度:organizer→critics→verify→chair
   const [delibFails, setDelibFails] = useState<{ seat: string; roleAngle: string; error: string }[]>([]);
   // 人策展:viewpointId → {status, replies}
   const [curation, setCuration] = useState<Record<string, { status: CurationStatus; replies: { note: string; at?: string }[] }>>({});
@@ -247,8 +248,17 @@ function App() {
     refreshHistory();
     fetch("/api/produce-providers").then((r) => r.json()).then((d) => { if (d.ok) setProduceProviders(d.providers || []); }).catch(() => {});
     fetch("/api/personas").then((r) => r.json()).then((d) => { if (d.ok) setPersonaLib({ functional: d.functional, opinionated: d.opinionated, providers: d.providers || [] }); }).catch(() => {});
+    // 刷新恢复:把上次的工作台接回来(存在才载,已删则清记号),感知上不再"丢工作台"
+    const last = localStorage.getItem("roast_last_did");
+    if (last) fetch(`/api/discussion/${last}`).then((r) => r.json()).then((d) => { if (d.ok && d.discussion) loadDiscussion(last); else localStorage.removeItem("roast_last_did"); }).catch(() => {});
     return () => stopTimer();
   }, []);
+
+  // 当前工作台 id 落 localStorage(建/载即存,reset 清)→ 供刷新恢复
+  useEffect(() => {
+    if (discussion?.id) localStorage.setItem("roast_last_did", discussion.id);
+    else localStorage.removeItem("roast_last_did");
+  }, [discussion?.id]);
 
   // 陪练时间线:新发言进来时,若已贴底则自动滚到最新(滚上去看历史则不打扰)
   useEffect(() => {
@@ -325,7 +335,7 @@ function App() {
     try {
       await streamSSE(`/api/discussion/${discussion.id}/converge`, {}, (ev, d) => {
         if (cancelled(t)) return;
-        if (ev === "converged") { setConverged(d.converged); setConclusion(d.conclusion); setPhase("finalized"); refreshHistory(); }
+        if (ev === "converged") { setConverged(d.converged); setConclusion(d.conclusion); setPhase("finalized"); refreshHistory(); switchTab("produce"); } // 收敛完成 → 直接落到产出站(方案源已含收敛结论)
         else if (ev === "error") setRunError(d.error);
       }, () => cancelled(t));
     } catch (e) { if (!cancelled(t)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
@@ -469,16 +479,16 @@ function App() {
     if (!did || deliberating) return;
     const usePosture = postureOverride || runConfig?.posture || "clarify";
     const t = ++token.current;
-    setDeliberating(true); setPhase("responding"); startTimer(); setRunError(""); setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
+    setDeliberating(true); setDelibPhase(usePosture === "clarify" ? "" : "organizer"); setPhase("responding"); startTimer(); setRunError(""); setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]); setCuration({}); setReplyOpen(null);
     try {
       await streamSSE(
         `/api/discussion/${did}/deliberate`,
         { runConfig: runConfig || undefined, posture: usePosture, excludedIds: [...excludedIds], clarification: clarification || undefined, handoff: handoff || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
-          if (ev === "viewpoint") setViewpoints((prev) => [...prev, d as Viewpoint]);
-          else if (ev === "verification") setViewpoints((prev) => prev.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v)));
-          else if (ev === "deliberation") setDeliberation(d as Deliberation);
+          if (ev === "viewpoint") { setViewpoints((prev) => [...prev, d as Viewpoint]); setDelibPhase((d as Viewpoint).round >= 2 ? "critics" : "organizer"); }
+          else if (ev === "verification") { setViewpoints((prev) => prev.map((v) => (v.id === d.id ? { ...v, verification: d.verification } : v))); setDelibPhase("verify"); }
+          else if (ev === "deliberation") { setDeliberation(d as Deliberation); setDelibPhase("chair"); }
           else if (ev === "clarify") setClarify(d as ClarifyOutput);
           else if (ev === "relay-hop") setRelayHops((p) => [...p, d as RelayHop]);
           else if (ev === "relay-card") setRelayCard(d as DirectionCard);
@@ -1451,7 +1461,12 @@ function App() {
             {active && <span className="mono" style={{ fontSize: 9, color: "#F2BF52", border: "1px solid rgba(232,154,42,.5)", borderRadius: 5, padding: "2px 6px" }}>主脑方案</span>}
             <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: turn.failed ? "var(--red)" : "var(--green)" }}>{turn.failed ? "未响应" : "已完成"}</span>
           </div>
-          <span className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{AG_ROLE[k] || ROLE_LABEL[turn.role] || turn.role}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+            <span className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{AG_ROLE[k] || ROLE_LABEL[turn.role] || turn.role}</span>
+            {turn.standInFor && turn.standInFor !== turn.speaker && (
+              <span className="mono" title={`原指派 ${turn.standInFor} 过载/掉线,${turn.speaker} 接棒作答(白箱降级,非伪装)`} style={{ fontSize: 9, color: "#F2BF52", border: "1px solid rgba(232,154,42,.45)", borderRadius: 5, padding: "1.5px 6px", background: "rgba(232,154,42,.1)" }}>↪ {turn.standInFor} 过载 · {turn.speaker} 接棒</span>
+            )}
+          </div>
         </div>
         <div className="msg-body ll-lane-scroll" style={{ padding: "13px 14px", fontSize: 13.5, lineHeight: 1.6, overflow: "auto", flex: 1 }}>{turn.failed ? `(未响应:${(turn.error || "").slice(0, 60)})` : turn.body}</div>
         <div style={{ padding: "9px 12px", borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -1819,7 +1834,7 @@ function App() {
                 const cnt = countOf(d.id); const active = searchDim === d.id;
                 const scanned = d.id === "all" || cnt > 0; const sc = scanned ? "var(--green)" : "var(--faint)";
                 return (
-                  <div key={d.id} className={"dim" + (active ? " on" : "")} onClick={() => setSearchDim(d.id)}>
+                  <div key={d.id} role="button" tabIndex={0} aria-pressed={active} className={"dim" + (active ? " on" : "")} onClick={() => setSearchDim(d.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSearchDim(d.id); } }}>
                     <span style={{ width: 8, height: 8, borderRadius: "50%", background: sc, boxShadow: scanned ? "0 0 7px " + sc : "none", flex: "0 0 auto" }} />
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 13.5, fontWeight: 600, color: active ? "var(--cyan)" : "#D6DEE7" }}>{d.name}</div>
@@ -2193,6 +2208,35 @@ function App() {
       </div>
     );
   };
+  // 议会分阶段进度条:立靶 → 反方开火 → 核查 → 主席(据 deliberate SSE 事件推进,不再笼统"审议中")
+  const DELIB_STEPS = [
+    { key: "organizer", cn: "立靶", sub: "主脑搭框架" },
+    { key: "critics", cn: "反方开火", sub: "多家并行质疑" },
+    { key: "verify", cn: "核查引用", sub: "证据校验" },
+    { key: "chair", cn: "主席综述", sub: "共识 / 分歧 / 盲点" },
+  ];
+  const ycProgress = () => {
+    if (!deliberating) return null;
+    const cur = Math.max(0, DELIB_STEPS.findIndex((s) => s.key === delibPhase));
+    return (
+      <div style={{ display: "flex", gap: 10, border: "1px solid var(--cyan)", borderRadius: 10, padding: "12px 14px", background: "var(--cyan2)" }}>
+        {DELIB_STEPS.map((s, i) => {
+          const done = i < cur, active = i === cur;
+          const col = done ? "var(--green)" : active ? "var(--cyan)" : "var(--faint)";
+          return (
+            <div key={s.key} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5, opacity: i <= cur ? 1 : 0.5 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {active ? <span className="breath" /> : <span style={{ width: 8, height: 8, borderRadius: "50%", background: col, boxShadow: done ? "0 0 6px " + col : "none" }} />}
+                <span className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: col }}>{done ? "✓ " : ""}{s.cn}</span>
+              </div>
+              <span className="mono" style={{ fontSize: 9, color: "var(--faint)", paddingLeft: 14 }}>{s.sub}</span>
+              <div style={{ height: 2, borderRadius: 2, background: i <= cur ? col : "var(--line2)" }} />
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
   const ycBody = () => {
     const motions = ycMotions();
     const verdicts = ycVerdicts();
@@ -2251,13 +2295,15 @@ function App() {
             </div>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            {ycProgress()}
             {verdicts.length === 0
-              ? <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.9, maxWidth: 400, display: "flex", flexDirection: "column", gap: 14 }}>
-                  <div>{deliberating ? "审议中 —— 主脑立靶、反方并行开火…" : discussion ? "点下方「送进议会」—— 多个 AI 署名开火,你来认领/否决/搁置。" : "先开一条点子(搜索/陪练),再送进议会。"}</div>
-                  {discussion && !deliberating && <button className="amber-btn" style={{ alignSelf: "center", padding: "10px 22px", fontFamily: "var(--mono)" }} onClick={() => runCouncil()}>送进议会 →</button>}
-                </div>
+              ? (deliberating
+                ? <div className="board-empty" style={{ margin: "8px auto 0", textAlign: "center", color: "var(--faint)" }}>观点陆续就位中…</div>
+                : <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.9, maxWidth: 400, display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div>{discussion ? "点下方「送进议会」—— 多个 AI 署名开火,你来认领/否决/搁置。" : "先开一条点子(搜索/陪练),再送进议会。"}</div>
+                    {discussion && <button className="amber-btn" style={{ alignSelf: "center", padding: "10px 22px", fontFamily: "var(--mono)" }} onClick={() => runCouncil()}>送进议会 →</button>}
+                  </div>)
               : shown.map((v) => ycVerdictCard(v))}
-            {deliberating && verdicts.length > 0 && <div className="thinking"><span className="blink" /> 审议中…</div>}
           </div>
           <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
             <div className="ll-composer">
