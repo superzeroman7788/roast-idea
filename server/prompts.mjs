@@ -578,6 +578,33 @@ paths 给 2-3 条。` },
   ];
 }
 
+// 侦察简报合成:读全部证据 → 几条关键结论 + 整体可信度 + 进/补扫建议(搜索站右栏)。
+export function buildEvidenceBriefPrompt({ brief, items, mode }) {
+  // 故意不喂来源类目(来源粗分常错,会把 LLM 锚死);只给 id + 来源站点 + 标题 + 影响,让它按内容判类目。
+  const ev = (items || []).slice(0, 16).map((e, i) => `[${e.id || "E" + (i + 1)}] (${e.source || "web"}) ${e.title || e.claim}${e.impact ? " —— " + e.impact : ""}`).join("\n");
+  return [
+    { role: "system", content: `${OUTPUT_LANG}
+你是事实侦察的情报官。下面是为一个${mode === "copy" ? "文案" : "点子"}检索到的证据(每条带 类目|可信度)。
+把它们提炼成一份"侦察简报",帮用户判断:证据说明了什么、整体可信度如何、够不够进入下一站(陪练/议会)。
+诚实、克制,只说证据支撑的;不足就直说不足。
+类目定义(按证据内容判,别照来源):
+- competitor(竞品):已存在的同类产品/App/开源项目(应用商店条目、Show HN 发布、GitHub 仓库、某某工具名)。
+- demand(需求):有人在"想要/在找/讨论需不需要"这类东西(论坛提问、需求帖、"有没有推荐")。
+- pain(痛点):具体的抱怨/失败/挫折/吃灰案例("我买的工具最后都没用")。
+- pricing(定价):价格、订阅、商业模式信息。
+- trend(趋势):近期热度/增长/新兴信号。${mode === "copy" ? "\n- 文案类:viral/userVoice/competitorCopy/platform/risk。" : ""}
+只返回一个 JSON 对象,不要解释:
+{
+  "conclusions": [{"cat":"该结论主要来自哪个类目","text":"一条关键结论(具体,基于证据)"}],
+  "confidence": "high | medium | low(整体证据强度)",
+  "suggestion": "一句话:够不够进下一站,或建议先补扫哪个维度",
+  "categories": {"E1":"按内容判定该证据最贴的类目","E2":"...每条证据都给一个"}
+}
+conclusions 给 3-5 条,每条对应一个不同类目尽量。categories 必须按"证据内容"重新判定类目(别照抄输入的类目,输入的类目是按来源粗分的,常不准)。` },
+    { role: "user", content: `${mode === "copy" ? "文案" : "点子"}:${String(brief || "").slice(0, 600)}\n\n证据:\n${ev}` },
+  ];
+}
+
 // autoRecruit:判定点子是否触及受监管/专业领域,需要临时招一席领域专家反方。
 export function buildDomainDetectPrompt({ brief }) {
   return [

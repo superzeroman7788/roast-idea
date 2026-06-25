@@ -6,16 +6,17 @@ import { promisify } from "node:util";
 const execFileP = promisify(execFile);
 
 // ─── 5 类(Idea) / 5 类(Copy) ────────────────────────────────────────────────
-export const IDEA_CATEGORIES = ["competitor", "oss", "demand", "pricing", "pain"];
+export const IDEA_CATEGORIES = ["competitor", "demand", "pricing", "pain", "trend"];
 export const COPY_CATEGORIES = ["viral", "userVoice", "competitorCopy", "platform", "risk"];
 
 export const CATEGORY_LABEL = {
   // idea
   competitor: "竞品",
-  oss: "开源同类",
+  oss: "竞品", // 旧类目,归并到竞品(兼容历史数据)
   demand: "需求信号",
   pricing: "定价/商业",
   pain: "痛点案例",
+  trend: "趋势",
   // copy
   viral: "爆款案例",
   userVoice: "用户原话",
@@ -164,7 +165,7 @@ async function ghOnce(query, fetchedAt) {
       snippet: snip(r.description) || "(no description)",
       fetchedAt,
       credibility: ghCredibility(r.stargazers_count || 0),
-      _category: "oss",
+      _category: "competitor", // 开源同类并入竞品
       _signal: r.stargazers_count || 0,
     }));
 }
@@ -211,6 +212,35 @@ async function searchHN(terms, fetchedAt) {
   for (const q of tries) {
     const res = await hnOnce(q, fetchedAt);
     if (res.length) return res;
+  }
+  return [];
+}
+
+// ─── 趋势源:HN 近期高热讨论(search_by_date,反映"这个空间现在在涨什么")────────────
+async function trendOnce(query, fetchedAt) {
+  const url = `https://hn.algolia.com/api/v1/search_by_date?query=${encodeURIComponent(query)}&tags=story&numericFilters=points%3E10&hitsPerPage=6`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(9000) });
+  if (!res.ok) throw new Error(`Trend ${res.status}`);
+  const json = await res.json();
+  return (json.hits || [])
+    .filter((h) => h?.title)
+    .map((h) => ({
+      url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,
+      source: "hn",
+      title: h.title,
+      claim: `近期热议:"${snip(h.title, 80)}"(${h.points || 0} 分,${h.num_comments || 0} 评)`,
+      snippet: snip(h.story_text || h.title),
+      fetchedAt,
+      credibility: hnCredibility(h.points || 0),
+      _category: "trend",
+      _signal: h.points || 0,
+      engagement: h.points ? { metric: "points", value: h.points } : undefined,
+    }));
+}
+async function searchTrend({ terms, nowIso }) {
+  const tries = [terms.slice(0, 3), terms.slice(0, 2)].map((t) => t.join(" ")).filter(Boolean);
+  for (const q of tries) {
+    try { const res = await trendOnce(q, nowIso); if (res.length) return res; } catch { /* 趋势源失败不阻断 */ }
   }
   return [];
 }
@@ -329,6 +359,7 @@ export const CHANNELS = [
   { id: "hn", label: "Hacker News", tier: "green", enabled: () => true, run: ({ terms, nowIso }) => searchHN(terms, nowIso) },
   { id: "exa", label: "Exa", tier: "green", enabled: () => process.env.ROAST_EXA !== "0", run: (ctx) => searchExa(ctx) },
   { id: "v2ex", label: "V2EX", tier: "green", enabled: () => process.env.ROAST_V2EX !== "0", run: (ctx) => searchV2EX(ctx) },
+  { id: "trend", label: "趋势", tier: "green", enabled: () => process.env.ROAST_TREND !== "0", run: (ctx) => searchTrend(ctx) },
   { id: "searxng", label: "SearXNG", tier: "green", enabled: () => !!process.env.SEARXNG_URL, run: async ({ searxngQueries, nowIso }) => (await Promise.all(searxngQueries.map(({ q, cat }) => searchSearXNG(q, cat, nowIso)))).flat() },
 ];
 
@@ -363,6 +394,7 @@ export async function buildEvidencePack({ brief, mode = "idea", redacted, nowIso
       ? [
           { q: `${terms.slice(0, 3).join(" ")} pricing saas`, cat: "pricing" },
           { q: `${terms.slice(0, 3).join(" ")} failed startup lessons`, cat: "pain" },
+          { q: `${terms.slice(0, 3).join(" ")} 2025 trend growing`, cat: "trend" },
         ]
       : [
           { q: `${terms.slice(0, 3).join(" ")} viral marketing copy`, cat: "viral" },
@@ -406,9 +438,10 @@ export async function buildEvidencePack({ brief, mode = "idea", redacted, nowIso
   // 打 impact + 编号
   const items = sorted.map((it, i) => {
     const { _category, _signal, _jinaEnriched, ...rest } = it;
+    const cat = cats.includes(_category) ? _category : _category === "oss" ? "competitor" : "demand"; // 归一到合法类目
     return {
       id: `E${i + 1}`,
-      category: _category || "demand",
+      category: cat,
       impact: computeImpact(it),
       ...rest,
     };
@@ -417,8 +450,7 @@ export async function buildEvidencePack({ brief, mode = "idea", redacted, nowIso
   // byCategory
   const byCategory = Object.fromEntries(cats.map((c) => [c, []]));
   items.forEach((it) => {
-    if (byCategory[it.category]) byCategory[it.category].push(it.id);
-    else byCategory[cats[cats.length - 1]].push(it.id); // 兜底最后一类
+    (byCategory[it.category] || byCategory.demand || byCategory[cats[0]]).push(it.id);
   });
 
   const pack = { mode, items, byCategory, searchedAt: nowIso, redacted: false, sources: [...sources], failures, query: cacheKey };

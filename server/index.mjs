@@ -15,6 +15,7 @@ import {
   runClarify,
   runRelay,
   runClarifyCard,
+  synthesizeEvidenceBrief,
   runConverge,
   listPersonas,
 } from "./providers.mjs";
@@ -107,6 +108,11 @@ const server = http.createServer(async (req, res) => {
         if (!redacted) {
           const now = new Date();
           pack = await buildEvidencePack({ brief, mode, redacted: false, nowIso: now.toISOString(), nowMs: now.getTime(), byoKeys });
+          // 侦察简报:读全部证据 → 关键结论 + 整体可信度 + 建议(搜索站右栏;对冲 ~10s)
+          if (pack.items?.length) {
+            try { applyEvidenceBrief(pack, await synthesizeEvidenceBrief({ brief, items: pack.items, mode, byoKeys })); }
+            catch (e) { console.error("[roast-api] evidence brief failed:", e?.message || e); }
+          }
         }
         // 用户排除的证据 id 列表(前端传来,不进议会)
         const excludedIds = new Set(Array.isArray(body.excludedIds) ? body.excludedIds : []);
@@ -152,6 +158,10 @@ const server = http.createServer(async (req, res) => {
       try {
         const now = new Date();
         const pack = await buildEvidencePack({ brief, mode: existing.mode, redacted: false, nowIso: now.toISOString(), nowMs: now.getTime(), byoKeys });
+        if (pack.items?.length) {
+          try { applyEvidenceBrief(pack, await synthesizeEvidenceBrief({ brief, items: pack.items, mode: existing.mode, byoKeys })); }
+          catch (e) { console.error("[roast-api] evidence brief failed:", e?.message || e); }
+        }
         await updateDiscussionPack(did, pack);
         sseSend(res, "board", { pack });
         sseSend(res, "round-done", { discussionId: did });
@@ -617,6 +627,22 @@ function sseSend(res, event, data) {
     data = { ...data, error: m };
   }
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+// 把侦察简报回写进 pack:挂 brief + 按 LLM「内容判定」重排证据类目(来源粗分常不准)+ 重建 byCategory,让维度真分布。
+function applyEvidenceBrief(pack, brief) {
+  if (!brief) return;
+  pack.brief = brief;
+  for (const it of pack.items || []) {
+    // 1) LLM 按内容重判类目(比来源粗分准)
+    if (brief.categories && brief.categories[it.id]) it.category = brief.categories[it.id];
+    // 2) 强信号硬规则覆盖:应用商店/Show HN/GitHub 条目就是已存在的竞品(LLM 常误判成"需求")
+    const t = `${it.title || ""} ${it.url || ""}`.toLowerCase();
+    if (it.source === "github" || /app store|apps\.apple|play\.google|google play|应用商店|appstore|microsoft store|show hn/.test(t)) it.category = "competitor";
+  }
+  const by = {};
+  for (const it of pack.items || []) (by[it.category] || (by[it.category] = [])).push(it.id);
+  pack.byCategory = by;
 }
 
 // 引用校验:evidenceId 必须真实存在于信息板,否则 valid=false(UI 标红)

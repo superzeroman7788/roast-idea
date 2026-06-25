@@ -781,3 +781,13 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .ll-composer:focus-within{border-color:rgba(72,220,255,.4)}
 .ll-composer textarea{flex:1;background:transparent;border:none;outline:none;resize:none;color:var(--tx);font-family:var(--sans);font-size:13.5px;line-height:1.5;min-height:22px;max-height:120px}
 .ll-lane-scroll{scrollbar-width:thin}
+
+/* 搜索站:维度导航 + mini 雷达 + 来源徽标 */
+.dim{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;border:1px solid transparent;cursor:pointer;transition:.14s}
+.dim:hover{background:rgba(255,255,255,.03)}
+.dim.on{background:var(--cyan2);border-color:rgba(72,220,255,.34)}
+.src-pill{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--line2);border-radius:5px;padding:2px 7px}
+.mini-radar{width:176px;height:176px;border-radius:50%;position:relative;margin:2px auto 0;background:radial-gradient(circle,#0a1c2e 0%,#060f1c 70%);border:1px solid #143a55;box-shadow:0 0 40px #48dcff14 inset;flex:0 0 auto}
+.mini-radar i{position:absolute;border:1px solid #173f5a;border-radius:50%;inset:0;margin:auto;display:block}
+.mini-radar i.r2{inset:23%}.mini-radar i.r3{inset:40%}
+.mini-radar .mr-sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,#48dcff00 0deg,#48dcff00 300deg,#48dcff33 350deg,#48dcffaa 360deg);animation:radarspin 3.2s linear infinite}

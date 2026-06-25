@@ -36,6 +36,12 @@ import {
   evidenceToMd,
   cardToMd,
   convergedToMd,
+  SEARCH_DIMS_IDEA,
+  SEARCH_DIMS_COPY,
+  CAT_COLOR,
+  SRC_COLOR,
+  credScore,
+  CONFIDENCE_CN,
 } from "./discussion";
 import { Landing } from "./Landing";
 import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
@@ -217,6 +223,7 @@ function App() {
   const [sendMenuFor, setSendMenuFor] = useState<Tab | null>(null); // 左栏「送到」下拉当前展开的文档
   const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
   const [detailId, setDetailId] = useState<string | null>(null); // 陪练:左栏点开某条 → 中央看详情(null=三脑并列列表)
+  const [searchDim, setSearchDim] = useState("all"); // 搜索:左栏选中的侦察维度(过滤中间证据流)
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
   // 方向卡分段折叠:key→是否收起。默认折起最长的几段(新角度/关键假设/暂不做)
@@ -343,7 +350,7 @@ function App() {
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
-    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null);
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all");
     setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
@@ -358,7 +365,7 @@ function App() {
   // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
   async function loadDiscussion(id: string) {
     token.current++;
-    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null);
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all");
     try {
       const r = await fetch(`/api/discussion/${id}`);
       const d = await r.json();
@@ -1641,11 +1648,155 @@ function App() {
     );
   };
 
+  // ============ 搜索 redesign:侦察维度 / 证据流 / 侦察简报 ============
+  const SS_DIMS = mode === "copy" ? SEARCH_DIMS_COPY : SEARCH_DIMS_IDEA;
+  const ssDimName = (cat: string) => SS_DIMS.find((d) => d.id === cat)?.name || cat;
+  const ssCard = (it: EvidencePack["items"][number]) => {
+    const picked = !excludedIds.has(it.id);
+    const sc = SRC_COLOR[it.source] || "#7e97b3";
+    const cc = CAT_COLOR[it.category] || "var(--cyan)";
+    const conf = credScore(it.credibility);
+    const confC = conf >= 85 ? "var(--green)" : conf >= 70 ? "var(--cyan)" : "#F2BF52";
+    return (
+      <div key={it.id} style={{ border: "1px solid " + (picked ? "rgba(72,220,255,.4)" : "var(--line)"), borderRadius: 11, padding: "14px 16px", background: picked ? "rgba(72,220,255,.05)" : "rgba(255,255,255,.015)", display: "flex", flexDirection: "column", gap: 9 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+          <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--faint)" }}>{it.id}</span>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 10, padding: "2px 8px", borderRadius: 5, color: cc, border: "1px solid " + cc + "55", background: cc + "18" }}>{ssDimName(it.category)}</span>
+          <span className="src-pill"><span style={{ width: 7, height: 7, borderRadius: 2, background: sc }} />{it.source}</span>
+          {it.engagement && <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>· {it.engagement.value} {it.engagement.metric === "points" ? "分" : it.engagement.metric}</span>}
+          {it.tier && it.tier !== "green" && <span className="mono" style={{ fontSize: 9, color: it.tier === "red" ? "var(--red)" : "#F2BF52" }}>{it.tier === "red" ? "⚠风险源" : "需配置"}</span>}
+          <button className="ghost-chip" onClick={() => setExcludedIds((prev) => { const s = new Set(prev); picked ? s.add(it.id) : s.delete(it.id); return s; })} style={{ marginLeft: "auto", padding: "5px 10px", fontSize: 10, ...(picked ? { borderColor: "var(--cyan)", color: "var(--cyan)" } : {}) }}>{picked ? "✓ 已纳简报" : "纳入简报"}</button>
+        </div>
+        <a href={it.url} target="_blank" rel="noreferrer" style={{ fontSize: 14.5, fontWeight: 600, color: "#E7ECF2", lineHeight: 1.4, textDecoration: "none" }}>{it.title || it.claim}</a>
+        <div style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.55 }}>{it.impact || it.snippet}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span className="label" style={{ letterSpacing: "1.5px" }}>可信度</span>
+          <div style={{ flex: 1, height: 4, borderRadius: 4, background: "var(--line2)", overflow: "hidden" }}><div style={{ width: conf + "%", height: "100%", background: confC }} /></div>
+          <span className="mono" style={{ fontSize: 10, color: confC }}>{conf}</span>
+        </div>
+      </div>
+    );
+  };
+  const ssComposer = () => {
+    const drafting = !discussion;
+    const send = () => { if (busy || deliberating) return; if (drafting && !brief.trim()) return; runSearch(); };
+    return (
+      <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+        <div className="ll-composer">
+          <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
+          <textarea value={drafting ? brief : userInput} disabled={busy} rows={1}
+            placeholder={drafting ? "描述你的点子,开始事实侦察…" : "追加侦察方向 / 修订点子,重新搜索…"}
+            onChange={(e) => (drafting ? setBrief(e.target.value) : setUserInput(e.target.value))}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
+          {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
+          <button className="amber-btn" style={{ padding: "10px 18px", fontFamily: "var(--mono)", fontSize: 13 }} disabled={busy || deliberating || (drafting && !brief.trim())} onClick={send}>{busy ? "侦察中…" : pack ? "重新搜索 →" : "开始搜索 →"}</button>
+        </div>
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>点左栏维度可筛选证据 · ⌘/Ctrl+Enter 提交</div>
+      </div>
+    );
+  };
+  const ssBody = () => {
+    const items = pack?.items || [];
+    const eb = pack?.brief;
+    const countOf = (id: string) => (id === "all" ? items.length : items.filter((i) => i.category === id).length);
+    const shown = searchDim === "all" ? items : items.filter((i) => i.category === searchDim);
+    const pickedCount = items.filter((i) => !excludedIds.has(i.id)).length;
+    return (
+      <div className="ll" style={{ gridTemplateColumns: "248px 1fr 312px" }}>
+        {/* 左:侦察维度 */}
+        <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span className="label">侦察维度 · RECON</span>{busy && <span className="breath" />}
+          </div>
+          <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+            {discussion && <div style={{ border: "1px solid var(--line2)", borderRadius: 10, padding: "12px 13px", background: "linear-gradient(180deg,rgba(72,220,255,.05),rgba(255,255,255,.01))" }}>
+              <div className="label" style={{ marginBottom: 7 }}>当前点子</div>
+              <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
+            </div>}
+            <div className="mini-radar"><i /><i className="r2" /><i className="r3" /><div className="mr-sweep" /></div>
+            {busy && <div className="mono" style={{ textAlign: "center", fontSize: 10, color: "var(--cyan)", marginTop: -4, letterSpacing: ".5px" }}>扫描中 · {reconElapsed}s</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {SS_DIMS.map((d) => {
+                const cnt = countOf(d.id); const active = searchDim === d.id;
+                const scanned = d.id === "all" || cnt > 0; const sc = scanned ? "var(--green)" : "var(--faint)";
+                return (
+                  <div key={d.id} className={"dim" + (active ? " on" : "")} onClick={() => setSearchDim(d.id)}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: sc, boxShadow: scanned ? "0 0 7px " + sc : "none", flex: "0 0 auto" }} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: active ? "var(--cyan)" : "#D6DEE7" }}>{d.name}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "var(--faint)", letterSpacing: ".5px" }}>{d.en}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {d.id !== "all" && <div className="mono" style={{ fontSize: 10, color: sc }}>{scanned ? "已扫" : "待扫"}</div>}
+                      <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: cnt ? "#C2CCD6" : "var(--faint)" }}>{d.id === "all" ? cnt + " 命中" : cnt ? "命中 " + cnt : "—"}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        {/* 中:证据流 */}
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "13px 24px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>事实侦察 · 证据流</div>
+            <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>给点子找证据落点 · 竞品 / 需求 / 痛点 / 定价 / 趋势</span>
+            <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--cyan)" }}>{ssDimName(searchDim)} · {shown.length} 条</span>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
+            {shown.length === 0
+              ? <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 380 }}>{busy ? "侦察中,在扫竞品 / 需求 / 痛点 / 定价 / 趋势…" : items.length ? "该维度暂无证据,换一个维度看看" : "在下方描述你的点子,开始事实侦察。"}</div>
+              : shown.map((it) => ssCard(it))}
+          </div>
+          {ssComposer()}
+        </div>
+        {/* 右:侦察简报 */}
+        <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
+            <span className="label">侦察简报 · BRIEF</span>
+            <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--cyan)" }}>已纳 {pickedCount} 条</span>
+          </div>
+          <div style={{ padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 16, flex: 1 }}>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: 11, textAlign: "center", background: "rgba(255,255,255,.015)" }}>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--green)" }}>{items.length}</div>
+                <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginTop: 2 }}>命中证据</div>
+              </div>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: 11, textAlign: "center", background: "rgba(255,255,255,.015)" }}>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--cyan)" }}>{eb ? CONFIDENCE_CN[eb.confidence] : "—"}</div>
+                <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginTop: 2 }}>整体可信度</div>
+              </div>
+            </div>
+            {!eb
+              ? <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>{busy ? "情报官正在读证据、提炼简报…" : items.length ? "简报合成中…" : "开始搜索后,这里会出:关键结论 + 整体可信度 + 进 / 补扫建议。"}</div>
+              : <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div className="label">关键结论</div>
+                  {eb.conclusions.map((c, i) => <div key={i} style={{ fontSize: 12.5, color: "#CCD6E0", lineHeight: 1.5, display: "flex", gap: 9 }}><span style={{ color: CAT_COLOR[c.cat] || "#34D2E6", marginTop: 1 }}>—</span><span>{c.text}</span></div>)}
+                </div>
+                {eb.suggestion && <div style={{ border: "1px solid rgba(232,154,42,.35)", borderRadius: 9, padding: "11px 13px", background: "rgba(232,154,42,.06)" }}>
+                  <div className="mono" style={{ fontSize: 10, color: "#F2BF52", marginBottom: 5 }}>侦察建议</div>
+                  <div style={{ fontSize: 12.5, color: "#EEE3D2", lineHeight: 1.55 }}>{eb.suggestion}</div>
+                </div>}
+              </>}
+          </div>
+          <div style={{ flex: "0 0 auto", padding: "13px 15px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 9 }}>
+            <div className="label" style={{ textAlign: "center" }}>送到 →</div>
+            <div style={{ display: "flex", gap: 9 }}>
+              <button className="amber-btn" style={{ flex: 1, padding: 11, fontSize: 13, fontFamily: "var(--mono)" }} disabled={!docFor("search") || busy || deliberating} onClick={() => sendHandoff("search", "relay")}>陪练 · 想清楚</button>
+              <button className="ghost-chip" style={{ flex: 1, padding: 11, justifyContent: "center", fontSize: 12 }} onClick={() => sendHandoff("search", "council")}>议会 · 拷问</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="app">
       {topChrome()}
-      {tab === "relay"
-        ? llBody()
+      {tab === "relay" ? llBody()
+        : tab === "search" ? ssBody()
         : <div className="grid work">
             {conversationCol()}
             <div className="col center">{centerCol()}</div>
@@ -1654,7 +1805,7 @@ function App() {
 
       {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
 
-      {tab !== "relay" && composerBar()}
+      {tab !== "relay" && tab !== "search" && composerBar()}
       {showHistory && (
         <div className="hist-overlay" onClick={() => setShowHistory(false)}>
           <div className="hist-panel" onClick={(e) => e.stopPropagation()}>

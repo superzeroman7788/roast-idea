@@ -18,6 +18,14 @@ export type EvidenceItem = {
   excluded?: boolean; // 用户手动排除,不进议会
 };
 
+// 侦察简报(搜索站右栏):读全部证据后 LLM 合成的关键结论 + 整体可信度 + 进/补扫建议
+export type EvidenceBrief = {
+  conclusions: { cat: string; text: string }[];
+  confidence: "high" | "medium" | "low";
+  suggestion: string;
+  categories?: Record<string, string>;
+};
+
 export type EvidencePack = {
   mode?: "idea" | "copy";
   items: EvidenceItem[];
@@ -25,7 +33,40 @@ export type EvidencePack = {
   sources: string[];
   redacted: boolean;
   failures?: { source: string; error: string }[];
+  brief?: EvidenceBrief | null;
 };
+
+// 搜索站维度导航(左栏):idea / copy 各一套
+export type SearchDim = { id: string; name: string; en: string };
+export const SEARCH_DIMS_IDEA: SearchDim[] = [
+  { id: "all", name: "全部", en: "ALL" },
+  { id: "competitor", name: "竞品", en: "COMPETITORS" },
+  { id: "demand", name: "需求", en: "DEMAND" },
+  { id: "pain", name: "痛点", en: "PAIN" },
+  { id: "pricing", name: "定价", en: "PRICING" },
+  { id: "trend", name: "趋势", en: "TRENDS" },
+];
+export const SEARCH_DIMS_COPY: SearchDim[] = [
+  { id: "all", name: "全部", en: "ALL" },
+  { id: "viral", name: "爆款", en: "VIRAL" },
+  { id: "userVoice", name: "用户原话", en: "USER VOICE" },
+  { id: "competitorCopy", name: "竞品文案", en: "RIVAL COPY" },
+  { id: "platform", name: "平台", en: "PLATFORM" },
+  { id: "risk", name: "风险", en: "RISK" },
+];
+// 类目 → 颜色(证据维度标签 + 简报结论要点)
+export const CAT_COLOR: Record<string, string> = {
+  competitor: "#7C8DFF", demand: "#3FDD8A", pain: "#E8975C", pricing: "#34D2E6", trend: "#FFD24A",
+  viral: "#FF7556", userVoice: "#34D2E6", competitorCopy: "#7C8DFF", platform: "#4FD8C0", risk: "#FF5C6A",
+};
+// 来源 → 颜色点
+export const SRC_COLOR: Record<string, string> = {
+  github: "#8aa0ff", hn: "#FF7556", exa: "#4FD8C0", v2ex: "#7C8DFF", searxng: "#FFD24A",
+  reddit: "#FF6B3D", jike: "#FFD24A", sspai: "#E84C4C", ph: "#FF7556", web: "#7e97b3",
+};
+// 三档可信度 → 0-100 数字条 + 中文
+export function credScore(c?: string): number { return c === "high" ? 88 : c === "medium" ? 74 : 62; }
+export const CONFIDENCE_CN: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
 export type Citation = { evidenceId: string | null; valid: boolean };
 

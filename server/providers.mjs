@@ -14,6 +14,7 @@ import {
   buildRelayHopPrompt,
   buildRelaySynthPrompt,
   buildClarifyCardPrompt,
+  buildEvidenceBriefPrompt,
   buildCriticViewpointsPrompt,
   buildChairmanSummaryPrompt,
   buildVerifierPrompt,
@@ -786,44 +787,61 @@ function staggeredRace(cands, runOne, delayMs) {
   });
 }
 
-// 想清楚收口(单脑 + 对冲):Claude 抢跑;~6s 没出卡就并行补 OpenAI,谁先出有效卡谁赢(偏好 Claude)。
-// 两家都挂 → 其余已配置依次兜底。替代 6 棒接力(太慢/太费)。返回与 runRelay 同形,saveRelay 不变。
-export async function runClarifyCard({ mode, brief, evidence, byoKeys }, onEvent) {
-  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
+// 通用对冲调用:Claude 抢跑 → graceMs 没出就并行补 OpenAI → 两家都挂则其余依次兜底。返回 { out, seat, err }。
+// tries:1(失败即换人)+ 30s 上限 + maxTokens(整段中文 JSON ~1100 会被截断成非法 → heal 翻倍耗时,给足)。
+async function hedgedChatJSON(prompt, byoKeys, { graceMs = 6000, timeoutMs = 30000, maxTokens = 2000, label = "hedge" } = {}) {
   const configured = getConfiguredProviders(byoKeys);
-  if (!configured.length) { await emit("error", { error: "没有可用模型" }); return { hops: [], card: null, models: [] }; }
+  if (!configured.length) return { out: null, seat: null, err: "没有可用模型" };
   const byId = new Map(configured.map((e) => [e.provider.id, e]));
-  const prompt = buildClarifyCardPrompt({ mode, brief, evidence });
-  const started = Date.now();
-  const GRACE_MS = 6000; // Claude 抢跑窗口:健康就它赢;过了还没出卡就并行点 OpenAI
   const errs = [];
-  // tries:1(失败即换人)+ 30s 上限 + maxTokens 2000(整张中文卡 ~1100 会被截断成非法 JSON → heal 翻倍耗时)
   const attempt = async (cand) => {
     const ts = Date.now();
     try {
-      const out = await chatJSON(cand.provider, cand.apiKey, prompt, { tries: 1, timeoutMs: 30000, maxTokens: 2000 });
-      console.log(`[clarify] ${cand.provider.label} 收口成功 ${Date.now() - ts}ms`);
-      return { card: normCard(out), seat: cand.provider.label };
-    } catch (e) { const m = compact(e?.message || String(e)); errs.push(m); console.log(`[clarify] ${cand.provider.label} 失败 ${Date.now() - ts}ms: ${m.slice(0, 60)}`); return null; }
+      const out = await chatJSON(cand.provider, cand.apiKey, prompt, { tries: 1, timeoutMs, maxTokens });
+      console.log(`[${label}] ${cand.provider.label} ok ${Date.now() - ts}ms`);
+      return { out, seat: cand.provider.label };
+    } catch (e) { const m = compact(e?.message || String(e)); errs.push(m); console.log(`[${label}] ${cand.provider.label} fail ${Date.now() - ts}ms: ${m.slice(0, 60)}`); return null; }
   };
-
-  // 主力两家对冲:Claude + OpenAI(都配了才对冲;否则有谁跑谁)
   const claude = byId.get("claude"), openai = byId.get("openai");
   const primary = [claude, openai].filter(Boolean);
-  let result = null;
-  if (primary.length >= 2) result = await staggeredRace(primary, attempt, GRACE_MS);
-  else if (primary.length === 1) result = await attempt(primary[0]);
-  // 主力没出卡 → 其余已配置依次兜底
-  if (!result) {
-    for (const cand of configured.filter((e) => e !== claude && e !== openai)) { result = await attempt(cand); if (result) break; }
-  }
+  let res = null;
+  if (primary.length >= 2) res = await staggeredRace(primary, attempt, graceMs);
+  else if (primary.length === 1) res = await attempt(primary[0]);
+  if (!res) { for (const c of configured.filter((e) => e !== claude && e !== openai)) { res = await attempt(c); if (res) break; } }
+  return { out: res?.out || null, seat: res?.seat || null, err: res ? null : (errs[0] || "失败") };
+}
 
-  const seat = result?.seat || null, card = result?.card || null;
-  const hop = { order: 1, seat: seat || (primary[0] || configured[0]).provider.label, role: "synth", lens: null, added: [], framing: null, failed: !card, error: card ? undefined : (errs[0] || "收口失败"), latencyMs: Date.now() - started };
+// 想清楚收口(单脑 + 对冲):Claude 读「点子+整段对话」一次出方向卡;慢/挂 → OpenAI 兜底 → 其余。替代 6 棒接力。
+export async function runClarifyCard({ mode, brief, evidence, byoKeys }, onEvent) {
+  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
+  const started = Date.now();
+  const { out, seat, err } = await hedgedChatJSON(buildClarifyCardPrompt({ mode, brief, evidence }), byoKeys, { label: "clarify", maxTokens: 2000 });
+  const card = out ? normCard(out) : null;
+  const hop = { order: 1, seat: seat || "—", role: "synth", lens: null, added: [], framing: null, failed: !card, error: card ? undefined : err, latencyMs: Date.now() - started };
   await emit("relay-hop", hop);
   if (card) await emit("relay-card", card);
-  else await emit("error", { error: "收口失败:" + (errs[0] || "") });
+  else await emit("error", { error: "收口失败:" + (err || "") });
   return { hops: [hop], card, models: seat ? [seat] : [] };
+}
+
+// 侦察简报合成:读全部证据 → 关键结论 + 整体可信度 + 建议(同对冲,~10s 内出)。供搜索站右栏。
+export async function synthesizeEvidenceBrief({ brief, items, mode, byoKeys }) {
+  if (!Array.isArray(items) || !items.length) return null;
+  const { out } = await hedgedChatJSON(buildEvidenceBriefPrompt({ brief, items, mode }), byoKeys, { label: "brief", maxTokens: 1100 });
+  if (!out) return null;
+  const validCats = ["competitor", "demand", "pricing", "pain", "trend", "viral", "userVoice", "competitorCopy", "platform", "risk"];
+  const categories = {};
+  if (out.categories && typeof out.categories === "object") {
+    for (const [id, c] of Object.entries(out.categories)) { if (validCats.includes(clean(c))) categories[id] = clean(c); }
+  }
+  return {
+    conclusions: (Array.isArray(out.conclusions) ? out.conclusions : [])
+      .map((c) => ({ cat: validCats.includes(clean(c?.cat)) ? clean(c.cat) : "demand", text: clean(c?.text) }))
+      .filter((c) => c.text).slice(0, 5),
+    confidence: ["high", "medium", "low"].includes(out.confidence) ? out.confidence : "medium",
+    suggestion: clean(out.suggestion),
+    categories,
+  };
 }
 
 export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfig, posture }, onEvent) {
