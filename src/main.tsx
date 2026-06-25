@@ -632,7 +632,12 @@ function App() {
   }
 
   // 议会站:温和/拷问审议。clarification=底部补的一句背景(折进 brief)。
+  // 重跑议会会清空旧观点 + 你的策展 → 有策展时先确认(避免静默丢失)
+  const hasCuration = () => Object.values(curation).some((c) => c.status !== "none" || c.replies.length > 0);
+  const confirmRerun = (why: string) => !(viewpoints.length > 0 && hasCuration()) || window.confirm(`${why}会重跑议会、清空当前观点和你的认领/否决/搁置策展。继续?`);
+
   async function runCouncil(intensity: CouncilIntensity = councilIntensity, clarification?: string) {
+    if (!confirmRerun("再审一轮")) return;
     setTab("council"); setSendMenuFor(null);
     setCouncilIntensity(intensity);
     setRunConfig((rc) => (rc ? { ...rc, posture: intensity } : rc));
@@ -641,12 +646,14 @@ function App() {
     if (id) deliberate(intensity, clarification, id, ho || undefined);
   }
 
-  // 议会内部:温和⇄拷问(已有观点则按新强度重跑)
+  // 议会内部:温和⇄拷问(已有观点则按新强度重跑;有策展先确认)
   function setIntensity(ci: CouncilIntensity) {
     if (ci === councilIntensity) return;
+    const willRerun = !!(discussion && (viewpoints.length > 0 || deliberating) && !busy);
+    if (willRerun && !confirmRerun("切换审议强度")) return;
     setCouncilIntensity(ci);
     setRunConfig((rc) => (rc ? { ...rc, posture: ci } : rc));
-    if (discussion && (viewpoints.length > 0 || deliberating) && !busy) deliberate(ci, undefined, discussion.id);
+    if (willRerun) deliberate(ci, undefined, discussion!.id);
   }
 
   // 每站产出的规范 MD(= 工作台文档 + 交接载荷)
@@ -1400,11 +1407,11 @@ function App() {
             </div>
           );
         })}
-        {busy && (
+        {(busy || deliberating) && (
           <div className="tl" style={{ display: "flex", gap: 10 }}>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 }}><span className="breath" /></div>
             <div style={{ flex: 1, border: "1px solid var(--cyan)", borderRadius: 8, padding: "9px 11px", background: "var(--cyan2)" }}>
-              <span className="mono" style={{ fontSize: 10, color: "var(--cyan)" }}>{dialogueN === 1 ? "主脑" : dialogueN + " 脑"} · 作答中…</span>
+              <span className="mono" style={{ fontSize: 10, color: "var(--cyan)" }}>{deliberating ? "主脑读整段对话 · 收口出方向卡…" : `${dialogueN === 1 ? "主脑" : dialogueN + " 脑"} · 作答中…`}</span>
             </div>
           </div>
         )}
@@ -1485,6 +1492,12 @@ function App() {
           </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 18, minHeight: 0 }}>
+          {deliberating && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid rgba(232,151,92,.4)", borderRadius: 10, padding: "11px 14px", background: "rgba(232,151,92,.08)" }}>
+              <span className="breath" style={{ background: "var(--c-claude)", boxShadow: "0 0 8px var(--c-claude)" }} />
+              <span className="mono" style={{ fontSize: 12, color: "#EEE3D2" }}>主脑收口中 —— 读整段对话,正在右栏长出方向卡…</span>
+            </div>
+          )}
           {turns.length === 0 ? (
             <div className="board-empty" style={{ margin: "auto", textAlign: "center", maxWidth: 420, lineHeight: 1.8 }}>{busy ? "搭子在想…" : "在下方说说你的点子,搭子会专注回应、帮你一步步想清楚。"}</div>
           ) : (
@@ -1560,6 +1573,7 @@ function App() {
             <span className="clk mono" onClick={() => setDetailId(null)} style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--faint)" }}>← 跳转自左栏「对话时间线」</span>
           </div>
         </div>
+        {llComposer()}
       </div>
     );
   };
@@ -1750,7 +1764,7 @@ function App() {
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
             {shown.length === 0
-              ? <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 380 }}>{busy ? "侦察中,在扫竞品 / 需求 / 痛点 / 定价 / 趋势…" : items.length ? "该维度暂无证据,换一个维度看看" : "在下方描述你的点子,开始事实侦察。"}</div>
+              ? <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 400 }}>{busy ? "侦察中,在扫竞品 / 需求 / 痛点 / 定价 / 趋势…" : items.length ? "该维度暂无证据,换一个维度看看" : pack && pack.failures && pack.failures.length ? `检索源都没返回结果(${pack.failures.length} 个源失败/超时:${[...new Set(pack.failures.map((f) => f.source))].slice(0, 4).join("、")})。换个说法或稍后重试。` : pack ? "本轮没检索到证据 —— 换个更具体的说法再搜。" : "在下方描述你的点子,开始事实侦察。"}</div>
               : shown.map((it) => ssCard(it))}
           </div>
           {ssComposer()}
@@ -1810,12 +1824,19 @@ function App() {
     }
     return pts;
   };
+  // 立项包/计数:同类多版只取「已采用」;无采用则取最新一版(避免把同类所有草稿都打包)
+  const ccPicked = () => {
+    const byType: Record<string, Artifact[]> = {};
+    artifacts.forEach((a) => (byType[a.type] || (byType[a.type] = [])).push(a));
+    return Object.values(byType).flatMap((arr) => { const ch = arr.filter((a) => a.status === "chosen"); return ch.length ? ch : [arr[arr.length - 1]]; });
+  };
   const ccPackMd = () => {
     const L: string[] = [`# ${discussion?.title || brief.slice(0, 30) || "立项包"}`, "", "> 一条点子 · 四站流转 · ROAST", "", "## 点子", brief || "(未填写)", ""];
     const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
     if (planMd) L.push("## 方案源(陪练方向卡 + 议会收敛)", planMd, "");
-    artifacts.filter((a) => a.type !== "image" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
-    const imgs = artifacts.filter((a) => a.type === "image" && a.imagePath);
+    const picked = ccPicked();
+    picked.filter((a) => a.type !== "image" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
+    const imgs = picked.filter((a) => a.type === "image" && a.imagePath);
     if (imgs.length) { L.push("## 配图"); imgs.forEach((a) => L.push(`- ${a.provider}:/api/artifact/${a.id}/image`)); L.push(""); }
     return L.join("\n").trim();
   };
@@ -1843,7 +1864,8 @@ function App() {
           <span style={{ fontFamily: "var(--mono)", fontSize: 10, padding: "2px 8px", borderRadius: 5, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.name}</span>
           <span style={{ fontSize: 14, fontWeight: 700, color: "#EEF2F6" }}>{ARTIFACT_TYPE_LABEL[a.type]}</span>
           <span className="agent-pill" style={{ color: pc }}><span className="d" style={{ background: pc }} />{a.provider}</span>
-          <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ marginLeft: "auto", color: "var(--faint)", fontSize: 14 }}>×</span>
+          <button className="mbtn" style={{ marginLeft: "auto", padding: "4px 10px", ...(a.status === "chosen" ? { borderColor: "var(--green)", color: "var(--green)", background: "rgba(63,227,160,.12)" } : {}) }} onClick={() => chooseArt(a.id, a.type)} title={a.status === "chosen" ? "已采用 —— 立项包用这版" : "采用这版 —— 立项包只收已采用的,同类其余转候选"}>{a.status === "chosen" ? "✓ 已采用" : "采用"}</button>
+          <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ color: "var(--faint)", fontSize: 14 }}>×</span>
         </div>
         {a.type === "image" && a.imagePath
           ? <img src={`/api/artifact/${a.id}/image`} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
