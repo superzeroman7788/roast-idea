@@ -247,6 +247,13 @@ body::before{
 .transcript::-webkit-scrollbar-track,.board::-webkit-scrollbar-track{background:transparent}
 .transcript::-webkit-scrollbar-thumb,.board::-webkit-scrollbar-thumb{background:#21384f;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 .transcript::-webkit-scrollbar-thumb:hover,.board::-webkit-scrollbar-thumb:hover{background:#2f516f}
+/* 全局细滚动条:四站重排里全是裸 overflow:auto 的 div,统一换掉浏览器默认粗条,贴合 HUD */
+.app{scrollbar-width:thin;scrollbar-color:#284460 transparent}
+.app *::-webkit-scrollbar{width:9px;height:9px}
+.app *::-webkit-scrollbar-track{background:transparent}
+.app *::-webkit-scrollbar-thumb{background:#22394f;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+.app *::-webkit-scrollbar-thumb:hover{background:#345d7e}
+.app *::-webkit-scrollbar-corner{background:transparent}
 .turn-item{border:1px solid #112540;border-radius:9px;padding:9px 11px;background:#0a121f}
 .turn-item.user{border-color:#1d3a2e;background:linear-gradient(180deg,#0a1a16,#08130f);align-self:flex-end;max-width:92%}
 .turn-item.failed{opacity:.6;border-style:dashed}
