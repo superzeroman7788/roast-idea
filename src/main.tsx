@@ -578,13 +578,13 @@ function App() {
   }
 
   // 陪练站:专注对话(1-3 协同搭子,非对抗)。一轮 = 主脑/协同就你这句聚焦回应。
-  async function respondClarify(did: string, text: string) {
+  async function respondClarify(did: string, text: string, atts: AttachFile[] = []) {
     const tk = ++token.current;
     setBusy(true); setRunError(""); setPhase("responding");
     const nextRound = Math.max(0, ...turns.map((x) => x.round)) + 1;
-    if (text) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text, citations: [] });
+    if (text || atts.length) appendTurn({ round: nextRound, speaker: "you", role: "user", body: text || "(已附附件)", citations: [] });
     try {
-      await streamSSE(`/api/discussion/${did}/respond`, { userTurn: text, clarify: true, participants: dialogueN }, (ev, d) => {
+      await streamSSE(`/api/discussion/${did}/respond`, { userTurn: text, clarify: true, participants: dialogueN, attachments: atts.length ? atts : undefined }, (ev, d) => {
         if (cancelled(tk)) return;
         if (ev === "turn") {
           const turn = d as Turn;
@@ -613,17 +613,22 @@ function App() {
   // 发送一句(drafting 时首句即点子,建讨论后再对话)
   async function sendClarify(text: string) {
     const t = text.trim();
-    if (!t || busy || deliberating) return;
-    setTab("relay"); setSendMenuFor(null); setDetailId(null);
+    if (busy || deliberating) return;
     const drafting = !discussion;
+    if (drafting && !t) return; // 起步必须有点子文本
+    if (!drafting && !t && !attachments.length) return; // 续聊:文本或附件至少一个
+    setTab("relay"); setSendMenuFor(null); setDetailId(null);
     if (drafting) setBrief(t);
     setUserInput("");
     // 立即反馈:发送键转忙 + 空态显示"搭子在想…",消除「建讨论」期间的死按钮窗口(原先 busy 直到 respondClarify 才置真)
     setBusy(true); setRunError("");
+    // 起步附件由 ensureDiscussion 送进 /start(折进 brief);续聊附件由 respondClarify 送进 /respond。避免重复发。
+    const atts = drafting ? [] : attachments.slice();
+    if (!drafting) setAttachments([]);
     // 陪练起手不检索证据(redacted=true,省 8-15s);证据交给「搜索」站按需补进同一工作台
     const id = drafting ? await ensureDiscussion(false, t, true) : discussion!.id;
     if (!id) { setBusy(false); return; }
-    await respondClarify(id, t);
+    await respondClarify(id, t, atts);
   }
   // 「理清了」→ 召多脑一轮 + 合成方向卡(读整段对话)
   function synthesizeCard() {
@@ -1452,19 +1457,32 @@ function App() {
 
   const llComposer = () => {
     const drafting = !discussion; const bind = drafting;
-    const send = () => { if (busy || deliberating) return; if (drafting && !brief.trim()) return; sendClarify(bind ? brief : userInput); };
+    const canSend = drafting ? !!brief.trim() : !!(userInput.trim() || attachments.length);
+    const send = () => { if (busy || deliberating || !canSend) return; sendClarify(bind ? brief : userInput); };
     return (
       <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+        {attachments.length > 0 && (
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 8 }}>
+            {attachments.map((a, i) => (
+              <span key={i} className="mono" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10.5, padding: "4px 9px", borderRadius: 7, border: "1px solid var(--line2)", background: "rgba(255,255,255,.03)", color: "var(--muted)" }}>
+                {a.kind === "image" ? "🖼" : "📄"} {a.name.length > 22 ? a.name.slice(0, 20) + "…" : a.name}
+                <span className="clk" onClick={() => removeAttach(i)} title="移除" style={{ color: "var(--faint)", fontSize: 12, lineHeight: 1 }}>×</span>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="ll-composer">
           <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
           <textarea value={bind ? brief : userInput} disabled={busy} rows={1}
             placeholder={drafting ? "说说你的点子,开始想清楚…" : "回应搭子 / 补充想法,继续往下聊…"}
             onChange={(e) => (bind ? setBrief(e.target.value) : setUserInput(e.target.value))}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
+          <input ref={fileRef} type="file" multiple accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.yml,.yaml" style={{ display: "none" }} onChange={(e) => { addAttachFiles(e.target.files); e.currentTarget.value = ""; }} />
+          <button className="ghost-chip" disabled={busy} title="添加图片 / 文本文件(喂给搭子参考)" onClick={() => fileRef.current?.click()} style={{ padding: "7px 11px", fontSize: 14 }}>📎</button>
           {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
-          <button className="amber-btn send-icon" disabled={busy || deliberating || (drafting && !brief.trim())} onClick={send}>{busy ? "·" : "↑"}</button>
+          <button className="amber-btn send-icon" disabled={busy || deliberating || !canSend} onClick={send}>{busy ? "·" : "↑"}</button>
         </div>
-        <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>点左栏任意记录可展开详情 · ⌘/Ctrl+Enter 提交</div>
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>📎 加图片/文件给搭子参考 · 点左栏记录看详情 · ⌘/Ctrl+Enter 提交</div>
       </div>
     );
   };
