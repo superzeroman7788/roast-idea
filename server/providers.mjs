@@ -860,7 +860,7 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     const apiKey = resolveKey(prov, byoKeys);
     const started = Date.now();
     try {
-      const plan = await chatJSON(prov, apiKey, buildOrganizerPrompt({ mode, brief, evidence }));
+      const plan = await chatJSON(prov, apiKey, buildOrganizerPrompt({ mode, brief, evidence }), { maxTokens: 1800 });
       organizerPlan = formatOrganizerPlan(plan);
       const evIds = [...new Set((plan.keyPoints || []).flatMap((k) => (Array.isArray(k?.evidenceIds) ? k.evidenceIds : [])))].filter(Boolean);
       const vp = { seat: seats.organizer.label, roleAngle: "organizer", stance: null, text: organizerPlan, evidenceIds: evIds, isHardestKill: false, round: 1, latencyMs: Date.now() - started };
@@ -893,41 +893,53 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
   }
 
   // R2 反方并行开火(吃 persona;角色按 personaId 存)
+  // 兜底池:不在主反方阵容里的已配置模型。某席 429/掉线 → 错峰顶上,不整丢一个反方视角(seat 记实际作答模型)。
+  const critPrimary = new Set(seats.critics.map((c) => c.id));
+  const critFallback = getConfiguredProviders(byoKeys).filter((e) => !critPrimary.has(e.provider.id)).map((e) => ({ id: e.provider.id, label: e.provider.label }));
   await Promise.all(
-    seats.critics.map(async (c) => {
-      const prov = ALL.find((p) => p.id === c.id);
-      const apiKey = resolveKey(prov, byoKeys);
+    seats.critics.map(async (c, ci) => {
       const persona = c.persona || PERSONAS[c.personaId];
       const started = Date.now();
       const isDevil = c.personaId === "devils-advocate";
-      try {
-        const out = await chatJSON(prov, apiKey, buildCriticViewpointsPrompt({ provider: c.label, persona, brief, evidence, organizerPlan: organizerPlan || brief, posture: stance }));
-        const vps = (Array.isArray(out.viewpoints) ? out.viewpoints : [])
-          .map((v) => ({ stance: normalizeStance(v?.stance), text: clean(v?.text), evidenceIds: Array.isArray(v?.evidenceIds) ? v.evidenceIds.filter(Boolean) : [], isHardestKill: Boolean(v?.isHardestKill) }))
-          .filter((v) => v.text);
-        // 魔鬼代言人必须有一条不可静音的最硬 kill —— 仅 roast 强制;council 下魔鬼是普通锐评,不强制 kill
-        if (isRoast && isDevil && vps.length && !vps.some((v) => v.isHardestKill)) vps[0].isHardestKill = true;
-        let devilMarked = false;
-        for (const v of vps) {
-          const isHK = isRoast && isDevil && v.isHardestKill && !devilMarked;
-          if (isHK) devilMarked = true;
-          const vp = { seat: c.label, roleAngle: c.personaId, stance: v.stance, text: v.text, evidenceIds: v.evidenceIds, isHardestKill: isHK, round: 2, latencyMs: Date.now() - started };
-          collected.push(vp);
-          await emit("viewpoint", vp);
-        }
-      } catch (e) {
-        await emit("seat-failed", { seat: c.label, roleAngle: c.personaId, round: 2, error: compact(e?.message || String(e)) });
+      // 本席模型 → 至多 2 个错峰兜底(每席从兜底池不同位置切入,避免都砸同一家);tries:1 让 429 快速失败再换人,不死等 45s×2
+      const rot = critFallback.length ? ci % critFallback.length : 0;
+      const fb = [...critFallback.slice(rot), ...critFallback.slice(0, rot)].slice(0, 2);
+      const chain = [{ id: c.id, label: c.label }, ...fb];
+      let out = null, usedLabel = c.label, lastErr = "未配置可用模型";
+      for (const cand of chain) {
+        const prov = ALL.find((p) => p.id === cand.id);
+        const apiKey = prov ? resolveKey(prov, byoKeys) : "";
+        if (!prov || !apiKey) continue;
+        try {
+          out = await chatJSON(prov, apiKey, buildCriticViewpointsPrompt({ provider: cand.label, persona, brief, evidence, organizerPlan: organizerPlan || brief, posture: stance }), { tries: 1 });
+          usedLabel = cand.label; break;
+        } catch (e) { lastErr = compact(e?.message || String(e)); }
+      }
+      if (!out) { await emit("seat-failed", { seat: c.label, roleAngle: c.personaId, round: 2, error: lastErr }); return; }
+      const vps = (Array.isArray(out.viewpoints) ? out.viewpoints : [])
+        .map((v) => ({ stance: normalizeStance(v?.stance), text: clean(v?.text), evidenceIds: Array.isArray(v?.evidenceIds) ? v.evidenceIds.filter(Boolean) : [], isHardestKill: Boolean(v?.isHardestKill) }))
+        .filter((v) => v.text);
+      // 魔鬼代言人必须有一条不可静音的最硬 kill —— 仅 roast 强制;council 下魔鬼是普通锐评,不强制 kill
+      if (isRoast && isDevil && vps.length && !vps.some((v) => v.isHardestKill)) vps[0].isHardestKill = true;
+      let devilMarked = false;
+      for (const v of vps) {
+        const isHK = isRoast && isDevil && v.isHardestKill && !devilMarked;
+        if (isHK) devilMarked = true;
+        const vp = { seat: usedLabel, roleAngle: c.personaId, stance: v.stance, text: v.text, evidenceIds: v.evidenceIds, isHardestKill: isHK, round: 2, latencyMs: Date.now() - started };
+        collected.push(vp);
+        await emit("viewpoint", vp);
       }
     }),
   );
 
-  // R2.5 Verifier 事实核查:核查各反方断言 vs 证据,驳无证据支撑的(index 对应 R2 观点的发出顺序)
+  // R2.5 Verifier 事实核查:核查各反方断言 vs 证据(index 对应 R2 观点发出顺序)。
+  // 只给 viewpoint 标 .verification 徽章,主席综述不依赖它 → 与 R3/主席并发跑,省掉串行的 ~30s 等待。
   const r2 = collected.filter((v) => v.round === 2);
-  if (seats.verifier && r2.length) {
+  const verifierP = (seats.verifier && r2.length) ? (async () => {
     const prov = ALL.find((p) => p.id === seats.verifier.id);
     const apiKey = resolveKey(prov, byoKeys);
     try {
-      const out = await chatJSON(prov, apiKey, buildVerifierPrompt({ brief, evidence, viewpoints: r2 }));
+      const out = await chatJSON(prov, apiKey, buildVerifierPrompt({ brief, evidence, viewpoints: r2 }), { maxTokens: 1600 });
       const checks = Array.isArray(out.checks) ? out.checks : [];
       for (const ch of checks) {
         const idx = Number(ch?.index);
@@ -941,7 +953,7 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     } catch (e) {
       await emit("seat-failed", { seat: seats.verifier.label, roleAngle: "verifier", round: 2, error: compact(e?.message || String(e)) });
     }
-  }
+  })() : Promise.resolve();
 
   // R3 匿名交叉互驳(严酷档 + 自适应停止):R2 分歧≥2 种 stance 才跑(否则"何时终止"=跳过)
   const r2vps = collected.filter((v) => v.round === 2);
@@ -973,13 +985,14 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     );
   }
 
-  // 主席审议综述(需至少有 R2 观点)
+  // 主席审议综述(与 verifier 并发;需至少有 R2 观点)。综述只读观点正文,不读核查徽章 → 并发安全。
   let deliberation = null;
-  if (seats.chairman && collected.some((v) => v.round === 2)) {
+  const chairmanP = (seats.chairman && collected.some((v) => v.round === 2)) ? (async () => {
     const prov = ALL.find((p) => p.id === seats.chairman.id);
     const apiKey = resolveKey(prov, byoKeys);
     try {
-      const s = await chatJSON(prov, apiKey, buildChairmanSummaryPrompt({ brief, viewpoints: collected }));
+      // 主席综述字段多(共识/矛盾/盲点/独到…),默认 1100 token 会把 JSON 截断成 "Unterminated string" → 整段综述丢失 + heal 重试白等 45s。给足 token。
+      const s = await chatJSON(prov, apiKey, buildChairmanSummaryPrompt({ brief, viewpoints: collected }), { maxTokens: 2600, timeoutMs: 60000 });
       deliberation = {
         consensus: asStrArr(s.consensus),
         contradictions: asStrArr(s.contradictions),
@@ -992,8 +1005,9 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     } catch (e) {
       await emit("seat-failed", { seat: seats.chairman.label, roleAngle: "chairman", round: 3, error: compact(e?.message || String(e)) });
     }
-  }
+  })() : Promise.resolve();
 
+  await Promise.all([verifierP, chairmanP]); // verifier 与主席收尾一并等齐
   return { viewpoints: collected, deliberation, simulated: seats.simulated, seats };
 }
 
