@@ -1409,7 +1409,7 @@ function App() {
           style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", zIndex: 5, padding: "6px 14px", borderRadius: 16, border: "1px solid var(--cyan)", background: "#0c1a2e", color: "var(--cyan)", fontFamily: "var(--mono)", fontSize: 11, fontWeight: 700, boxShadow: "0 6px 16px #000a", cursor: "pointer" }}>↓ 跳到最新</button>
       )}
       <div ref={llScrollRef} onScroll={(e) => { const el = e.currentTarget; setLlAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60); }}
-        style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 11 }}>
+        style={{ flex: 1, minHeight: 0, padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 11 }}>
         {turns.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.7 }}>还没开始 —— 在右侧说说你的点子,这里会留下每一步对话轨迹。</div>}
         {turns.map((t, i) => {
           const isUser = t.role === "user"; const k = agentKey(t.speaker);
@@ -1643,7 +1643,7 @@ function App() {
           {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => setCardCollapsed(["clear", "angles", "assumptions", "decide", "dont"].some((k) => !cardCollapsed[k]) ? { clear: true, angles: true, assumptions: true, decide: true, dont: true } : {})}>{["clear", "angles", "assumptions", "decide", "dont"].some((k) => !cardCollapsed[k]) ? "收起全部" : "展开全部"}</span>}
           {c && <span className="ghost-chip" style={{ padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制</span>}
         </div>
-        <div style={{ padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
+        <div style={{ flex: 1, minHeight: 0, padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
           <div style={{ border: "1px solid rgba(232,151,92,.35)", borderTop: "2px solid var(--c-claude)", borderRadius: 10, background: "linear-gradient(180deg,rgba(232,151,92,.08),rgba(255,255,255,.01))", padding: "13px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ width: 7, height: 7, borderRadius: 2, background: "var(--c-claude)" }} />
@@ -1762,7 +1762,7 @@ function App() {
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span className="label">侦察维度 · RECON</span>{busy && <span className="breath" />}
           </div>
-          <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ flex: 1, minHeight: 0, padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
             {discussion && <div style={{ border: "1px solid var(--line2)", borderRadius: 10, padding: "12px 13px", background: "linear-gradient(180deg,rgba(72,220,255,.05),rgba(255,255,255,.01))" }}>
               <div className="label" style={{ marginBottom: 7 }}>当前点子</div>
               <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
@@ -1935,7 +1935,7 @@ function App() {
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span className="label">方案源 · PLAN</span><span className="mono" style={{ fontSize: 11, color: plan.length ? "var(--green)" : "var(--faint)" }}>{plan.length ? "已收敛" : "待收敛"}</span>
           </div>
-          <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ flex: 1, minHeight: 0, padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
             {discussion && <div style={{ border: "1px solid var(--line2)", borderRadius: 10, padding: "12px 13px", background: "linear-gradient(180deg,rgba(72,220,255,.05),rgba(255,255,255,.01))" }}>
               <div className="label" style={{ marginBottom: 7 }}>当前点子</div>
               <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
@@ -2161,7 +2161,7 @@ function App() {
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span className="label">议程 · MOTIONS</span><span className="mono" style={{ fontSize: 11, color: openCount ? "var(--cyan)" : "var(--green)" }}>{openCount ? openCount + " 待策展" : "已就绪"}</span>
           </div>
-          <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ flex: 1, minHeight: 0, padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
             {discussion && <div style={{ border: "1px solid var(--line2)", borderRadius: 10, padding: "12px 13px", background: "linear-gradient(180deg,rgba(72,220,255,.05),rgba(255,255,255,.01))" }}>
               <div className="label" style={{ marginBottom: 7 }}>受审点子</div>
               <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
