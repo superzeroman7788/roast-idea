@@ -259,7 +259,7 @@ export const ANGLE_LABEL: Record<string, string> = {
 };
 
 // 产出层(交付物):把方案变成文案/PRD/设计文档/代码草稿/配图
-export type ArtifactType = "copy" | "prd" | "design_doc" | "code_sketch" | "image";
+export type ArtifactType = "copy" | "prd" | "design_doc" | "code_sketch" | "image" | "ppt";
 
 export type Artifact = {
   id: string;
@@ -282,7 +282,18 @@ export const ARTIFACT_TYPE_LABEL: Record<ArtifactType, string> = {
   design_doc: "设计文档",
   code_sketch: "代码草稿",
   image: "配图",
+  ppt: "PPT",
 };
+
+// 产出站格式格(中栏五宫格):id 对应 ArtifactType
+export type ProduceFormat = { id: ArtifactType; ic: string; name: string; en: string; c: string; sub: string };
+export const PRODUCE_FORMATS: ProduceFormat[] = [
+  { id: "copy", ic: "¶", name: "文案", en: "COPY", c: "#46DDA0", sub: "落地页 / Slogan" },
+  { id: "prd", ic: "▤", name: "PRD", en: "PRD", c: "#34D2E6", sub: "需求文档" },
+  { id: "design_doc", ic: "◳", name: "设计文档", en: "DESIGN", c: "#E8975C", sub: "信息架构 / 流程" },
+  { id: "image", ic: "◍", name: "配图", en: "IMAGE", c: "#7C8DFF", sub: "封面 / 示意图" },
+  { id: "ppt", ic: "▦", name: "PPT", en: "DECK", c: "#F2BF52", sub: "路演 / 介绍" },
+];
 
 export const ROLE_LABEL: Record<string, string> = {
   host: "主持",

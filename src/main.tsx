@@ -42,6 +42,7 @@ import {
   SRC_COLOR,
   credScore,
   CONFIDENCE_CN,
+  PRODUCE_FORMATS,
 } from "./discussion";
 import { Landing } from "./Landing";
 import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
@@ -224,6 +225,8 @@ function App() {
   const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
   const [detailId, setDetailId] = useState<string | null>(null); // 陪练:左栏点开某条 → 中央看详情(null=三脑并列列表)
   const [searchDim, setSearchDim] = useState("all"); // 搜索:左栏选中的侦察维度(过滤中间证据流)
+  const [produceModel, setProduceModel] = useState<string>(""); // 产出:选中的模型(provider id),空=用默认第一个
+  const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" } | null>(null); // 产物卡的「改稿/换模型」内联选模型菜单
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
   // 方向卡分段折叠:key→是否收起。默认折起最长的几段(新角度/关键假设/暂不做)
@@ -350,7 +353,7 @@ function App() {
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
-    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all");
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel("");
     setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
@@ -365,7 +368,7 @@ function App() {
   // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
   async function loadDiscussion(id: string) {
     token.current++;
-    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all");
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel("");
     try {
       const r = await fetch(`/api/discussion/${id}`);
       const d = await r.json();
@@ -1792,11 +1795,212 @@ function App() {
     );
   };
 
+  // ============ 产出 redesign:方案源 / 格式+模型生成 / 产物清单 ============
+  const ccPlanPoints = (): { from: string; c: string; t: string }[] => {
+    const pts: { from: string; c: string; t: string }[] = [];
+    if (relayCard) {
+      (relayCard.clear || []).slice(0, 3).forEach((t) => pts.push({ from: "陪练", c: "var(--cyan)", t }));
+      if (relayCard.firstNarrowing) pts.push({ from: "陪练", c: "var(--cyan)", t: "先收窄:" + relayCard.firstNarrowing });
+    }
+    if (converged) {
+      (converged.addressed || []).slice(0, 3).forEach((a) => pts.push({ from: "议会", c: "var(--green)", t: "认领:" + a.point }));
+      (converged.unsilenceable || []).slice(0, 2).forEach((u) => pts.push({ from: "议会", c: "var(--red)", t: "钉死:" + u }));
+    }
+    return pts;
+  };
+  const ccPackMd = () => {
+    const L: string[] = [`# ${discussion?.title || brief.slice(0, 30) || "立项包"}`, "", "> 一条点子 · 四站流转 · ROAST", "", "## 点子", brief || "(未填写)", ""];
+    const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
+    if (planMd) L.push("## 方案源(陪练方向卡 + 议会收敛)", planMd, "");
+    artifacts.filter((a) => a.type !== "image" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
+    const imgs = artifacts.filter((a) => a.type === "image" && a.imagePath);
+    if (imgs.length) { L.push("## 配图"); imgs.forEach((a) => L.push(`- ${a.provider}:/${a.imagePath}`)); L.push(""); }
+    return L.join("\n").trim();
+  };
+  const ccNextHint = () => {
+    if (!artifacts.length) return "选一个格式 + 一个模型,生成第一份交付物。";
+    const types = new Set(artifacts.map((a) => a.type));
+    const missing = (["prd", "copy", "image"] as ArtifactType[]).filter((t) => !types.has(t)).map((t) => ARTIFACT_TYPE_LABEL[t]);
+    return missing.length ? `已出 ${artifacts.length} 件。补上 ${missing.slice(0, 2).join(" / ")} 后,可一键打包为「立项包」交付。` : `PRD / 文案 / 配图 都齐了 —— 可一键打包为「立项包」交付。`;
+  };
+  const ccProvColor = (label: string) => agentColor(agentKey(label));
+  const ccAvail = (type: ArtifactType) => (type === "image" ? produceProviders.filter((p) => p.image) : produceProviders);
+  const ccExportArt = (a: Artifact) => {
+    if (a.type === "ppt") exportPptx({ title: `${discussion?.title || "Roast"} · PPT`, conclusion: a.content, evidence: [] });
+    else exportMarkdown({ title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] });
+  };
+  const ccArtCard = (a: Artifact) => {
+    const fm = PRODUCE_FORMATS.find((f) => f.id === a.type) || PRODUCE_FORMATS[1];
+    const pc = ccProvColor(a.provider);
+    const menuOpen = artMenu?.id === a.id;
+    const avail = ccAvail(a.type).filter((p) => (artMenu?.mode === "refine" ? p.label !== a.provider : true));
+    return (
+      <div key={a.id} style={{ border: "1px solid var(--line)", borderLeft: "2px solid " + fm.c, borderRadius: 11, padding: "15px 17px", background: "rgba(255,255,255,.015)", display: "flex", flexDirection: "column", gap: 11 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+          <span style={{ width: 26, height: 26, borderRadius: 7, display: "grid", placeItems: "center", fontSize: 13, color: fm.c, border: "1px solid " + fm.c + "55", background: fm.c + "18" }}>{fm.ic}</span>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 10, padding: "2px 8px", borderRadius: 5, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.name}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#EEF2F6" }}>{ARTIFACT_TYPE_LABEL[a.type]}</span>
+          <span className="agent-pill" style={{ color: pc }}><span className="d" style={{ background: pc }} />{a.provider}</span>
+          <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ marginLeft: "auto", color: "var(--faint)", fontSize: 14 }}>×</span>
+        </div>
+        {a.type === "image" && a.imagePath
+          ? <img src={"/" + a.imagePath} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
+          : <div style={{ fontSize: 13, color: "#C2CCD6", lineHeight: 1.65, whiteSpace: "pre-wrap", borderLeft: "1px solid var(--line)", paddingLeft: 13, maxHeight: 260, overflow: "auto" }}>{(a.content || "").slice(0, 1400)}</div>}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 10, borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
+          {a.type !== "image" && <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" })}>✎ 改稿</button>}
+          <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>
+          {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.content || "")}>⧉ 复制</button>}
+          {a.type !== "image" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
+        </div>
+        {menuOpen && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingTop: 4 }}>
+            <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{artMenu?.mode === "refine" ? "交给哪家改:" : "换哪家重生:"}</span>
+            {avail.map((p) => <button key={p.id} className="mbtn" disabled={producing} onClick={() => { produce(a.type, p.id, artMenu?.mode === "refine" ? a.id : undefined); setArtMenu(null); }}>{p.label}</button>)}
+            {avail.length === 0 && <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>无可用模型</span>}
+          </div>
+        )}
+      </div>
+    );
+  };
+  const ccBody = () => {
+    const fmt = produceType;
+    const avail = ccAvail(fmt);
+    const model = produceModel && avail.some((p) => p.id === produceModel) ? produceModel : avail[0]?.id || "";
+    const fmName = PRODUCE_FORMATS.find((f) => f.id === fmt)?.name || "";
+    const done = artifacts.filter((a) => a.type === "image" ? a.imagePath : a.content).length;
+    const plan = ccPlanPoints();
+    return (
+      <div className="ll" style={{ gridTemplateColumns: "250px 1fr 314px" }}>
+        {/* 左:方案源 */}
+        <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span className="label">方案源 · PLAN</span><span className="mono" style={{ fontSize: 11, color: plan.length ? "var(--green)" : "var(--faint)" }}>{plan.length ? "已收敛" : "待收敛"}</span>
+          </div>
+          <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+            {discussion && <div style={{ border: "1px solid var(--line2)", borderRadius: 10, padding: "12px 13px", background: "linear-gradient(180deg,rgba(72,220,255,.05),rgba(255,255,255,.01))" }}>
+              <div className="label" style={{ marginBottom: 7 }}>当前点子</div>
+              <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
+            </div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              <div className="label">喂给 AI 的要点</div>
+              {plan.length === 0 && <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>先在「陪练」出方向卡、或「议会」收敛出方案 —— 这里会汇成喂给 AI 的要点。没有也能直接生成(用点子本身)。</div>}
+              {plan.map((p, i) => (
+                <div key={i} style={{ display: "flex", gap: 9, border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.012)" }}>
+                  <span style={{ flex: "0 0 auto", width: 6, height: 6, borderRadius: 2, marginTop: 5, background: p.c }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="mono" style={{ fontSize: 9, color: p.c, marginBottom: 3, letterSpacing: ".5px" }}>来自 {p.from}</div>
+                    <div style={{ fontSize: 12, color: "#CCD6E0", lineHeight: 1.45 }}>{p.t}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        {/* 中:格式 + 模型 → 生成 + 产物流 */}
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "13px 24px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>产出 · 让某个 AI 生成</div>
+              <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>把方案交给一个模型 → 文案 / PRD / 设计文档 / 配图 / PPT</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
+              {PRODUCE_FORMATS.map((f) => (
+                <div key={f.id} className={"fmt" + (fmt === f.id ? " on" : "")} onClick={() => { setProduceType(f.id); setProduceModel(""); }}>
+                  <span className="ic" style={{ color: f.c, border: "1px solid " + f.c + "55", background: f.c + "18" }}>{f.ic}</span>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: fmt === f.id ? "var(--cyan)" : "#E7ECF2" }}>{f.name}</div>
+                    <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)", marginTop: 2 }}>{f.sub}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span className="label" style={{ flex: "0 0 auto" }}>交给</span>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {avail.map((p) => <button key={p.id} className={"mbtn" + (model === p.id ? " on" : "")} onClick={() => setProduceModel(p.id)}><span style={{ width: 7, height: 7, borderRadius: 2, background: ccProvColor(p.label) }} />{p.label}</button>)}
+                {avail.length === 0 && <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{fmt === "image" ? "无支持生图的厂商(需 OpenAI)" : "无可用模型"}</span>}
+              </div>
+              <button className="amber-btn" style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={!discussion || producing || !model} onClick={() => produce(fmt, model)}>{producing ? "生成中…" : `⚡ 生成 ${fmName}`}</button>
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            <div className="label">本轮产物 · {artifacts.length}</div>
+            {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "先开一条点子(搜索/陪练),再来产出。"}</div>}
+            {artifacts.map((a) => ccArtCard(a))}
+            {producing && (
+              <div style={{ border: "1px solid var(--line)", borderRadius: 11, padding: "15px 17px", background: "rgba(255,255,255,.012)", display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <span className="breath" /><span style={{ fontSize: 13.5, color: "#E7ECF2" }}>{fmName} 生成中…</span>
+                </div>
+                <div className="gen" style={{ height: 9, borderRadius: 5, width: "92%" }} />
+                <div className="gen" style={{ height: 9, borderRadius: 5, width: "76%" }} />
+              </div>
+            )}
+          </div>
+          <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+            <div className="ll-composer">
+              <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
+              <textarea value={userInput} disabled={producing} rows={1} placeholder="补充生成要求 / 指定风格语气,让 AI 重新产出…"
+                onChange={(e) => setUserInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (model && !producing) { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); } } }} />
+              <button className="amber-btn send-icon" disabled={!discussion || producing || !model} onClick={() => { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); }}>{producing ? "·" : "↑"}</button>
+            </div>
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>选格式 + 模型生成 · 改稿在卡片上点「改稿」 · ⌘/Ctrl+Enter 提交</div>
+          </div>
+        </div>
+        {/* 右:产物清单 / 导出 */}
+        <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
+            <span className="label">产物 · OUTPUTS</span><span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--cyan)" }}>{artifacts.length} 件</span>
+          </div>
+          <div style={{ padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 16, flex: 1 }}>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: 11, textAlign: "center", background: "rgba(255,255,255,.015)" }}>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--green)" }}>{done}</div>
+                <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginTop: 2 }}>已完成</div>
+              </div>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: 11, textAlign: "center", background: "rgba(255,255,255,.015)" }}>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--cyan)" }}>{producing ? 1 : 0}</div>
+                <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginTop: 2 }}>生成中</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="label">本条点子产物</div>
+              {artifacts.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>还没有产物</div>}
+              {artifacts.map((a) => { const fm = PRODUCE_FORMATS.find((f) => f.id === a.type) || PRODUCE_FORMATS[1]; return (
+                <div key={a.id} style={{ display: "flex", gap: 9, border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.012)", alignItems: "center" }}>
+                  <span style={{ flex: "0 0 auto", width: 22, height: 22, borderRadius: 6, display: "grid", placeItems: "center", fontSize: 11, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.ic}</span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12, color: "#D6DEE7", lineHeight: 1.35, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ARTIFACT_TYPE_LABEL[a.type]}</div>
+                    <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginTop: 2 }}>{fm.name} · {a.provider}</div>
+                  </div>
+                  <span className="mono" style={{ fontSize: 9.5, color: "var(--green)" }}>✓</span>
+                </div>
+              ); })}
+            </div>
+            <div style={{ border: "1px solid rgba(232,154,42,.35)", borderRadius: 9, padding: "11px 13px", background: "rgba(232,154,42,.06)" }}>
+              <div className="mono" style={{ fontSize: 10, color: "#F2BF52", marginBottom: 5 }}>下一步建议</div>
+              <div style={{ fontSize: 12, color: "#EEE3D2", lineHeight: 1.55 }}>{ccNextHint()}</div>
+            </div>
+          </div>
+          <div style={{ flex: "0 0 auto", padding: "13px 15px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 9 }}>
+            <button className="amber-btn" style={{ padding: 12, fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={!artifacts.length} onClick={() => exportMarkdown({ title: `${discussion?.title || "Roast"} · 立项包`, conclusion: ccPackMd(), evidence: [] })}>打包为立项包 ↓</button>
+            <div style={{ display: "flex", gap: 9 }}>
+              <button className="ghost-chip" style={{ flex: 1, padding: 9, justifyContent: "center" }} disabled={!artifacts.length} onClick={() => exportDocx({ title: `${discussion?.title || "Roast"} · 立项包`, conclusion: ccPackMd(), evidence: [] })}>导出 DOCX</button>
+              <button className="ghost-chip" style={{ flex: 1, padding: 9, justifyContent: "center" }} disabled={!artifacts.length} onClick={() => navigator.clipboard?.writeText(ccPackMd())}>复制全部</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="app">
       {topChrome()}
       {tab === "relay" ? llBody()
         : tab === "search" ? ssBody()
+        : tab === "produce" ? ccBody()
         : <div className="grid work">
             {conversationCol()}
             <div className="col center">{centerCol()}</div>
@@ -1805,7 +2009,7 @@ function App() {
 
       {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
 
-      {tab !== "relay" && tab !== "search" && composerBar()}
+      {tab !== "relay" && tab !== "search" && tab !== "produce" && composerBar()}
       {showHistory && (
         <div className="hist-overlay" onClick={() => setShowHistory(false)}>
           <div className="hist-panel" onClick={(e) => e.stopPropagation()}>

@@ -791,3 +791,15 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .mini-radar i{position:absolute;border:1px solid #173f5a;border-radius:50%;inset:0;margin:auto;display:block}
 .mini-radar i.r2{inset:23%}.mini-radar i.r3{inset:40%}
 .mini-radar .mr-sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,#48dcff00 0deg,#48dcff00 300deg,#48dcff33 350deg,#48dcffaa 360deg);animation:radarspin 3.2s linear infinite}
+
+/* 产出站:格式格 + 模型钮 + 生成骨架 */
+.fmt{display:flex;align-items:center;gap:9px;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.015);cursor:pointer;transition:.14s}
+.fmt:hover{border-color:var(--line2)}
+.fmt.on{border-color:rgba(72,220,255,.45);background:var(--cyan2)}
+.fmt .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:15px;flex:0 0 auto}
+.mbtn{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--line2);border-radius:8px;padding:6px 11px;background:rgba(255,255,255,.02);cursor:pointer;transition:.14s}
+.mbtn:hover{border-color:#345a7c;color:#c2ccd6}
+.mbtn.on{border-color:var(--cyan);color:var(--cyan);background:var(--cyan2)}
+.mbtn:disabled{opacity:.45;cursor:not-allowed}
+.gen{background:linear-gradient(90deg,rgba(72,220,255,.05),rgba(72,220,255,.18),rgba(72,220,255,.05));background-size:200% 100%;animation:genshimmer 1.4s linear infinite}
+@keyframes genshimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
