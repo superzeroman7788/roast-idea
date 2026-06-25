@@ -1504,6 +1504,51 @@ function App() {
     );
   };
 
+  // 陪练空场 HUD:三脑环绕「IDEA · 核心」星图(沿用议会图谱动效 §4/§5)。在场搭子按 dialogueN 点亮,其余暗置。
+  const LL_HEX: Record<string, string> = { claude: "#e8975c", openai: "#4fd8c0", deepseek: "#8aa0ff" };
+  const llIdleOrb = () => {
+    const brains = ["claude", "openai", "deepseek"];
+    const active = new Set(LL_LINEUP[dialogueN - 1]);
+    const C = 260, R = 150;
+    const pos = brains.map((_, i) => { const a = (-90 + (i * 360) / brains.length) * (Math.PI / 180); return { x: C + R * Math.cos(a), y: C + R * Math.sin(a) }; });
+    return (
+      <div style={{ margin: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+        <svg className="orb" viewBox="0 0 520 520" preserveAspectRatio="xMidYMid meet" style={{ width: "min(380px, 50vh)", height: "min(380px, 50vh)" }}>
+          {/* 同心 HUD 环 + 反向旋转虚线环 */}
+          <circle cx={C} cy={C} r={R} fill="none" stroke="#13283e" />
+          <circle cx={C} cy={C} r="108" fill="none" stroke="#11223a" strokeDasharray="2 8" />
+          <circle cx={C} cy={C} r={R} fill="none" stroke="#2a9fc4" strokeWidth="1" strokeDasharray="2 20" opacity="0.35">
+            <animateTransform attributeName="transform" type="rotate" from="0 260 260" to="360 260 260" dur="26s" repeatCount="indefinite" />
+          </circle>
+          <circle cx={C} cy={C} r="132" fill="none" stroke="#1b6f8c" strokeWidth="1" strokeDasharray="2 14" opacity="0.22">
+            <animateTransform attributeName="transform" type="rotate" from="360 260 260" to="0 260 260" dur="40s" repeatCount="indefinite" />
+          </circle>
+          <g stroke="#48dcff18" strokeWidth="1"><line x1="64" y1="260" x2="456" y2="260" /><line x1="260" y1="64" x2="260" y2="456" /></g>
+          {/* 中心 → 各脑连线(在场亮、缺席暗虚) */}
+          {brains.map((k, i) => { const on = active.has(k); return (
+            <line key={"l" + i} x1={C} y1={C} x2={pos[i].x} y2={pos[i].y} stroke={LL_HEX[k]} strokeWidth="1" opacity={on ? 0.5 : 0.2} strokeDasharray={on ? undefined : "3 7"} />
+          ); })}
+          {/* 脑节点(全员在册,本轮在场的更亮)*/}
+          {brains.map((k, i) => { const on = active.has(k); const { x, y } = pos[i]; const col = LL_HEX[k]; return (
+            <g key={i} opacity={on ? 1 : 0.62}>
+              <circle className={on && busy ? "pulse" : undefined} cx={x} cy={y} r={on ? 12 : 9.5} fill="#08151f" stroke={col} strokeWidth={on ? 1.9 : 1.4} style={{ filter: `drop-shadow(0 0 ${on ? 9 : 4}px ${col}${on ? "cc" : "77"})`, transformOrigin: `${x}px ${y}px` }} />
+              <text x={x} y={y - 20} textAnchor="middle" fontFamily="var(--mono)" fontSize="13" fill={col}>{AG[k].n}</text>
+              <text x={x} y={y + 26} textAnchor="middle" fontFamily="var(--mono)" fontSize="10" fill={on ? "#9fd6ea" : "#7e93a8"}>{i === 0 ? "主脑" : on ? "在场" : "待命"}</text>
+            </g>
+          ); })}
+          {/* 加载游标:待命慢转,作答中快转 */}
+          <circle cx={C} cy={C} r="40" fill="none" stroke="#48dcff" strokeWidth="2" strokeDasharray="5 11" opacity={busy ? 0.85 : 0.32}>
+            <animateTransform attributeName="transform" type="rotate" from="0 260 260" to="360 260 260" dur={busy ? "1.3s" : "6s"} repeatCount="indefinite" />
+          </circle>
+          {/* 呼吸辉光核 */}
+          <circle className="core" cx={C} cy={C} r="17" fill="#48dcff" opacity="0.85" style={{ filter: "drop-shadow(0 0 16px #48dcff)", transformOrigin: "260px 260px" }} />
+          <circle cx={C} cy={C} r="8" fill="#dffaff" />
+          <text x={C} y={C + 52} textAnchor="middle" fontFamily="var(--mono)" fontSize="11" fill="#8aa1bc" letterSpacing="2">IDEA · 核心</text>
+        </svg>
+        <div className="mono" style={{ fontSize: 12, color: busy ? "var(--cyan)" : "var(--faint)", letterSpacing: ".5px", textAlign: "center" }}>{busy ? "搭子作答中…" : started ? "继续在下方说,搭子会专注回应" : "在下方说说你的点子 → 搭子待命,帮你一步步想清楚"}</div>
+      </div>
+    );
+  };
   const llListView = () => {
     const lastUserIdx = turns.map((t) => t.role).lastIndexOf("user");
     const userBubble = lastUserIdx >= 0 ? turns[lastUserIdx] : null;
@@ -1534,7 +1579,7 @@ function App() {
             </div>
           )}
           {turns.length === 0 ? (
-            <div className="board-empty" style={{ margin: "auto", textAlign: "center", maxWidth: 420, lineHeight: 1.8 }}>{busy ? "搭子在想…" : "在下方说说你的点子,搭子会专注回应、帮你一步步想清楚。"}</div>
+            llIdleOrb()
           ) : (
             <>
               {userBubble && (
