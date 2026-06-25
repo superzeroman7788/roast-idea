@@ -151,9 +151,14 @@ export async function createDiscussion({ mode, title, brief, evidencePack, roles
 }
 
 // 给已有讨论补/更新证据包(陪练惰性起手后,在「搜索」站把证据补进同一工作台,不新建讨论、不丢对话)
-export async function updateDiscussionPack(id, evidencePack) {
+// brief 传入则一并更新(搜索站改了点子重检索 → 讨论 brief 也跟上,否则下游议会/产出读旧点子)
+export async function updateDiscussionPack(id, evidencePack, brief) {
   const now = new Date().toISOString();
-  await run(`UPDATE discussions SET evidence_pack = ?, updated_at = ? WHERE id = ?`, [evidencePack ? JSON.stringify(evidencePack) : null, now, id]);
+  if (brief != null && persistBrief()) {
+    await run(`UPDATE discussions SET evidence_pack = ?, brief = ?, updated_at = ? WHERE id = ?`, [evidencePack ? JSON.stringify(evidencePack) : null, String(brief), now, id]);
+  } else {
+    await run(`UPDATE discussions SET evidence_pack = ?, updated_at = ? WHERE id = ?`, [evidencePack ? JSON.stringify(evidencePack) : null, now, id]);
+  }
 }
 
 // 追加一条发言(seq 自增,更新讨论 updated_at)。失败不静默伪装。

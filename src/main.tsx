@@ -354,7 +354,7 @@ function App() {
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
-    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all");
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all"); setLlAtBottom(true); setCardCollapsed({ angles: true, assumptions: true, dont: true });
     setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
@@ -369,7 +369,7 @@ function App() {
   // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
   async function loadDiscussion(id: string) {
     token.current++;
-    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all");
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all"); setLlAtBottom(true); setCardCollapsed({ angles: true, assumptions: true, dont: true });
     try {
       const r = await fetch(`/api/discussion/${id}`);
       const d = await r.json();
@@ -553,6 +553,7 @@ function App() {
     const edited = userInput.trim();
     const nb = edited || brief;
     if (edited) { setBrief(edited); setUserInput(""); }
+    setExcludedIds(new Set()); // 证据 id 是位置型(E1..),重检索会重编号 → 必须清旧排除,否则旧排除错落到不相干的新证据
     setBusy(true); setReconElapsed(0);
     const t0 = Date.now();
     const tick = setInterval(() => setReconElapsed(Math.round((Date.now() - t0) / 1000)), 250);
@@ -650,7 +651,7 @@ function App() {
 
   // 每站产出的规范 MD(= 工作台文档 + 交接载荷)
   function docFor(t: Tab): string {
-    if (t === "search") return evidenceToMd(pack);
+    if (t === "search") return evidenceToMd(pack, excludedIds);
     if (t === "relay") return cardToMd(relayCard);
     if (t === "council") return converged ? convergedToMd(converged) : "";
     return "";
@@ -1788,7 +1789,7 @@ function App() {
             <div className="label" style={{ textAlign: "center" }}>送到 →</div>
             <div style={{ display: "flex", gap: 9 }}>
               <button className="amber-btn" style={{ flex: 1, padding: 11, fontSize: 13, fontFamily: "var(--mono)" }} disabled={!docFor("search") || busy || deliberating} onClick={() => sendHandoff("search", "relay")}>陪练 · 想清楚</button>
-              <button className="ghost-chip" style={{ flex: 1, padding: 11, justifyContent: "center", fontSize: 12 }} onClick={() => sendHandoff("search", "council")}>议会 · 拷问</button>
+              <button className="ghost-chip" style={{ flex: 1, padding: 11, justifyContent: "center", fontSize: 12 }} disabled={!docFor("search") || busy || deliberating} onClick={() => sendHandoff("search", "council")}>议会 · 审议</button>
             </div>
           </div>
         </div>
@@ -1815,7 +1816,7 @@ function App() {
     if (planMd) L.push("## 方案源(陪练方向卡 + 议会收敛)", planMd, "");
     artifacts.filter((a) => a.type !== "image" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
     const imgs = artifacts.filter((a) => a.type === "image" && a.imagePath);
-    if (imgs.length) { L.push("## 配图"); imgs.forEach((a) => L.push(`- ${a.provider}:/${a.imagePath}`)); L.push(""); }
+    if (imgs.length) { L.push("## 配图"); imgs.forEach((a) => L.push(`- ${a.provider}:/api/artifact/${a.id}/image`)); L.push(""); }
     return L.join("\n").trim();
   };
   const ccNextHint = () => {
@@ -1831,7 +1832,7 @@ function App() {
     else exportMarkdown({ title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] });
   };
   const ccArtCard = (a: Artifact) => {
-    const fm = PRODUCE_FORMATS.find((f) => f.id === a.type) || PRODUCE_FORMATS[1];
+    const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : PRODUCE_FORMATS[1]));
     const pc = ccProvColor(a.provider);
     const menuOpen = artMenu?.id === a.id;
     const avail = ccAvail(a.type).filter((p) => (artMenu?.mode === "refine" ? p.label !== a.provider : true));
@@ -1845,7 +1846,7 @@ function App() {
           <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ marginLeft: "auto", color: "var(--faint)", fontSize: 14 }}>×</span>
         </div>
         {a.type === "image" && a.imagePath
-          ? <img src={"/" + a.imagePath} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
+          ? <img src={`/api/artifact/${a.id}/image`} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
           : <div style={{ fontSize: 13, color: "#C2CCD6", lineHeight: 1.65, whiteSpace: "pre-wrap", borderLeft: "1px solid var(--line)", paddingLeft: 13, maxHeight: 260, overflow: "auto" }}>{(a.content || "").slice(0, 1400)}</div>}
         <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 10, borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
           {a.type !== "image" && <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" })}>✎ 改稿</button>}
@@ -1968,7 +1969,7 @@ function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div className="label">本条点子产物</div>
               {artifacts.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>还没有产物</div>}
-              {artifacts.map((a) => { const fm = PRODUCE_FORMATS.find((f) => f.id === a.type) || PRODUCE_FORMATS[1]; return (
+              {artifacts.map((a) => { const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : PRODUCE_FORMATS[1])); return (
                 <div key={a.id} style={{ display: "flex", gap: 9, border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.012)", alignItems: "center" }}>
                   <span style={{ flex: "0 0 auto", width: 22, height: 22, borderRadius: 6, display: "grid", placeItems: "center", fontSize: 11, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.ic}</span>
                   <div style={{ minWidth: 0, flex: 1 }}>

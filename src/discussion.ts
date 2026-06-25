@@ -327,11 +327,11 @@ export const INTENSITY_LABEL: Record<CouncilIntensity, string> = { council: "温
 // 工作台文档(交接载荷):每站产出序列化成一份规范 MD
 export type StationDoc = { station: Tab; name: string; md: string };
 
-export function evidenceToMd(pack: EvidencePack | null): string {
+export function evidenceToMd(pack: EvidencePack | null, excludedIds?: Set<string>): string {
   if (!pack || !pack.items?.length) return "";
   const L: string[] = ["# 证据简报", ""];
   for (const it of pack.items) {
-    if (it.excluded) continue;
+    if (it.excluded || excludedIds?.has(it.id)) continue;
     L.push(`## [${it.category}] ${it.claim}`);
     if (it.impact) L.push(`- 意味:${it.impact}`);
     L.push(`- 来源:${it.source}${it.url ? ` (${it.url})` : ""} · 可信度 ${it.credibility}`);

@@ -654,7 +654,7 @@ const CONVERGE_SHAPE = `Return ONLY one compact JSON object, no markdown, no pro
   "aiTake": "OPTIONAL one-paragraph opinion — clearly just one opinion, not the answer"
 }`;
 
-export function buildConvergePrompt({ brief, evidence, endorsed, pinned, setAside, replies, unsilenceable }) {
+export function buildConvergePrompt({ brief, evidence, endorsed, pinned, setAside, replies, unsilenceable, rejected }) {
   const fmtTagged = (arr) => (arr && arr.length ? arr.map((o) => `- [${o.tag || "?"}] ${o.text}`).join("\n") : "(none)");
   const fmt = (arr) => (arr && arr.length ? arr.map((t) => `- ${t}`).join("\n") : "(none)");
   const repl = (replies || []).length ? (replies || []).map((r) => `- 针对「${r.point}」你说:${r.note}`).join("\n") : "(none)";
@@ -668,6 +668,7 @@ HARD RULES (反共识,不可违反):
 3. SET-ASIDE viewpoints are NOT erased — record them honestly in "setAside" (留痕).
 4. The UNSILENCEABLE hardest kill-case(s) MUST be restated plainly in "unsilenceable" EVEN IF the human set them aside.
    You may help the founder face them, but you may not delete or soften them away.
+5. REJECTED(否决) viewpoints: the human has explicitly OVERRULED these — do NOT adopt or build on them, and do NOT put them in unsilenceable. You may briefly note in "setAside" that the founder overruled them (留痕), but they do not shape the plan.
 The product helps the founder THINK, it does not decide for them.
 
 ${OUTPUT_LANG}
@@ -682,6 +683,7 @@ THE HUMAN'S CURATION (only this shapes convergence):
 认领(尖锐、要处理):\n${fmtTagged(endorsed)}
 钉死(必答,最重要):\n${fmtTagged(pinned)}
 搁置(留痕,不抹掉):\n${fmt(setAside)}
+否决(用户已否掉,不要采纳/不要进 unsilenceable):\n${fmtTagged(rejected)}
 不可静音的最硬 kill:\n${fmt(unsilenceable)}
 人的反驳:\n${repl}`,
     },

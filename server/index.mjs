@@ -162,7 +162,7 @@ const server = http.createServer(async (req, res) => {
           try { applyEvidenceBrief(pack, await synthesizeEvidenceBrief({ brief, items: pack.items, mode: existing.mode, byoKeys })); }
           catch (e) { console.error("[roast-api] evidence brief failed:", e?.message || e); }
         }
-        await updateDiscussionPack(did, pack);
+        await updateDiscussionPack(did, pack, body.brief ? brief : undefined); // 改了点子重检索 → 讨论 brief 跟上
         sseSend(res, "board", { pack });
         sseSend(res, "round-done", { discussionId: did });
       } catch (error) {
@@ -306,7 +306,6 @@ const server = http.createServer(async (req, res) => {
 
       sseHead(res);
       try {
-        await clearViewpoints(d.id); // 重跑覆盖旧观点
         // 事实侦察雷达页排除的证据(excludedIds)在此过滤,不喂给席位;校验仍只认进场的证据 id
         const excluded = new Set(Array.isArray(body.excludedIds) ? body.excludedIds : []);
         const evidenceForAgents = (d.evidencePack?.items || []).filter((it) => !excluded.has(it.id));
@@ -336,6 +335,7 @@ const server = http.createServer(async (req, res) => {
           );
           try { await saveRelay(d.id, relayRes); } catch (e) { console.error("[roast-api] saveRelay failed:", e?.message || e); }
         } else {
+        await clearViewpoints(d.id); // 仅议会重跑(roast/council)才覆盖旧观点;clarify 出方向卡不动议会观点+策展
         await runDeliberation(
           { mode: d.mode, brief: effBrief, evidence: evidenceForAgents, byoKeys, runConfig, posture },
           async (ev, data) => {

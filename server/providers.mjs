@@ -1028,11 +1028,13 @@ function convergedToMarkdown(c) {
 // 人-steered 收敛:只吃人策展集合;反共识硬兜底 —— 最硬 kill 即使被搁置也强制进 unsilenceable。
 export async function runConverge({ brief, evidence, viewpoints, signals, byoKeys }) {
   const cur = deriveCurationServer(signals);
-  const endorsed = [], pinned = [], setAside = [], replies = [], hardKills = [];
+  const endorsed = [], pinned = [], setAside = [], replies = [], hardKills = [], rejected = [];
   const tagOf = (v) => PERSONAS[v.roleAngle]?.cn || v.roleAngle;
   for (const v of viewpoints || []) {
-    if (v.isHardestKill) hardKills.push(v.text);
     const c = cur[v.id];
+    // 用户否决(reject):不进方案、不喂 reply、且不参与"最硬 kill 必收"的硬兜底(用户已明确否掉)
+    if (c?.status === "reject") { rejected.push({ text: v.text, tag: tagOf(v) }); continue; }
+    if (v.isHardestKill) hardKills.push(v.text);
     if (!c) continue;
     if (c.status === "endorse") endorsed.push({ text: v.text, tag: tagOf(v) });
     else if (c.status === "pin") pinned.push({ text: v.text, tag: tagOf(v) });
@@ -1043,7 +1045,7 @@ export async function runConverge({ brief, evidence, viewpoints, signals, byoKey
   if (!configured.length) throw new Error("no configured providers");
   const prov = configured[0].provider;
   const apiKey = configured[0].apiKey;
-  const out = await chatJSON(prov, apiKey, buildConvergePrompt({ brief, evidence, endorsed, pinned, setAside, replies, unsilenceable: hardKills }));
+  const out = await chatJSON(prov, apiKey, buildConvergePrompt({ brief, evidence, endorsed, pinned, setAside, replies, unsilenceable: hardKills, rejected }));
 
   const converged = {
     clarified: clean(out.clarified),
