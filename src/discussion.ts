@@ -227,8 +227,8 @@ export type Deliberation = {
 };
 
 // 人策展(人在环中):endorse=这点尖锐我要处理(≠agree)
-export type SignalAction = "endorse" | "setAside" | "pin" | "reply" | "clear";
-export type CurationStatus = "endorse" | "setAside" | "pin" | "none";
+export type SignalAction = "endorse" | "setAside" | "pin" | "reject" | "reply" | "clear";
+export type CurationStatus = "endorse" | "setAside" | "pin" | "reject" | "none";
 export type HumanSignal = { id?: string; viewpointId: string; action: SignalAction; note: string; createdAt?: string };
 
 export const STANCE_COLOR: Record<string, string> = {

@@ -382,7 +382,7 @@ const server = http.createServer(async (req, res) => {
       const viewpointId = String(body.viewpointId || "");
       const action = String(body.action || "");
       const note = body.note ? String(body.note).slice(0, 1000) : "";
-      if (!viewpointId || !["endorse", "setAside", "pin", "reply", "clear"].includes(action)) {
+      if (!viewpointId || !["endorse", "setAside", "pin", "reject", "reply", "clear"].includes(action)) {
         return json(res, 400, { ok: false, error: "bad signal" });
       }
       const saved = await saveSignal({ discussionId: d.id, viewpointId, action, note });

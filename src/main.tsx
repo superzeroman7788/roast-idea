@@ -225,6 +225,7 @@ function App() {
   const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
   const [detailId, setDetailId] = useState<string | null>(null); // 陪练:左栏点开某条 → 中央看详情(null=三脑并列列表)
   const [searchDim, setSearchDim] = useState("all"); // 搜索:左栏选中的侦察维度(过滤中间证据流)
+  const [councilSel, setCouncilSel] = useState("all"); // 议会:左栏选中的议题(松筛中间署名观点)
   const [produceModel, setProduceModel] = useState<string>(""); // 产出:选中的模型(provider id),空=用默认第一个
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" } | null>(null); // 产物卡的「改稿/换模型」内联选模型菜单
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
@@ -353,7 +354,7 @@ function App() {
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
-    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel("");
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all");
     setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
@@ -368,7 +369,7 @@ function App() {
   // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
   async function loadDiscussion(id: string) {
     token.current++;
-    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel("");
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all");
     try {
       const r = await fetch(`/api/discussion/${id}`);
       const d = await r.json();
@@ -497,7 +498,7 @@ function App() {
   }
 
   // 认领/搁置/钉死:点已激活的再点 = 取消(toggle)。乐观更新 + 落库。
-  function curate(vpId: string, action: "endorse" | "setAside" | "pin") {
+  function curate(vpId: string, action: "endorse" | "setAside" | "pin" | "reject") {
     if (phase === "finalized") return; // 收敛已定稿,策展锁定(避免 recap 与收敛快照打架)
     const cur = curation[vpId]?.status || "none";
     const off = cur === action;
@@ -1995,12 +1996,221 @@ function App() {
     );
   };
 
+  // ============ 议会 redesign:议程 / 署名观点审议 / 策展台 ============
+  const YC_STANCE_CN: Record<string, string> = { Ship: "主张", Fix: "验证", Pause: "待定", Kill: "拷问" };
+  const YC_MST: Record<string, { t: string; c: string; g: string }> = {
+    claim: { t: "已认领", c: "var(--green)", g: "✓" }, reject: { t: "已否决", c: "var(--red)", g: "✕" },
+    park: { t: "已搁置", c: "var(--faint)", g: "–" }, open: { t: "待裁决", c: "var(--cyan)", g: "•" },
+  };
+  // 议题(左栏):从议会综述派生 —— 共识→已认领,分歧/盲点→待裁
+  const ycMotions = (): { id: string; t: string; state: string }[] => {
+    const ms: { id: string; t: string; state: string }[] = [];
+    (deliberation?.consensus || []).forEach((t, i) => ms.push({ id: "C" + i, t, state: "claim" }));
+    (deliberation?.contradictions || []).forEach((t, i) => ms.push({ id: "X" + i, t, state: "open" }));
+    (deliberation?.blindSpots || []).slice(0, 2).forEach((t, i) => ms.push({ id: "B" + i, t, state: "open" }));
+    return ms;
+  };
+  const ycVerdicts = () => viewpoints.filter((v) => v.roleAngle !== "organizer" && v.roleAngle !== "chairman");
+  const ycShown = () => {
+    const vps = ycVerdicts();
+    if (councilSel === "all") return vps;
+    const m = ycMotions().find((x) => x.id === councilSel);
+    if (!m) return vps;
+    const words = m.t.replace(/[：:，。、（）()]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
+    const hit = vps.filter((v) => words.some((w) => (v.text || "").includes(w)));
+    return hit.length ? hit : vps;
+  };
+  const ycFlags = (v: Viewpoint): { t: string; hot: boolean }[] => {
+    const f: { t: string; hot: boolean }[] = [];
+    if (v.isHardestKill) f.push({ t: "🔴 不可静音的最硬 kill", hot: true });
+    if (v.verification?.verdict === "overreach") f.push({ t: "⚠ 核查·论据过头", hot: false });
+    else if (v.verification?.verdict === "unsupported") f.push({ t: "⚠ 核查·证据不足", hot: false });
+    else if (v.verification?.verdict === "supported") f.push({ t: "✓ 核查·证据支持", hot: false });
+    if (v.round === 3) f.push({ t: "R3 交叉质疑", hot: false });
+    return f;
+  };
+  const ycChairHint = () => {
+    const c = deliberation?.contradictions || [];
+    if (c.length) return `反方提出 ${c.length} 条红线分歧,建议优先裁决这几条再收敛。`;
+    if (deliberation?.blindSpots?.length) return `还有 ${deliberation.blindSpots.length} 个盲点未被覆盖,收敛前确认要不要补。`;
+    return "观点已就位 —— 认领你要处理的、否决站不住的、其余搁置,再收敛成方案。";
+  };
+  const councilMinutesMd = () => {
+    const L: string[] = [`# ${discussion?.title || "议会纪要"}`, "", "## 受审点子", brief || "(未填写)", ""];
+    const v = ycVerdicts();
+    const sec = (title: string, st: CurationStatus) => { const its = v.filter((x) => x.id && curation[x.id]?.status === st); if (its.length) { L.push(`## ${title}`); its.forEach((x) => L.push(`- **${x.seat}**(${ANGLE_LABEL[x.roleAngle] || x.roleAngle}):${x.text}`)); L.push(""); } };
+    sec("认领 · 进方案", "endorse"); sec("否决 · 不采纳", "reject"); sec("搁置 · 待定", "setAside");
+    if (deliberation?.contradictions?.length) { L.push("## 红线分歧"); deliberation.contradictions.forEach((c) => L.push(`- ${c}`)); L.push(""); }
+    if (converged?.clarified) L.push("## 收敛方案", converged.clarified, "");
+    return L.join("\n").trim();
+  };
+  const ycVerdictCard = (v: Viewpoint) => {
+    const k = agentKey(v.seat); const a = AG[k]; const hot = v.stance === "Kill" || v.isHardestKill;
+    const disp = (v.id && curation[v.id]?.status) || "none";
+    const sc = v.stance ? STANCE_COLOR[v.stance] : "var(--cyan)";
+    return (
+      <div key={v.id} style={{ border: "1px solid " + (hot ? "rgba(255,93,110,.34)" : "var(--line)"), borderLeft: "2px solid " + a.c, borderRadius: 11, padding: "15px 17px", background: hot ? "rgba(255,93,110,.045)" : "rgba(255,255,255,.015)", display: "flex", flexDirection: "column", gap: 11, opacity: disp === "setAside" ? .55 : 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span className="agent-pill" style={{ color: a.c }}><span className="d" style={{ background: a.c }} />{v.seat}</span>
+          <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{ANGLE_LABEL[v.roleAngle] || v.roleAngle}</span>
+          {v.stance && <span style={{ fontFamily: "var(--mono)", fontSize: 10, padding: "2px 8px", borderRadius: 5, color: sc, border: "1px solid " + sc + "66", background: sc + "1a" }}>{YC_STANCE_CN[v.stance] || v.stance}</span>}
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: "var(--faint)" }}>{disp !== "none" ? "已策展" : "你来策展 →"}</span>
+        </div>
+        <div style={{ fontSize: 13.5, color: "#D6E0EA", lineHeight: 1.62 }}>{v.text}</div>
+        {(() => { const fl = ycFlags(v); return fl.length ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {fl.map((f, i) => <span key={i} className="mono" style={{ fontSize: 10, padding: "3px 9px", borderRadius: 6, color: f.hot ? "var(--red)" : "var(--muted)", border: "1px solid " + (f.hot ? "rgba(255,93,110,.4)" : "var(--line2)"), background: f.hot ? "rgba(255,93,110,.1)" : "transparent" }}>{f.t}</span>)}
+          </div>
+        ) : null; })()}
+        <div style={{ display: "flex", gap: 8, paddingTop: 11, borderTop: "1px solid var(--line)", flexWrap: "wrap", alignItems: "center" }}>
+          <button className={"act" + (disp === "endorse" ? " on-green" : "")} disabled={phase === "finalized" || !v.id} onClick={() => v.id && curate(v.id, "endorse")}>✓ 认领</button>
+          <button className={"act" + (disp === "reject" ? " on-red" : "")} disabled={phase === "finalized" || !v.id} onClick={() => v.id && curate(v.id, "reject")}>✕ 否决</button>
+          <button className={"act" + (disp === "setAside" ? " on-gray" : "")} disabled={phase === "finalized" || !v.id} onClick={() => v.id && curate(v.id, "setAside")}>– 搁置</button>
+          <button className={"act" + (replyOpen === v.id ? " on-cyan" : "")} disabled={phase === "finalized" || !v.id} onClick={() => { setReplyOpen(replyOpen === v.id ? null : v.id!); setReplyText(""); }}>↳ 插一句</button>
+        </div>
+        {replyOpen === v.id && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <input className="yc-reply" value={replyText} autoFocus placeholder="插一句你的反驳 / 追问…" onChange={(e) => setReplyText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") replyTo(v.id!, replyText); }} />
+            <button className="mbtn" onClick={() => replyTo(v.id!, replyText)}>记下</button>
+          </div>
+        )}
+        {v.id && curation[v.id]?.replies?.map((r, i) => <div key={i} className="mono" style={{ fontSize: 11, color: "var(--cyan)", paddingLeft: 4 }}>↳ {r.note}</div>)}
+      </div>
+    );
+  };
+  const ycBody = () => {
+    const motions = ycMotions();
+    const verdicts = ycVerdicts();
+    const shown = ycShown();
+    const cn = (st: CurationStatus) => verdicts.filter((v) => v.id && curation[v.id]?.status === st).length;
+    const openCount = verdicts.filter((v) => !v.id || !curation[v.id] || curation[v.id].status === "none").length;
+    return (
+      <div className="ll" style={{ gridTemplateColumns: "250px 1fr 318px" }}>
+        {/* 左:议程 */}
+        <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span className="label">议程 · MOTIONS</span><span className="mono" style={{ fontSize: 11, color: openCount ? "var(--cyan)" : "var(--green)" }}>{openCount ? openCount + " 待策展" : "已就绪"}</span>
+          </div>
+          <div style={{ padding: 14, overflow: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+            {discussion && <div style={{ border: "1px solid var(--line2)", borderRadius: 10, padding: "12px 13px", background: "linear-gradient(180deg,rgba(72,220,255,.05),rgba(255,255,255,.01))" }}>
+              <div className="label" style={{ marginBottom: 7 }}>受审点子</div>
+              <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
+            </div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {[{ id: "all", t: "全部议题", state: "open" }, ...motions].map((m) => {
+                const s = YC_MST[m.state]; const active = councilSel === m.id;
+                return (
+                  <div key={m.id} onClick={() => setCouncilSel(m.id)} style={{ display: "flex", gap: 9, padding: "10px 11px", borderRadius: 9, cursor: "pointer", border: "1px solid " + (active ? "var(--cyan)" : "var(--line)"), background: active ? "var(--cyan2)" : "rgba(255,255,255,.012)" }}>
+                    <span style={{ flex: "0 0 auto", width: 17, height: 17, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700, marginTop: 1, color: s.c, border: "1px solid " + s.c + "66", background: s.c + "1a" }}>{s.g}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 12.5, color: active ? "#E7ECF2" : "#C2CCD6", lineHeight: 1.4 }}>{m.t}</div>
+                      {m.id !== "all" && <div className="mono" style={{ fontSize: 9, color: s.c, marginTop: 4, letterSpacing: ".5px" }}>{m.id} · {s.t}</div>}
+                    </div>
+                  </div>
+                );
+              })}
+              {motions.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.6, paddingLeft: 2 }}>送进议会、审议综述出来后,这里会列出共识与分歧议题。</div>}
+            </div>
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+              {([["认领 " + cn("endorse"), "var(--green)"], ["否决 " + cn("reject"), "var(--red)"], ["搁置 " + cn("setAside"), "var(--faint)"]] as [string, string][]).map((x, i) => (
+                <span key={i} className="mono" style={{ fontSize: 10, padding: "4px 9px", borderRadius: 6, color: x[1], border: "1px solid " + x[1] + "44" }}>{x[0]}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+        {/* 中:多 AI 审议 */}
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "13px 24px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 11 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>议会 · 多 AI 审议</div>
+              <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>主脑立靶 → 反方并行开火 → 红线=分歧 → 你来策展</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--cyan)" }}>{shown.length} 条署名观点</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <span className="breath" /><span className="label">审议强度</span>
+              <div className="seg">
+                {(["council", "roast"] as CouncilIntensity[]).map((ci) => <button key={ci} className={councilIntensity === ci ? (ci === "roast" ? "onhot" : "on") : ""} disabled={busy || deliberating} onClick={() => setIntensity(ci)}>{ci === "council" ? "温和 · 综述" : "拷问 · 开火"}</button>)}
+              </div>
+              <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{councilIntensity === "roast" ? "反方强制开火 · R3 交叉质疑" : "多视角温和综述"}</span>
+              <button className="amber-btn" style={{ marginLeft: "auto", padding: "9px 18px", fontSize: 13, fontFamily: "var(--mono)" }} disabled={!verdicts.length || busy || deliberating} onClick={doConverge}>送进产出 · 收敛成方案 →</button>
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            {verdicts.length === 0
+              ? <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.9, maxWidth: 400, display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div>{deliberating ? "审议中 —— 主脑立靶、反方并行开火…" : discussion ? "点下方「送进议会」—— 多个 AI 署名开火,你来认领/否决/搁置。" : "先开一条点子(搜索/陪练),再送进议会。"}</div>
+                  {discussion && !deliberating && <button className="amber-btn" style={{ alignSelf: "center", padding: "10px 22px", fontFamily: "var(--mono)" }} onClick={() => runCouncil()}>送进议会 →</button>}
+                </div>
+              : shown.map((v) => ycVerdictCard(v))}
+            {deliberating && verdicts.length > 0 && <div className="thinking"><span className="blink" /> 审议中…</div>}
+          </div>
+          <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+            <div className="ll-composer">
+              <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
+              <textarea value={userInput} disabled={deliberating || busy} rows={1} placeholder="追问某位 AI / 提出你的反驳,让议会再开一轮火…"
+                onChange={(e) => setUserInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (discussion && !deliberating) { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); } } }} />
+              {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
+              <button className="amber-btn send-icon" disabled={!discussion || deliberating || busy} onClick={() => { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); }}>{deliberating ? "·" : "↑"}</button>
+            </div>
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>温和=多视角综述;拷问=强制开火 + R3 交叉 · 点左栏议题可聚焦 · ⌘/Ctrl+Enter 提交</div>
+          </div>
+        </div>
+        {/* 右:策展台 */}
+        <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
+            <span className="label">策展台 · CURATION</span><span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: openCount ? "var(--cyan)" : "var(--green)" }}>{openCount ? openCount + " 待策展" : "已就绪"}</span>
+          </div>
+          <div style={{ padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 18, flex: 1 }}>
+            {([["认领 · 进方案", "var(--green)", "✓", "endorse", "把你认同的观点认领进最终方案。"], ["否决 · 不采纳", "var(--red)", "✕", "reject", "否决站不住或风险过高的观点。"], ["搁置 · 待定", "var(--faint)", "–", "setAside", "暂不决定的观点放这里。"]] as [string, string, string, CurationStatus, string][]).map(([title, c, g, st, empty]) => {
+              const items = verdicts.filter((v) => v.id && curation[v.id]?.status === st);
+              return (
+                <div key={st} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: c, border: "1px solid " + c + "66", background: c + "1a" }}>{g}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>{title}</span>
+                    <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>{items.length}</span>
+                  </div>
+                  {items.length === 0 ? <div style={{ fontSize: 11.5, color: "var(--faint)", paddingLeft: 4, lineHeight: 1.5 }}>{empty}</div>
+                    : <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                        {items.map((v) => { const k = agentKey(v.seat); return (
+                          <div key={v.id} style={{ display: "flex", gap: 8, border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px", background: "rgba(255,255,255,.02)" }}>
+                            <span style={{ flex: "0 0 auto", width: 6, height: 6, borderRadius: 2, marginTop: 5, background: agentColor(k) }} />
+                            <div style={{ minWidth: 0 }}>
+                              <div className="mono" style={{ fontSize: 9, color: agentColor(k), marginBottom: 3 }}>{v.seat} · {ANGLE_LABEL[v.roleAngle] || v.roleAngle}</div>
+                              <div style={{ fontSize: 11.5, color: "#CCD6E0", lineHeight: 1.4 }}>{(v.text || "").slice(0, 80)}{(v.text || "").length > 80 ? "…" : ""}</div>
+                            </div>
+                          </div>
+                        ); })}
+                      </div>}
+                </div>
+              );
+            })}
+            {verdicts.length > 0 && <div style={{ border: "1px solid rgba(232,154,42,.35)", borderRadius: 9, padding: "11px 13px", background: "rgba(232,154,42,.06)" }}>
+              <div className="mono" style={{ fontSize: 10, color: "#F2BF52", marginBottom: 5 }}>主席提示</div>
+              <div style={{ fontSize: 12, color: "#EEE3D2", lineHeight: 1.55 }}>{ycChairHint()}</div>
+            </div>}
+            {converged && <div style={{ border: "1px solid rgba(72,220,255,.3)", borderRadius: 9, padding: "11px 13px", background: "rgba(72,220,255,.05)" }}>
+              <div className="mono" style={{ fontSize: 10, color: "var(--cyan)", marginBottom: 5 }}>已收敛</div>
+              <div style={{ fontSize: 12, color: "#DCE6EF", lineHeight: 1.55 }}>{(converged.clarified || "").slice(0, 160)}</div>
+            </div>}
+          </div>
+          <div style={{ flex: "0 0 auto", padding: "13px 15px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 9 }}>
+            <button className="amber-btn" style={{ padding: 12, fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={!verdicts.length || busy || deliberating} onClick={doConverge}>收敛成方案 → 产出</button>
+            <button className="ghost-chip" style={{ padding: 10, justifyContent: "center", fontSize: 12 }} disabled={!verdicts.length} onClick={() => exportMarkdown({ title: `${discussion?.title || "Roast"} · 议会纪要`, conclusion: councilMinutesMd(), evidence: pack?.items || [] })}>导出议会纪要</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="app">
       {topChrome()}
       {tab === "relay" ? llBody()
         : tab === "search" ? ssBody()
         : tab === "produce" ? ccBody()
+        : tab === "council" ? ycBody()
         : <div className="grid work">
             {conversationCol()}
             <div className="col center">{centerCol()}</div>
@@ -2009,7 +2219,7 @@ function App() {
 
       {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
 
-      {tab !== "relay" && tab !== "search" && tab !== "produce" && composerBar()}
+      {tab !== "relay" && tab !== "search" && tab !== "produce" && tab !== "council" && composerBar()}
       {showHistory && (
         <div className="hist-overlay" onClick={() => setShowHistory(false)}>
           <div className="hist-panel" onClick={(e) => e.stopPropagation()}>
