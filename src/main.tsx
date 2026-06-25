@@ -407,15 +407,32 @@ function App() {
   // ---- 产出层(交付物)----
   // fromArtifactId 在 = 改稿(纵向);否则 = 出一版/换一家(横向比稿)
   async function produce(type: ArtifactType, providerId: string, fromArtifactId?: string, instruction?: string) {
-    if (!discussion || producing) return;
-    const t = ++token.current;
-    setProducing(true); setRunError("");
+    if (producing) return;
     setRefineFor(null); setRefineText("");
+    const atts = attachments.slice();
+    const hadDiscussion = !!discussion;
+    let did = discussion?.id || null;
+    // 独立产出:没讨论也能用 —— 拿「补充要求 / 附件」当种子建一条(redacted 不检索),附件随 /start 折进 brief
+    if (!did) {
+      const seed = (instruction || "").trim() || (atts.length ? "(独立产出:见附件素材)" : "");
+      if (!seed) { setRunError("独立产出请先在下方写要做什么,或附一个素材文件。"); return; }
+      setProducing(true); setRunError("");
+      setBrief(seed); setAttachments([]);
+      did = await ensureDiscussion(true, seed, true);
+      if (!did) { setProducing(false); return; }
+    } else {
+      setProducing(true); setRunError("");
+      setAttachments([]); // 已有讨论:本次附件随 /produce 走
+    }
+    // 注意:token 必须在 ensureDiscussion 之后拿 —— ensureDiscussion 内部会 ++token.current,
+    // 先拿会让本次 produce 的 SSE 立刻被判为已取消(net::ERR_ABORTED)。
+    const t = ++token.current;
     const ho = pendingHandoff.current; pendingHandoff.current = ""; // 一次性消费,与 relay/council 一致
+    const produceAtts = hadDiscussion ? atts : []; // 刚建的讨论附件已被 /start 消费,别重复发
     try {
       await streamSSE(
-        `/api/discussion/${discussion.id}/produce`,
-        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined },
+        `/api/discussion/${did}/produce`,
+        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined, attachments: produceAtts.length ? produceAtts : undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
@@ -1962,12 +1979,12 @@ function App() {
                 {avail.map((p) => <button key={p.id} className={"mbtn" + (model === p.id ? " on" : "")} onClick={() => setProduceModel(p.id)}><span style={{ width: 7, height: 7, borderRadius: 2, background: ccProvColor(p.label) }} />{p.label}</button>)}
                 {avail.length === 0 && <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{fmt === "image" ? "无支持生图的厂商(需 OpenAI)" : "无可用模型"}</span>}
               </div>
-              <button className="amber-btn" style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={!discussion || producing || !model} onClick={() => produce(fmt, model)}>{producing ? "生成中…" : `⚡ 生成 ${fmName}`}</button>
+              <button className="amber-btn" style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={producing || !model || (!discussion && !attachments.length)} onClick={() => produce(fmt, model)}>{producing ? "生成中…" : `⚡ 生成 ${fmName}`}</button>
             </div>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             <div className="label">本轮产物 · {artifacts.length}</div>
-            {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "先开一条点子(搜索/陪练),再来产出。"}</div>}
+            {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "选格式 + 模型,在下方写要求或 📎 附素材,直接生成 —— 产出也能当独立工具用。"}</div>}
             {artifacts.map((a) => ccArtCard(a))}
             {producing && (
               <div style={{ border: "1px solid var(--line)", borderRadius: 11, padding: "15px 17px", background: "rgba(255,255,255,.012)", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1980,14 +1997,26 @@ function App() {
             )}
           </div>
           <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+            {attachments.length > 0 && (
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 8 }}>
+                {attachments.map((a, i) => (
+                  <span key={i} className="mono" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10.5, padding: "4px 9px", borderRadius: 7, border: "1px solid var(--line2)", background: "rgba(255,255,255,.03)", color: "var(--muted)" }}>
+                    {a.kind === "image" ? "🖼" : "📄"} {a.name.length > 22 ? a.name.slice(0, 20) + "…" : a.name}
+                    <span className="clk" onClick={() => removeAttach(i)} title="移除" style={{ color: "var(--faint)", fontSize: 12, lineHeight: 1 }}>×</span>
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="ll-composer">
               <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
-              <textarea value={userInput} disabled={producing} rows={1} placeholder="补充生成要求 / 指定风格语气,让 AI 重新产出…"
+              <textarea value={userInput} disabled={producing} rows={1} placeholder={discussion ? "补充生成要求 / 指定风格语气,让 AI 重新产出…" : "写要做什么 / 附素材 → 选格式+模型,直接生成(产出可独立用)…"}
                 onChange={(e) => setUserInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (model && !producing) { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); } } }} />
-              <button className="amber-btn send-icon" disabled={!discussion || producing || !model} onClick={() => { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); }}>{producing ? "·" : "↑"}</button>
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (model && !producing && (discussion || userInput.trim() || attachments.length)) { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); } } }} />
+              <input ref={fileRef} type="file" multiple accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.yml,.yaml" style={{ display: "none" }} onChange={(e) => { addAttachFiles(e.target.files); e.currentTarget.value = ""; }} />
+              <button className="ghost-chip" disabled={producing} title="附素材给 AI 参考(图片仿样 / 文档改写)" onClick={() => fileRef.current?.click()} style={{ padding: "7px 11px", fontSize: 14 }}>📎</button>
+              <button className="amber-btn send-icon" disabled={producing || !model || (!discussion && !userInput.trim() && !attachments.length)} onClick={() => { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); }}>{producing ? "·" : "↑"}</button>
             </div>
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>选格式 + 模型生成 · 改稿在卡片上点「改稿」 · ⌘/Ctrl+Enter 提交</div>
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>📎 附素材直接产出(无需先走前几站) · 选格式+模型生成 · 卡片上点「改稿」 · ⌘/Ctrl+Enter</div>
           </div>
         </div>
         {/* 右:产物清单 / 导出 */}

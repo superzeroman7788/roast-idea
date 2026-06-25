@@ -451,10 +451,13 @@ const server = http.createServer(async (req, res) => {
           }
         }
         const convoCtx = buildTranscript(d.turns || [], 30);
+        // 产出附件:用户在产出站直接附的图片/文档(让产出能当独立功能用 —— 仿参考图、改写素材)
+        const attachCtx = await buildAttachmentContext(body.attachments, byoKeys);
+        const baseBrief = convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief;
         const out = await runProduce({
           type,
           mode,
-          brief: convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief,
+          brief: baseBrief + attachCtx,
           conclusion: handoffDoc || d.conclusion,
           evidence: d.evidencePack?.items || [],
           sourceContent,
