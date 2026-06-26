@@ -2105,7 +2105,9 @@ function App() {
   const ccBody = () => {
     const fmt = produceType;
     const avail = ccAvail(fmt);
-    const model = produceModel && avail.some((p) => p.id === produceModel) ? produceModel : avail[0]?.id || "";
+    // 默认模型:HTML 原型 / 代码草稿吃代码能力,默认挑强 coder(Claude→DeepSeek→OpenAI);其余用列表第一个
+    const defaultModel = ((fmt === "html_proto" || fmt === "code_sketch") && ["claude", "deepseek", "openai"].map((id) => avail.find((p) => p.id === id)).find(Boolean)?.id) || avail[0]?.id || "";
+    const model = produceModel && avail.some((p) => p.id === produceModel) ? produceModel : defaultModel;
     const fmName = PRODUCE_FORMATS.find((f) => f.id === fmt)?.name || "";
     const done = artifacts.filter((a) => a.type === "image" ? a.imagePath : a.content).length;
     const plan = ccPlanPoints();
