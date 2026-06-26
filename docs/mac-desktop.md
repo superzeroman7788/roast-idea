@@ -78,24 +78,34 @@ npm run mac:build -- --target universal-apple-darwin
 
 > 大多数迭代根本走不到这一步 —— 改 Web 逻辑只需 push 到 Render。只有动原生壳才发版。
 
-## 苹果签名 / 公证(强烈建议,但要 $99/年)
+## 苹果签名 / 公证(站长已有付费开发者账号)
 
-不签名也能跑,但 Gatekeeper 会提示"未识别的开发者",用户得右键→打开;自动更新装完也可能被拦。要顺滑分发 + 自动更新,需要 **Apple Developer 账号($99/年)**:
+> 现状(`security find-identity -v -p codesigning` 查的):本机已装 **Apple Development** 证书(本地调试用),
+> **还没装 Developer ID Application** 证书 —— 分发 + 公证 + 自动更新必须用后者。先补这张证书。
 
-1. 申请 **Developer ID Application** 证书,导出 `.p12`。
-2. 构建前设环境变量(Tauri 会自动签名 + 公证):
-   ```bash
-   export APPLE_CERTIFICATE="<.p12 的 base64>"
-   export APPLE_CERTIFICATE_PASSWORD="<.p12 密码>"
-   export APPLE_SIGNING_IDENTITY="Developer ID Application: <你的名字> (<TeamID>)"
-   export APPLE_ID="<Apple ID 邮箱>"
-   export APPLE_PASSWORD="<App 专用密码>"
-   export APPLE_TEAM_ID="<Team ID>"
-   npm run mac:build -- --target universal-apple-darwin
-   ```
-3. 公证由 Tauri 在打包时自动提交。
+**一次性准备:**
 
-> 这两套签名相互独立:**minisign**(上面的 `~/.tauri/roast.key`)保更新包完整性;**Apple 签名**满足 Gatekeeper。两者都建议有。
+1. **建 Developer ID Application 证书**:Xcode → Settings → Accounts → 选你的 Apple ID(`ln5423696@gmail.com`)→ Manage Certificates → 左下 `+` → **Developer ID Application**。装好后 `security find-identity -v -p codesigning` 会多出一行 `Developer ID Application: <名字> (<TeamID>)`。
+2. **App 专用密码**(公证用):appleid.apple.com → 登录与安全 → App 专用密码 → 新建一个,记下来。
+3. **Team ID**:developer.apple.com → Membership 里看,或就是上面证书括号里的那串。
+
+**发版(一条命令,签名 + 公证 + 出 updater 包 + latest.json):**
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: <你的名字> (<TeamID>)"
+export APPLE_ID="ln5423696@gmail.com"
+export APPLE_PASSWORD="<上一步的 App 专用密码>"
+export APPLE_TEAM_ID="<Team ID>"
+# 证书:已装进登录 Keychain 即可;CI 上则用 APPLE_CERTIFICATE(.p12 base64)+ APPLE_CERTIFICATE_PASSWORD
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/roast.key)"   # updater 私钥
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+
+bash scripts/mac-release.sh
+```
+
+脚本会:跑 `tauri build --target universal-apple-darwin`(Tauri 打包时自动签名 + 提交公证)→ 生成 `latest.json` → 打印 `gh release create` 命令。把 `ROAST.app.tar.gz` + `latest.json` + `.dmg` 传到对应 tag 的 GitHub Release,用户下次开 App 即自动更新。
+
+> 两套签名相互独立:**minisign**(`~/.tauri/roast.key`)保更新包完整性;**Apple Developer ID 签名 + 公证**满足 Gatekeeper。发版要两者都有。
 
 ## 还没做 / 可加
 
