@@ -487,6 +487,24 @@ function App() {
     l.download = `roast-配图-${(a.id || "img").slice(0, 8)}.png`;
     document.body.appendChild(l); l.click(); l.remove();
   }
+  // HTML 原型:剥掉模型可能加的 ```html 围栏 → 拿到纯 HTML
+  function htmlOf(content?: string | null): string {
+    let s = String(content || "").trim();
+    const m = s.match(/```(?:html)?\s*([\s\S]*?)```/i);
+    if (m) s = m[1].trim();
+    return s;
+  }
+  function downloadHtml(a: Artifact) {
+    const blob = new Blob([htmlOf(a.content)], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const l = document.createElement("a"); l.href = url; l.download = `roast-原型-${(a.id || "p").slice(0, 8)}.html`;
+    document.body.appendChild(l); l.click(); l.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+  function openHtmlPreview(a: Artifact) {
+    const blob = new Blob([htmlOf(a.content)], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank"); setTimeout(() => URL.revokeObjectURL(url), 8000);
+  }
   // 全局交付物库:拉本用户所有产物
   async function openLibrary() {
     setShowLibrary(true);
@@ -2024,7 +2042,9 @@ function App() {
     const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
     if (planMd) L.push(converged ? "## 议会收敛" : "## 方向卡", planMd, "");
     const picked = ccPicked();
-    picked.filter((a) => a.type !== "image" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
+    picked.filter((a) => a.type !== "image" && a.type !== "html_proto" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
+    const protos = picked.filter((a) => a.type === "html_proto");
+    if (protos.length) { L.push("## HTML 原型"); protos.forEach((a) => L.push(`- ${a.provider}:见单独的 .html 文件(产物卡「↓ 下载 HTML」)`)); L.push(""); }
     const imgs = picked.filter((a) => a.type === "image" && a.imagePath);
     if (imgs.length) { L.push("## 配图"); imgs.forEach((a) => L.push(`- ${a.provider}:/api/artifact/${a.id}/image`)); L.push(""); }
     return L.join("\n").trim();
@@ -2058,12 +2078,18 @@ function App() {
         </div>
         {a.type === "image" && a.imagePath
           ? <img src={`/api/artifact/${a.id}/image`} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
+          : a.type === "html_proto"
+          ? <div style={{ border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden", background: "#fff" }}>
+              <iframe srcDoc={htmlOf(a.content)} sandbox="allow-scripts" title="HTML 原型预览" style={{ width: "100%", height: 440, border: "none", display: "block", background: "#fff" }} />
+            </div>
           : <div style={{ fontSize: 13, color: "#C2CCD6", lineHeight: 1.65, whiteSpace: "pre-wrap", borderLeft: "1px solid var(--line)", paddingLeft: 13, maxHeight: 260, overflow: "auto" }}>{(a.content || "").slice(0, 1400)}</div>}
         <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 10, borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
           {a.type !== "image" && <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" })}>✎ 改稿</button>}
           <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>
-          {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.content || "")}>⧉ 复制</button>}
-          {a.type !== "image" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
+          {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.type === "html_proto" ? htmlOf(a.content) : (a.content || ""))}>⧉ 复制</button>}
+          {a.type === "html_proto" && <button className="mbtn" onClick={() => openHtmlPreview(a)}>↗ 新窗口预览</button>}
+          {a.type === "html_proto" && <button className="mbtn" onClick={() => downloadHtml(a)}>↓ 下载 HTML</button>}
+          {a.type !== "image" && a.type !== "html_proto" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
           {a.type === "image" && a.imagePath && <button className="mbtn" onClick={() => downloadArtifactImage(a)}>↓ 下载图</button>}
         </div>
         {menuOpen && (
@@ -2127,7 +2153,7 @@ function App() {
               <div style={{ fontSize: 15, fontWeight: 700 }}>产出 · 让某个 AI 生成</div>
               <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>把方案交给一个模型 → 文案 / PRD / 设计文档 / 配图 / PPT</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 9 }}>
               {PRODUCE_FORMATS.map((f) => (
                 <div key={f.id} className={"fmt" + (fmt === f.id ? " on" : "")} onClick={() => { setProduceType(f.id); setProduceModel(""); }}>
                   <span className="ic" style={{ color: f.c, border: "1px solid " + f.c + "55", background: f.c + "18" }}>{f.ic}</span>
@@ -2534,6 +2560,8 @@ function App() {
                       <span className="hist-date">{fmtDate(a.createdAt || "")}</span>
                       {a.type === "image"
                         ? <button className="hist-del" style={{ color: "var(--cyan)" }} title="下载图" onClick={() => downloadArtifactImage(a)}>↓</button>
+                        : a.type === "html_proto"
+                        ? <button className="hist-del" style={{ color: "var(--cyan)" }} title="下载 HTML" onClick={() => downloadHtml(a)}>↓</button>
                         : <button className="hist-del" style={{ color: "var(--cyan)" }} title="导出 MD" onClick={() => exportArtifact(a, "md")}>↓</button>}
                       <button className="hist-del" style={{ color: "var(--green)" }} title="打开这条点子的产出站" onClick={() => { setShowLibrary(false); loadDiscussion(a.discussionId).then(() => switchTab("produce")); }}>↗</button>
                     </div>

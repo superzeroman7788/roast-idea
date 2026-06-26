@@ -581,7 +581,10 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
     return { kind: "image", provider: provider.label, b64, latencyMs: Date.now() - started };
   }
   const messages = buildProducePrompt({ type, mode, brief, conclusion, evidence, sourceContent, instruction });
-  const content = await chatRaw(provider, apiKey, messages, { jsonMode: false });
+  // HTML 原型/代码草稿很长,默认 1100 token 会截断半截;按 type 给足
+  const maxTokens = type === "html_proto" ? 5200 : type === "code_sketch" ? 3200 : (type === "design_doc" || type === "ppt" || type === "prd") ? 2400 : 1500;
+  const timeoutMs = type === "html_proto" || type === "code_sketch" ? 90000 : 50000;
+  const content = await chatRaw(provider, apiKey, messages, { jsonMode: false, maxTokens, timeoutMs });
   if (!content || !content.trim()) throw new Error(`${provider.label} 返回空内容`);
   return { kind: "text", provider: provider.label, content: content.trim(), latencyMs: Date.now() - started };
 }
