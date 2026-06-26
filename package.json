@@ -9,7 +9,10 @@
     "dev:api": "node server/index.mjs",
     "build": "tsc -b && vite build",
     "start:api": "node server/index.mjs",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "tauri": "tauri",
+    "mac:dev": "tauri dev",
+    "mac:build": "tauri build"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
@@ -23,6 +26,7 @@
     "vite": "^7.0.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.3",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6"
   }
