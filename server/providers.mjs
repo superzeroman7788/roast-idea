@@ -429,6 +429,21 @@ export async function runDiscussionRound(
   return results;
 }
 
+// 单脑带纠偏重答(陪练):同一个脑(掉线则 host 兜底)读上下文 + 用户纠偏 → 重出这一条。返回新正文,失败抛。
+export async function reanswerTurn({ mode, brief, evidence, transcript, speaker, role, correctionNote, byoKeys }) {
+  const seats = assignDiscussionSeats(byoKeys);
+  const seat = seats.find((s) => s.label === speaker) || seats.find((s) => s.role === "host") || seats[0];
+  if (!seat) throw new Error("no configured provider");
+  const provider = ALL.find((p) => p.id === seat.id);
+  const apiKey = provider ? resolveKey(provider, byoKeys) : "";
+  if (!provider || !apiKey) throw new Error("provider unavailable");
+  const instruction = `你上一条回答被用户判定跑偏了。\n${correctionNote}\n请重新回答这一条:别再沿原来的方向走,顺着用户的纠正重想,给出更对路的回应。`;
+  const messages = buildTurnPrompt({ mode, provider: seat.label, role: role || seat.role, brief, evidence, transcript, userTurn: instruction });
+  const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true });
+  const parsed = parseTurnJson(rawText);
+  return { body: parsed.body, speaker: seat.label, standInFor: seat.label !== speaker ? speaker : null };
+}
+
 // ============ 产出层(交付物)============
 // 支持文生图的厂商(各家 API 形状不同,均已用真实 key 验证):
 //  openai/agnes → /images/generations(OpenAI 兼容,返 b64 或 url)

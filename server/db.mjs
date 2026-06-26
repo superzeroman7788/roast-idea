@@ -85,6 +85,8 @@ async function migrate() {
     `ALTER TABLE discussions ADD COLUMN clarify TEXT`,
     `ALTER TABLE discussions ADD COLUMN relay TEXT`,
     `ALTER TABLE discussion_turns ADD COLUMN pinned INTEGER DEFAULT 0`,
+    `ALTER TABLE discussion_turns ADD COLUMN corrected INTEGER DEFAULT 0`, // 陪练纠偏:用户判定这条跑偏
+    `ALTER TABLE discussion_turns ADD COLUMN correction TEXT`,             // 纠偏说明(原方向 + 用户纠正),广播给后续
     `ALTER TABLE discussions ADD COLUMN user_id TEXT`, // 用户体系:讨论归属(NULL=历史遗留,启动时迁给站长)
   ]) {
     try { await client.execute(stmt); } catch {}
@@ -232,6 +234,26 @@ export async function listPinnedTurns(discussionId) {
   return rows.map((t) => ({ speaker: t.speaker, role: t.role, body: t.body }));
 }
 
+// 纠偏:把某条 AI 发言标为"用户判定跑偏",correction 存合成后的纠偏说明(原方向 + 用户纠正),供广播+重答
+export async function setTurnCorrected(turnId, corrected, correction) {
+  const row = await get(`SELECT discussion_id FROM discussion_turns WHERE id = ?`, [turnId]);
+  if (!row) return false;
+  await run(`UPDATE discussion_turns SET corrected = ?, correction = ? WHERE id = ?`, [corrected ? 1 : 0, corrected ? (correction || "") : null, turnId]);
+  return true;
+}
+// 取某讨论被纠偏的发言(广播给后续每个脑 + 出方向卡时当"已排除方向")
+export async function listCorrectedTurns(discussionId) {
+  const rows = await all(`SELECT speaker, correction FROM discussion_turns WHERE discussion_id = ? AND corrected = 1 AND correction IS NOT NULL ORDER BY seq ASC`, [discussionId]);
+  return rows.map((t) => ({ speaker: t.speaker, correction: t.correction }));
+}
+// 重答:就地替换某条发言正文(单脑带纠偏重答用)
+export async function updateTurnBody(turnId, body) {
+  const row = await get(`SELECT discussion_id FROM discussion_turns WHERE id = ?`, [turnId]);
+  if (!row) return null;
+  await run(`UPDATE discussion_turns SET body = ? WHERE id = ?`, [body, turnId]);
+  return row.discussion_id;
+}
+
 // userId 传入 → 只取归属该用户的(分租/防越权);不传 → 不限(内部调用)
 export async function getDiscussion(id, userId) {
   const d = userId
@@ -249,7 +271,7 @@ export async function getDiscussion(id, userId) {
     createdAt: d.created_at, updatedAt: d.updated_at,
     turns: turns.map((t) => ({
       id: t.id, seq: t.seq, round: t.round, speaker: t.speaker, role: t.role, body: t.body,
-      citations: JSON.parse(t.citations || "[]"), latencyMs: t.latency_ms, pinned: !!t.pinned, createdAt: t.created_at,
+      citations: JSON.parse(t.citations || "[]"), latencyMs: t.latency_ms, pinned: !!t.pinned, corrected: !!t.corrected, correction: t.correction || null, createdAt: t.created_at,
     })),
     artifacts: await listArtifacts(id),
     viewpoints: await listViewpoints(id),

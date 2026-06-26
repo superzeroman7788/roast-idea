@@ -86,6 +86,9 @@ export type Turn = {
   failed?: boolean;
   error?: string;
   pinned?: boolean; // 用户点赞:这条主脑会重视、出卡优先纳入
+  corrected?: boolean; // 用户纠偏:判定这条跑偏,已带纠正重答 + 广播给全桌
+  correction?: string | null; // 纠偏说明(原方向 + 用户纠正)
+  correctingNow?: boolean; // 仅客户端瞬时:正在带纠正重答(不落库)
 };
 
 export type Phase =

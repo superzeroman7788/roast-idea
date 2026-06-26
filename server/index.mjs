@@ -18,6 +18,7 @@ import {
   synthesizeEvidenceBrief,
   runConverge,
   listPersonas,
+  reanswerTurn,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
 import {
@@ -43,6 +44,9 @@ import {
   saveSignal,
   setTurnPinned,
   listPinnedTurns,
+  setTurnCorrected,
+  listCorrectedTurns,
+  updateTurnBody,
   getRunConfig,
   saveRunConfig,
   upsertUser,
@@ -326,7 +330,7 @@ const server = http.createServer(async (req, res) => {
         }
         const priorTurns = userTurn || attachCtx ? [...d.turns, { speaker: "you", role: "user", body: effUserTurn }] : d.turns;
         const transcript = buildTranscript(priorTurns);
-        const roundBrief = clarify ? d.brief + await pinnedBlock(d.id) : d.brief; // 点赞的点喂主脑优先照顾
+        const roundBrief = clarify ? d.brief + await pinnedBlock(d.id) + await correctionBlock(d.id) : d.brief; // 点赞(优先照顾)+ 纠偏(别再跑偏)都广播给本轮每个脑
         await runDiscussionRound(
           { mode: d.mode, brief: roundBrief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round, fallback },
           (turn) => emitTurn(res, d.id, turn, d.evidencePack),
@@ -415,6 +419,7 @@ const server = http.createServer(async (req, res) => {
         let effBrief = d.brief;
         if (convo) effBrief += `\n\n想清楚阶段的完整对话(理解这个项目的根基,优先于初稿):\n${convo}`;
         effBrief += await pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
+        effBrief += await correctionBlock(d.id); // 用户纠偏的方向 → 方向卡当"已排除方向",不再 building
         if (handoffDoc) effBrief += `\n\n上一站交接来的方案文档(请基于它推进):\n${handoffDoc}`;
         if (posture === "clarify") {
           // 想清楚:单脑收口(Claude → OpenAI 兜底)读整段对话 → 方向卡。不召反方/不裁决。
@@ -492,6 +497,38 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const ok = await setTurnPinned(pinTurn[2], Boolean(body.pinned));
       return json(res, ok ? 200 : 404, { ok, pinned: Boolean(body.pinned) });
+    }
+
+    // 陪练纠偏:某条 AI 发言跑偏 → 记纠偏信号(广播给后续 + 方向卡)+ 让这条脑带纠正立刻重答
+    const correctTurn = url.pathname.match(/^\/api\/discussion\/([^/]+)\/turn\/([^/]+)\/correct$/);
+    if (req.method === "POST" && correctTurn) {
+      const d = await getDiscussion(correctTurn[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const body = await readJson(req);
+      const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
+      const turn = (d.turns || []).find((t) => t.id === correctTurn[2]);
+      if (!turn) return json(res, 404, { ok: false, error: "turn not found" });
+      if (body.corrected === false) { // 取消纠偏
+        await setTurnCorrected(turn.id, false, null);
+        return json(res, 200, { ok: true, corrected: false });
+      }
+      const userFix = String(body.correction || "").trim();
+      // 合成纠偏说明(原方向 + 用户纠正);存下来当稳定信号,后续重答替换正文也不受影响
+      const note = `${turn.speaker} 原来说:「${String(turn.body || "").slice(0, 180)}」 —— ${userFix ? "用户纠正:" + userFix : "用户判定跑偏,请换个方向重想"}`;
+      await setTurnCorrected(turn.id, true, note);
+      // 立刻让这条脑带纠正重答,就地替换正文
+      let newBody = null, reError = null;
+      try {
+        const priorTurns = (d.turns || []).filter((t) => t.seq < turn.seq); // 这条之前的上下文
+        const r = await reanswerTurn({
+          mode: d.mode, brief: d.brief, evidence: d.evidencePack?.items || [],
+          transcript: buildTranscript(priorTurns), speaker: turn.speaker, role: turn.role,
+          correctionNote: note, byoKeys,
+        });
+        newBody = r.body;
+        if (newBody) await updateTurnBody(turn.id, newBody);
+      } catch (e) { reError = String(e?.message || e).slice(0, 200); }
+      return json(res, 200, { ok: true, corrected: true, correction: note, newBody, reanswerError: reError });
     }
 
     // ============ 产出层(交付物)============
@@ -776,6 +813,13 @@ async function pinnedBlock(discussionId) {
   if (!pins.length) return "";
   const lines = pins.map((p, i) => `${i + 1}. ${p.role === "user" || p.speaker === "you" ? "你强调:" : p.speaker + "(被你点赞):"}${String(p.body || "").slice(0, 300)}`);
   return `\n\n⭐ 用户特别重视/点赞的几点(请优先照顾,务必体现在回应与最终方案里):\n${lines.join("\n")}`;
+}
+// 纠偏块:用户判定跑偏的方向(广播给后续每个脑 + 出方向卡当"已排除方向")。点赞块的反面。
+async function correctionBlock(discussionId) {
+  const cs = await listCorrectedTurns(discussionId);
+  if (!cs.length) return "";
+  const lines = cs.map((c, i) => `${i + 1}. ${String(c.correction || "").slice(0, 400)}`);
+  return `\n\n🚫 用户纠偏(以下方向被用户判定跑偏,后续别再沿此走,按纠正方向调整):\n${lines.join("\n")}`;
 }
 
 // 单条发言:校验引用 → 落库(失败不阻断)→ SSE 推;失败 agent 只推降级、不落库、不伪造。

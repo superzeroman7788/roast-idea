@@ -225,6 +225,8 @@ function App() {
   const [sendMenuFor, setSendMenuFor] = useState<Tab | null>(null); // 左栏「送到」下拉当前展开的文档
   const [dialogueN, setDialogueN] = useState(1); // 陪练对话搭子数(1-3,协同非对抗)
   const [detailId, setDetailId] = useState<string | null>(null); // 陪练:左栏点开某条 → 中央看详情(null=三脑并列列表)
+  const [correctFor, setCorrectFor] = useState<string | null>(null); // 陪练:正在纠偏哪条(turn id,展开输入)
+  const [correctText, setCorrectText] = useState(""); // 纠偏输入框内容
   const [searchDim, setSearchDim] = useState("all"); // 搜索:左栏选中的侦察维度(过滤中间证据流)
   const [councilSel, setCouncilSel] = useState("all"); // 议会:左栏选中的议题(松筛中间署名观点)
   const [produceModel, setProduceModel] = useState<string>(""); // 产出:选中的模型(provider id),空=用默认第一个
@@ -364,7 +366,7 @@ function App() {
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
-    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all"); setLlAtBottom(true); setCardCollapsed({ angles: true, assumptions: true, dont: true });
+    setTab("relay"); setCouncilIntensity("council"); setSendMenuFor(null); pendingHandoff.current = ""; setDetailId(null); setSearchDim("all"); setCorrectFor(null); setCorrectText(""); setArtMenu(null); setProduceModel(""); setCouncilSel("all"); setLlAtBottom(true); setCardCollapsed({ angles: true, assumptions: true, dont: true });
     setRunConfig((rc) => (rc ? { ...rc, posture: "clarify" } : rc));
   }
 
@@ -379,7 +381,7 @@ function App() {
   // 从历史完整恢复一场讨论:发言/信息板/方案/角色全部回填,可继续辩或重新导出
   async function loadDiscussion(id: string) {
     token.current++;
-    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setArtMenu(null); setProduceModel(""); setCouncilSel("all"); setLlAtBottom(true); setCardCollapsed({ angles: true, assumptions: true, dont: true });
+    stopTimer(); setBusy(false); setDeliberating(false); setProducing(false); setReconActive(false); setRunError(""); setUserInput(""); setAttachments([]); setExcludedIds(new Set()); setDetailId(null); setSearchDim("all"); setCorrectFor(null); setCorrectText(""); setArtMenu(null); setProduceModel(""); setCouncilSel("all"); setLlAtBottom(true); setCardCollapsed({ angles: true, assumptions: true, dont: true });
     try {
       const r = await fetch(`/api/discussion/${id}`);
       const d = await r.json();
@@ -636,6 +638,22 @@ function App() {
     const next = !t.pinned;
     setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, pinned: next } : x)));
     try { await fetch(`/api/discussion/${discussion.id}/turn/${t.id}/pin`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned: next }) }); } catch {}
+  }
+  // 纠偏:判定某条跑偏 → 记信号(广播给全桌后续 + 方向卡)+ 这条脑带纠正立刻重答替换。再点取消纠偏。
+  async function correctTurn(t: Turn, correction: string) {
+    if (!discussion || !t.id) return;
+    if (t.corrected) { // 取消纠偏
+      setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, corrected: false, correction: null } : x)));
+      setCorrectFor(null); setCorrectText("");
+      try { await fetch(`/api/discussion/${discussion.id}/turn/${t.id}/correct`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ corrected: false }) }); } catch {}
+      return;
+    }
+    setCorrectFor(null); setCorrectText("");
+    setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, corrected: true, correctingNow: true } as Turn & { correctingNow?: boolean } : x)));
+    try {
+      const r = await fetch(`/api/discussion/${discussion.id}/turn/${t.id}/correct`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correction }) }).then((x) => x.json());
+      setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, corrected: true, correction: r.correction || x.correction, body: r.newBody || x.body, correctingNow: false } as Turn : x)));
+    } catch { setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, correctingNow: false } as Turn : x))); }
   }
   // 发送一句(drafting 时首句即点子,建讨论后再对话)
   async function sendClarify(text: string) {
@@ -1455,13 +1473,17 @@ function App() {
 
   const LaneCard = ({ turn }: { turn: Turn }) => {
     const k = agentKey(turn.speaker); const a = AG[k]; const active = !!turn.pinned;
+    const corrected = !!turn.corrected; const correcting = !!turn.correctingNow; const editing = correctFor === turn.id;
+    const border = corrected ? "rgba(255,93,110,.4)" : active ? "rgba(232,154,42,.4)" : "var(--line)";
+    const bg = corrected ? "rgba(255,93,110,.04)" : active ? "rgba(232,151,92,.045)" : "rgba(255,255,255,.018)";
     return (
-      <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", border: "1px solid " + (active ? "rgba(232,154,42,.4)" : "var(--line)"), borderTop: "2px solid " + a.c, borderRadius: 10, background: active ? "rgba(232,151,92,.045)" : "rgba(255,255,255,.018)", overflow: "hidden" }}>
+      <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", border: "1px solid " + border, borderTop: "2px solid " + a.c, borderRadius: 10, background: bg, overflow: "hidden" }}>
         <div style={{ padding: "10px 13px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span className="agent-pill" style={{ color: a.c }}><span className="d" style={{ background: a.c }} />{turn.speaker || a.n}</span>
             {active && <span className="mono" style={{ fontSize: 9, color: "#F2BF52", border: "1px solid rgba(232,154,42,.5)", borderRadius: 5, padding: "2px 6px" }}>主脑方案</span>}
-            <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: turn.failed ? "var(--red)" : "var(--green)" }}>{turn.failed ? "未响应" : "已完成"}</span>
+            {corrected && <span className="mono" title="你判定这条跑偏 —— 已带纠正重答 + 广播给全桌后续" style={{ fontSize: 9, color: "var(--red)", border: "1px solid rgba(255,93,110,.5)", borderRadius: 5, padding: "2px 6px", background: "rgba(255,93,110,.1)" }}>↻ 已纠偏重答</span>}
+            <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: turn.failed ? "var(--red)" : correcting ? "var(--cyan)" : "var(--green)" }}>{turn.failed ? "未响应" : correcting ? "重答中…" : "已完成"}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
             <span className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{AG_ROLE[k] || ROLE_LABEL[turn.role] || turn.role}</span>
@@ -1470,10 +1492,25 @@ function App() {
             )}
           </div>
         </div>
-        <div className="msg-body ll-lane-scroll" style={{ padding: "13px 14px", fontSize: 13.5, lineHeight: 1.6, overflow: "auto", flex: 1 }}>{turn.failed ? `(未响应:${(turn.error || "").slice(0, 60)})` : turn.body}</div>
-        <div style={{ padding: "9px 12px", borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          {turn.id && !turn.failed ? <LikeBtn turn={turn} small /> : <span />}
-          <span className="mono" style={{ fontSize: 9, color: "var(--faint)", textAlign: "right" }}>{active ? "主脑围绕此观点收敛" : "觉得对就点赞"}</span>
+        <div className="msg-body ll-lane-scroll" style={{ padding: "13px 14px", fontSize: 13.5, lineHeight: 1.6, overflow: "auto", flex: 1, opacity: correcting ? 0.6 : 1 }}>{turn.failed ? `(未响应:${(turn.error || "").slice(0, 60)})` : correcting ? <span style={{ color: "var(--cyan)" }}><span className="blink" /> 带你的纠正重答中…</span> : turn.body}</div>
+        {corrected && turn.correction && !correcting && <div className="mono" style={{ padding: "0 14px 9px", fontSize: 10, color: "#ff8a93", lineHeight: 1.5 }}>🚫 {turn.correction}</div>}
+        <div style={{ padding: "9px 12px", borderTop: "1px solid var(--line)" }}>
+          {editing ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <input className="yc-reply" value={correctText} autoFocus placeholder="这条哪儿不对?(可留空,直接否掉)" onChange={(e) => setCorrectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") correctTurn(turn, correctText.trim()); if (e.key === "Escape") { setCorrectFor(null); setCorrectText(""); } }} />
+              <div style={{ display: "flex", gap: 7 }}>
+                <button className="mbtn" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => correctTurn(turn, correctText.trim())}>纠偏 · 重答这条 + 告诉全桌</button>
+                <button className="ghost-chip" onClick={() => { setCorrectFor(null); setCorrectText(""); }}>取消</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              {turn.id && !turn.failed ? <LikeBtn turn={turn} small /> : <span />}
+              {turn.id && !turn.failed && (corrected
+                ? <span className="clk" onClick={() => correctTurn(turn, "")} title="撤销纠偏" style={{ fontSize: 9.5, color: "var(--red)" }}>✓ 已纠偏 · 撤销</span>
+                : <span className="clk" onClick={() => { setCorrectFor(turn.id!); setCorrectText(""); }} title="判定这条跑偏 → 带你的纠正重答这条 + 把信号广播给全桌后续" style={{ fontSize: 9.5, color: "var(--faint)" }}>✕ 纠偏</span>)}
+            </div>
+          )}
         </div>
       </div>
     );
