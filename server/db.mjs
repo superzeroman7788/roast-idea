@@ -70,6 +70,13 @@ async function migrate() {
     CREATE TABLE IF NOT EXISTS run_configs (
       mode TEXT PRIMARY KEY, config TEXT NOT NULL, updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT, created_at TEXT NOT NULL, last_login TEXT
+    );
+    CREATE TABLE IF NOT EXISTS magic_tokens (
+      token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    );
   `);
   // 幂等迁移:给已存在的表补新列(列已存在则吞掉)
   for (const stmt of [
@@ -78,9 +85,43 @@ async function migrate() {
     `ALTER TABLE discussions ADD COLUMN clarify TEXT`,
     `ALTER TABLE discussions ADD COLUMN relay TEXT`,
     `ALTER TABLE discussion_turns ADD COLUMN pinned INTEGER DEFAULT 0`,
+    `ALTER TABLE discussions ADD COLUMN user_id TEXT`, // 用户体系:讨论归属(NULL=历史遗留,启动时迁给站长)
   ]) {
     try { await client.execute(stmt); } catch {}
   }
+}
+
+// ---- 用户体系(邮箱魔法链接 + 邀请制)----
+// 邮箱登录即建/取用户;魔法 token 只存哈希(明文随邮件发出,DB 不留)。
+export async function upsertUser(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return null;
+  const now = new Date().toISOString();
+  const existing = await get(`SELECT id, email FROM users WHERE email = ?`, [e]);
+  if (existing) { await run(`UPDATE users SET last_login = ? WHERE id = ?`, [now, existing.id]); return { id: existing.id, email: existing.email }; }
+  const id = randomUUID();
+  await run(`INSERT INTO users (id, email, created_at, last_login) VALUES (?, ?, ?, ?)`, [id, e, now, now]);
+  return { id, email: e };
+}
+export async function getUserById(id) {
+  const u = await get(`SELECT id, email FROM users WHERE id = ?`, [id]);
+  return u ? { id: u.id, email: u.email } : null;
+}
+export async function createMagicToken(email, tokenHash, expiresAtIso) {
+  await run(`INSERT INTO magic_tokens (token_hash, email, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)`,
+    [tokenHash, String(email).trim().toLowerCase(), expiresAtIso, new Date().toISOString()]);
+}
+// 消费一次性 token:存在 + 未用 + 未过期 → 标记已用 + 返回 email;否则 null
+export async function consumeMagicToken(tokenHash) {
+  const row = await get(`SELECT token_hash, email, expires_at, used FROM magic_tokens WHERE token_hash = ?`, [tokenHash]);
+  if (!row || row.used || new Date(row.expires_at).getTime() < Date.now()) return null;
+  await run(`UPDATE magic_tokens SET used = 1 WHERE token_hash = ?`, [tokenHash]);
+  return row.email;
+}
+// 启动迁移:把无主(历史遗留)讨论一次性归给站长账号
+export async function assignOrphanDiscussions(userId) {
+  const r = await run(`UPDATE discussions SET user_id = ? WHERE user_id IS NULL`, [userId]);
+  return r?.rowsAffected ?? 0;
 }
 
 // 查询封装(libSQL 异步)
@@ -139,13 +180,13 @@ export async function setCachedPack(query, pack, nowIso) {
 }
 
 // ---- 讨论式陪练 ----
-export async function createDiscussion({ mode, title, brief, evidencePack, roles }) {
+export async function createDiscussion({ mode, title, brief, evidencePack, roles, userId }) {
   const id = randomUUID();
   const now = new Date().toISOString();
   await run(
-    `INSERT INTO discussions (id, mode, title, brief, status, conclusion, evidence_pack, roles, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?)`,
-    [id, mode, title, persistBrief() ? brief : null, evidencePack ? JSON.stringify(evidencePack) : null, roles ? JSON.stringify(roles) : null, now, now],
+    `INSERT INTO discussions (id, mode, title, brief, status, conclusion, evidence_pack, roles, user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?, ?)`,
+    [id, mode, title, persistBrief() ? brief : null, evidencePack ? JSON.stringify(evidencePack) : null, roles ? JSON.stringify(roles) : null, userId || null, now, now],
   );
   return id;
 }
@@ -191,12 +232,15 @@ export async function listPinnedTurns(discussionId) {
   return rows.map((t) => ({ speaker: t.speaker, role: t.role, body: t.body }));
 }
 
-export async function getDiscussion(id) {
-  const d = await get(`SELECT * FROM discussions WHERE id = ?`, [id]);
+// userId 传入 → 只取归属该用户的(分租/防越权);不传 → 不限(内部调用)
+export async function getDiscussion(id, userId) {
+  const d = userId
+    ? await get(`SELECT * FROM discussions WHERE id = ? AND user_id = ?`, [id, userId])
+    : await get(`SELECT * FROM discussions WHERE id = ?`, [id]);
   if (!d) return null;
   const turns = await all(`SELECT * FROM discussion_turns WHERE discussion_id = ? ORDER BY seq ASC`, [id]);
   return {
-    id: d.id, mode: d.mode, title: d.title, brief: d.brief, status: d.status, conclusion: d.conclusion,
+    id: d.id, userId: d.user_id, mode: d.mode, title: d.title, brief: d.brief, status: d.status, conclusion: d.conclusion,
     converged: d.converged ? JSON.parse(d.converged) : null,
     clarify: d.clarify ? JSON.parse(d.clarify) : null,
     relay: d.relay ? JSON.parse(d.relay) : null,
@@ -226,10 +270,14 @@ export async function finalizeDiscussion(id, conclusion, converged) {
     [conclusion, converged ? JSON.stringify(converged) : null, now, id]);
   return now;
 }
-export async function listDiscussions(limit = 100) {
-  return all(`SELECT id, mode, title, status, created_at, updated_at FROM discussions ORDER BY updated_at DESC LIMIT ?`, [limit]);
+// userId 传入 → 只列该用户的历史(分租);不传 → 全部(内部/迁移)
+export async function listDiscussions(userId, limit = 100) {
+  return userId
+    ? all(`SELECT id, mode, title, status, created_at, updated_at FROM discussions WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?`, [userId, limit])
+    : all(`SELECT id, mode, title, status, created_at, updated_at FROM discussions ORDER BY updated_at DESC LIMIT ?`, [limit]);
 }
-export async function deleteDiscussion(id) {
+export async function deleteDiscussion(id, userId) {
+  if (userId) { const owned = await get(`SELECT 1 FROM discussions WHERE id = ? AND user_id = ?`, [id, userId]); if (!owned) return false; }
   await run(`DELETE FROM discussion_turns WHERE discussion_id = ?`, [id]);
   await run(`DELETE FROM artifacts WHERE discussion_id = ?`, [id]);
   await run(`DELETE FROM viewpoints WHERE discussion_id = ?`, [id]);

@@ -1372,6 +1372,7 @@ function App() {
   };
 
   // ============ 陪练 redesign:顶部步骤条 + 时间线 / 三脑并列 / 方向卡 ============
+  function logout() { fetch("/api/auth/logout", { method: "POST" }).catch(() => {}).finally(() => location.reload()); }
   const topChrome = () => (
     <>
       <div className="topbar">
@@ -1393,6 +1394,7 @@ function App() {
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           <span className="ghost-chip" onClick={() => setShowSeatConfig(true)}>席位 · {runConfig ? 3 + runConfig.seats.length : maxSeats}</span>
           <span className="ghost-chip" onClick={() => { setShowHistory(true); refreshHistory(); }}>历史 · {history.length}</span>
+          <span className="ghost-chip" title="登出" onClick={logout}>登出</span>
           <span className="ws">WORKSPACE · 一条点子 · 四站流转</span>
         </div>
       </div>
@@ -2532,25 +2534,23 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   }
 }
 
-// 门控:先启动页/密码门,解锁后进陪练台。session 内记住解锁态。
+// 门控:邮箱魔法链接登录(/api/me 判会话)。点链接 → 后端发 cookie + 302 回 /?welcome=1 → 这里判已登录进台。
 function Root() {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("roast_auth") === "1");
-  const [authRequired, setAuthRequired] = useState<boolean | null>(null);
+  const [me, setMe] = useState<{ email: string } | null | "loading">("loading");
   useEffect(() => {
-    fetch("/api/status")
+    fetch("/api/me")
       .then((r) => r.json())
-      .then((d) => setAuthRequired(Boolean(d.authRequired)))
-      .catch(() => setAuthRequired(false));
+      .then((d) => {
+        setMe(d.user || null);
+        if (d.user && new URLSearchParams(location.search).get("welcome") === "1") {
+          speakWelcome();
+          history.replaceState(null, "", location.pathname); // 清掉 ?welcome,避免刷新重播
+        }
+      })
+      .catch(() => setMe(null));
   }, []);
-  if (authRequired === null) return <div className="boot" />;
-  if (!authed) {
-    return (
-      <Landing
-        authRequired={authRequired}
-        onUnlock={() => { sessionStorage.setItem("roast_auth", "1"); speakWelcome(); setAuthed(true); }}
-      />
-    );
-  }
+  if (me === "loading") return <div className="boot" />;
+  if (!me) return <Landing />;
   return <App />;
 }
 

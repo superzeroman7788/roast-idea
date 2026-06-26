@@ -1,31 +1,25 @@
 import React, { useState } from "react";
 
-// 启动页:全屏嵌入原版 JARVIS 发布动画(public/launch/,作者原文件,100% 复刻),
-// 密码门浮在底部。动画自动播放 + 23s 循环、无预览控件。
-export function Landing({
-  authRequired,
-  onUnlock,
-}: {
-  authRequired: boolean;
-  onUnlock: () => void;
-}) {
-  const [pw, setPw] = useState("");
+// 启动页:全屏嵌入 JARVIS 发布动画(public/launch/)+ 邮箱魔法链接登录门(邀请制,无密码)。
+export function Landing() {
+  const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState<null | "email" | "log">(null);
   const [err, setErr] = useState("");
 
-  async function enter() {
+  async function send() {
+    const e = email.trim();
     if (busy) return;
-    setBusy(true);
-    setErr("");
+    if (!e.includes("@")) { setErr("请填写有效邮箱"); return; }
+    setBusy(true); setErr("");
     try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pw }),
+      const res = await fetch("/api/auth/request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: e }),
       });
       const d = await res.json();
-      if (d.ok) onUnlock();
-      else setErr("密码不对,问发给你链接的人");
+      if (d.ok) setSent(d.via === "email" ? "email" : "log");
+      else setErr(d.error || "发起失败,稍后再试");
     } catch {
       setErr("网络错误,稍后再试");
     } finally {
@@ -33,21 +27,28 @@ export function Landing({
     }
   }
 
+  const expired = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("auth") === "expired";
+
   return (
     <div className="landing">
       <iframe className="land-video" src="/launch/launch.html" title="ROAST · 点子陪练" tabIndex={-1} />
       <div className="land-overlay">
-        {authRequired ? (
-          <div className="land-gate">
-            <input type="password" value={pw} placeholder="访问密码" autoFocus
-              onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") enter(); }} />
-            <button onClick={enter} disabled={busy || !pw}>{busy ? "…" : "进入 →"}</button>
+        {sent ? (
+          <div className="land-sent">
+            {sent === "email"
+              ? <>登录链接已发到 <b>{email}</b> —— 查收邮箱,点链接进入。</>
+              : <>已为 <b>{email}</b> 生成登录链接(邀请制)—— 找站长要你的专属链接即可进入。</>}
+            <button className="land-resend" onClick={() => { setSent(null); setEmail(""); }}>换个邮箱</button>
           </div>
         ) : (
-          <button className="land-enter" onClick={onUnlock}>进入 →</button>
+          <div className="land-gate">
+            <input type="email" value={email} placeholder="你的邮箱(受邀)" autoFocus inputMode="email" autoComplete="email"
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
+            <button onClick={send} disabled={busy || !email.trim()}>{busy ? "…" : "发送登录链接 →"}</button>
+          </div>
         )}
-        {err && <div className="land-err">{err}</div>}
+        {(err || expired) && <div className="land-err">{err || "链接已过期,重新获取一个"}</div>}
       </div>
     </div>
   );

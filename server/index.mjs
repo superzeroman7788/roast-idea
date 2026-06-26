@@ -1,7 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { loadEnv } from "./env.mjs";
 import {
   getProviderStatus,
@@ -45,6 +45,10 @@ import {
   listPinnedTurns,
   getRunConfig,
   saveRunConfig,
+  upsertUser,
+  createMagicToken,
+  consumeMagicToken,
+  assignOrphanDiscussions,
 } from "./db.mjs";
 
 loadEnv();
@@ -55,6 +59,53 @@ const port = Number(process.env.PORT || process.env.ROAST_API_PORT || 8787);
 const DATA_DIR = process.env.ROAST_DATA_DIR || path.join(process.cwd(), "data");
 // 生产:vite build 静态产物目录(单进程托管前端)
 const STATIC_DIR = process.env.ROAST_STATIC_DIR || path.join(process.cwd(), "dist");
+
+// ============ 用户体系:邮箱魔法链接 + 邀请制(无密码,httpOnly 签名会话)============
+const SESSION_SECRET = process.env.ROAST_JWT_SECRET || process.env.ROAST_ACCESS_PASSWORD || "roast-dev-secret-change-me";
+const OWNER_EMAIL = (process.env.ROAST_OWNER_EMAIL || "ln5423696@gmail.com").trim().toLowerCase();
+const SESSION_DAYS = 30;
+// 极简签名会话(零依赖):base64url(payload).hmac;payload = {id,email,exp}
+function signSession(user) {
+  const payload = Buffer.from(JSON.stringify({ id: user.id, email: user.email, exp: Date.now() + SESSION_DAYS * 864e5 })).toString("base64url");
+  const sig = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+function verifySession(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [payload, sig] = token.split(".");
+  const expect = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  try { if (!sig || sig.length !== expect.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null; } catch { return null; }
+  try { const p = JSON.parse(Buffer.from(payload, "base64url").toString()); return (p.exp && p.exp > Date.now()) ? p : null; } catch { return null; }
+}
+function parseCookies(req) {
+  const out = {}; for (const part of (req.headers.cookie || "").split(";")) { const i = part.indexOf("="); if (i < 0) continue; out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } return out;
+}
+const userFromReq = (req) => verifySession(parseCookies(req)["roast_session"]);
+function setSessionCookie(res, token) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `roast_session=${token}; HttpOnly; Path=/; Max-Age=${SESSION_DAYS * 86400}; SameSite=Lax${secure}`);
+}
+const clearSessionCookie = (res) => res.setHeader("Set-Cookie", `roast_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
+// 邀请白名单:站长 + ROAST_ALLOWED_EMAILS(逗号分隔)
+function isInvited(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || !e.includes("@")) return false;
+  if (e === OWNER_EMAIL) return true;
+  return (process.env.ROAST_ALLOWED_EMAILS || "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean).includes(e);
+}
+const tokenHashOf = (t) => createHash("sha256").update(t).digest("hex");
+// 发魔法链接:配了 RESEND_API_KEY 就发真邮件;否则打到日志(站长手动转发,邀请制够用)
+async function sendMagicLink(email, link) {
+  if (!process.env.RESEND_API_KEY) { console.log(`\n[roast-auth] 🔑 魔法登录链接(发给 ${email}):\n${link}\n`); return "log"; }
+  try {
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST", headers: { authorization: `Bearer ${process.env.RESEND_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ from: process.env.ROAST_MAIL_FROM || "ROAST <onboarding@resend.dev>", to: email, subject: "登录 ROAST · 点子陪练", html: `<p>点击登录(15 分钟内有效):</p><p><a href="${link}">${link}</a></p>` }),
+    });
+    if (!r.ok) { console.error("[roast-auth] resend failed:", r.status, await r.text().catch(() => "")); console.log(`[roast-auth] 链接回退日志: ${link}`); return "log"; }
+    return "email";
+  } catch (e) { console.error("[roast-auth] resend error:", e?.message || e); console.log(`[roast-auth] 链接回退日志: ${link}`); return "log"; }
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -70,14 +121,46 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // 内部分发软门:校验访问密码(ROAST_ACCESS_PASSWORD,不进前端包/不进 git)。
-    // 未设密码 → 门默认开。密码错误不透露任何细节。
-    if (req.method === "POST" && url.pathname === "/api/auth") {
+    // ============ 用户体系端点(公开,不需登录态)============
+    // 请求魔法链接:邮箱在邀请名单 → 发一次性登录链接(15min 有效)
+    if (req.method === "POST" && url.pathname === "/api/auth/request") {
       const body = await readJson(req);
-      const required = process.env.ROAST_ACCESS_PASSWORD;
-      if (!required) return json(res, 200, { ok: true, open: true });
-      const ok = typeof body.password === "string" && body.password === required;
-      return json(res, ok ? 200 : 401, { ok });
+      const email = String(body.email || "").trim().toLowerCase();
+      if (!email.includes("@")) return json(res, 400, { ok: false, error: "请填写有效邮箱" });
+      if (!isInvited(email)) return json(res, 200, { ok: true, via: "log" }); // 不透露是否在名单(防探测);名单内才真发
+      const token = randomBytes(32).toString("base64url");
+      try { await createMagicToken(email, tokenHashOf(token), new Date(Date.now() + 15 * 60 * 1000).toISOString()); }
+      catch (e) { return json(res, 500, { ok: false, error: "发起失败" }); }
+      const base = (process.env.ROAST_PUBLIC_URL || `http://${req.headers.host}`).replace(/\/$/, "");
+      const via = await sendMagicLink(email, `${base}/api/auth/verify?token=${token}`);
+      return json(res, 200, { ok: true, via }); // via: "email" | "log"
+    }
+    // 校验魔法链接 → 建/取用户 → 下发会话 cookie → 302 跳回 App
+    if (req.method === "GET" && url.pathname === "/api/auth/verify") {
+      const token = url.searchParams.get("token") || "";
+      const email = token ? await consumeMagicToken(tokenHashOf(token)) : null;
+      if (!email) { res.writeHead(302, { location: "/?auth=expired" }); return res.end(); }
+      const user = await upsertUser(email);
+      setSessionCookie(res, signSession(user));
+      const dest = (process.env.ROAST_PUBLIC_URL || "").replace(/\/$/, "");
+      res.writeHead(302, { location: `${dest}/?welcome=1` }); // ?welcome=1 → 前端登录后播一次 JARVIS 欢迎
+      return res.end();
+    }
+    // 当前登录态(前端启动判断)
+    if (req.method === "GET" && url.pathname === "/api/me") {
+      const u = userFromReq(req);
+      return json(res, 200, { ok: true, user: u ? { email: u.email } : null });
+    }
+    if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+      clearSessionCookie(res);
+      return json(res, 200, { ok: true });
+    }
+
+    // ============ 鉴权门:除上面公开端点(status/auth/me),所有 /api/* 都需登录 ============
+    if (url.pathname.startsWith("/api/")) {
+      const u = userFromReq(req);
+      if (!u) return json(res, 401, { ok: false, error: "需要登录" });
+      req.userId = u.id; req.userEmail = u.email;
     }
 
     // ============ 讨论式陪练(讨论重构)============
@@ -124,7 +207,7 @@ const server = http.createServer(async (req, res) => {
         const fullBrief = brief + attachCtx;
 
         const title = brief.split("\n")[0].slice(0, 60);
-        const discussionId = await createDiscussion({ mode, title, brief: fullBrief, evidencePack: pack, roles: seats });
+        const discussionId = await createDiscussion({ mode, title, brief: fullBrief, evidencePack: pack, roles: seats, userId: req.userId });
         sseSend(res, "discussion", { id: discussionId, mode, title, seats });
 
         // skipOpening:议会主屏(白箱审议为主)只建讨论+board,开场轮由前端接着调 /deliberate
@@ -150,7 +233,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && retrieve) {
       const did = retrieve[1];
       const body = await readJson(req);
-      const existing = await getDiscussion(did);
+      const existing = await getDiscussion(did, req.userId);
       if (!existing) return json(res, 404, { ok: false, error: "discussion not found" });
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
       const brief = String(body.brief || existing.brief || existing.title || "").trim();
@@ -174,27 +257,27 @@ const server = http.createServer(async (req, res) => {
 
     // 历史列表:过往讨论(标题/模式/状态/时间),供前端「历史」面板浏览
     if (req.method === "GET" && url.pathname === "/api/discussions") {
-      return json(res, 200, { ok: true, discussions: await listDiscussions(100) });
+      return json(res, 200, { ok: true, discussions: await listDiscussions(req.userId, 100) });
     }
 
     // 恢复会话
     const detail = url.pathname.match(/^\/api\/discussion\/([^/]+)$/);
     if (req.method === "GET" && detail) {
-      const d = await getDiscussion(detail[1]);
+      const d = await getDiscussion(detail[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       return json(res, 200, { ok: true, discussion: d });
     }
 
     // 删除一场讨论(本地数据,用户主动清理)
     if (req.method === "DELETE" && detail) {
-      const ok = await deleteDiscussion(detail[1]);
+      const ok = await deleteDiscussion(detail[1], req.userId);
       return json(res, ok ? 200 : 404, { ok });
     }
 
     // 用户插话(userTurn 为空 = "再辩一轮")→ 跑一轮 agent 回应
     const respond = url.pathname.match(/^\/api\/discussion\/([^/]+)\/respond$/);
     if (req.method === "POST" && respond) {
-      const d = await getDiscussion(respond[1]);
+      const d = await getDiscussion(respond[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       if (d.status === "finalized") return json(res, 400, { ok: false, error: "discussion finalized" });
       const body = await readJson(req);
@@ -247,7 +330,7 @@ const server = http.createServer(async (req, res) => {
     // 收敛:synthesizer 出方案
     const finalize = url.pathname.match(/^\/api\/discussion\/([^/]+)\/finalize$/);
     if (req.method === "POST" && finalize) {
-      const d = await getDiscussion(finalize[1]);
+      const d = await getDiscussion(finalize[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -274,7 +357,7 @@ const server = http.createServer(async (req, res) => {
     // 人-steered 收敛(D):只吃人策展集合,反共识硬规则,输出重定义。落 conclusion(派生 md)+ converged。
     const converge = url.pathname.match(/^\/api\/discussion\/([^/]+)\/converge$/);
     if (req.method === "POST" && converge) {
-      const d = await getDiscussion(converge[1]);
+      const d = await getDiscussion(converge[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -299,7 +382,7 @@ const server = http.createServer(async (req, res) => {
     // ============ 审议引擎(白箱):结构化观点 + 审议综述 ============
     const deliberate = url.pathname.match(/^\/api\/discussion\/([^/]+)\/deliberate$/);
     if (req.method === "POST" && deliberate) {
-      const d = await getDiscussion(deliberate[1]);
+      const d = await getDiscussion(deliberate[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -376,7 +459,7 @@ const server = http.createServer(async (req, res) => {
     // 人策展:对一条观点 认领/搁置/钉死/反驳(append-only 落库 = 偏好数据)
     const signal = url.pathname.match(/^\/api\/discussion\/([^/]+)\/signal$/);
     if (req.method === "POST" && signal) {
-      const d = await getDiscussion(signal[1]);
+      const d = await getDiscussion(signal[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const viewpointId = String(body.viewpointId || "");
@@ -392,7 +475,7 @@ const server = http.createServer(async (req, res) => {
     // 对话点赞:标记/取消某条发言为"用户重视"(主脑回应 + 出卡都会优先照顾)
     const pinTurn = url.pathname.match(/^\/api\/discussion\/([^/]+)\/turn\/([^/]+)\/pin$/);
     if (req.method === "POST" && pinTurn) {
-      const d = await getDiscussion(pinTurn[1]);
+      const d = await getDiscussion(pinTurn[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const ok = await setTurnPinned(pinTurn[2], Boolean(body.pinned));
@@ -425,7 +508,7 @@ const server = http.createServer(async (req, res) => {
     // 产出一版交付物(SSE):draft / refine(fromArtifactId) / image
     const produce = url.pathname.match(/^\/api\/discussion\/([^/]+)\/produce$/);
     if (req.method === "POST" && produce) {
-      const d = await getDiscussion(produce[1]);
+      const d = await getDiscussion(produce[1], req.userId);
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
@@ -559,7 +642,17 @@ server.listen(port, () => {
   );
   // 启动即预热数据库:把 libSQL/Turso 的连接 + migrate(远程往返)挪到进程启动期,
   // 而不是压在冷启动后第一个用户请求上(否则首次点击会多等这部分)。
-  getDb().then(() => console.log("[roast-api] db ready (warmed)")).catch((e) => console.error("[roast-api] db warmup failed:", e?.message || e));
+  getDb()
+    .then(async () => {
+      console.log("[roast-api] db ready (warmed)");
+      // 用户体系启动迁移:确保站长账号存在,把历史遗留(无主)讨论一次性归给站长
+      try {
+        const owner = await upsertUser(OWNER_EMAIL);
+        const n = await assignOrphanDiscussions(owner.id);
+        if (n > 0) console.log(`[roast-api] 迁移 ${n} 条历史讨论给站长(${OWNER_EMAIL})`);
+      } catch (e) { console.error("[roast-api] owner bootstrap failed:", e?.message || e); }
+    })
+    .catch((e) => console.error("[roast-api] db warmup failed:", e?.message || e));
 });
 
 async function safeCount() {
