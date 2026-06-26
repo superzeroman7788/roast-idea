@@ -494,8 +494,21 @@ function App() {
     if (m) s = m[1].trim();
     return s;
   }
-  function downloadHtml(a: Artifact) {
-    const blob = new Blob([htmlOf(a.content)], { type: "text/html;charset=utf-8" });
+  // 下载前把 /api/proto-asset 生成图抓成 base64 内联,让下载的 .html 离线也能看(file:// 无法解析根相对 URL)
+  async function inlineProtoAssets(html: string): Promise<string> {
+    const urls = Array.from(new Set(html.match(/\/api\/proto-asset\/[^\s"')]+\.png/g) || []));
+    for (const u of urls) {
+      try {
+        const blob = await fetch(u, { credentials: "include" }).then((r) => (r.ok ? r.blob() : Promise.reject(new Error("404"))));
+        const dataUri = await new Promise<string>((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(String(fr.result)); fr.onerror = reject; fr.readAsDataURL(blob); });
+        html = html.split(u).join(dataUri);
+      } catch { /* 抓不到就留 URL —— 联网打开仍可见 */ }
+    }
+    return html;
+  }
+  async function downloadHtml(a: Artifact) {
+    const html = await inlineProtoAssets(htmlOf(a.content));
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const l = document.createElement("a"); l.href = url; l.download = `roast-原型-${(a.id || "p").slice(0, 8)}.html`;
     document.body.appendChild(l); l.click(); l.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);

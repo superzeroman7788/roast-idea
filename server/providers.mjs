@@ -494,10 +494,11 @@ async function urlToB64(url) {
 }
 
 // OpenAI 兼容(openai / agnes):/images/generations
-async function genOpenAIImages(provider, apiKey, prompt, cfg) {
+async function genOpenAIImages(provider, apiKey, prompt, cfg, opts = {}) {
   const model = process.env[cfg.modelEnv] || cfg.defaultModel;
   const body = { model, prompt, n: 1, size: "1024x1024" };
   if (/dall-e/i.test(model)) body.response_format = "b64_json"; // gpt-image-1 默认即 b64 且不接受该参数
+  else if (opts.quality) body.quality = opts.quality; // gpt-image-1:low/medium/high 控大小/成本(原型内嵌用 medium)
   const res = await fetch(`${provider.baseURL}/images/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -558,17 +559,44 @@ async function genOpenRouterImage(provider, apiKey, prompt, cfg) {
 }
 
 // 文生图统一入口:按厂商分发,均返回 base64。
-async function generateImage(provider, apiKey, prompt) {
+async function generateImage(provider, apiKey, prompt, opts = {}) {
   const cfg = IMAGE_CONFIG[provider.id];
   if (!cfg) throw new Error(`${provider.label} 暂不支持生图`);
   if (cfg.mode === "dashscope-wanx") return genQwenWanx(apiKey, prompt, cfg);
   if (cfg.mode === "openrouter-chat") return genOpenRouterImage(provider, apiKey, prompt, cfg);
-  return genOpenAIImages(provider, apiKey, prompt, cfg);
+  return genOpenAIImages(provider, apiKey, prompt, cfg, opts);
+}
+
+// HTML 原型真生图:模型在原型里标 <img data-gen="英文描述">,这里用生图厂商(gpt-image-1)生成真图填进去。
+// 落地策略:有 saveProtoImage 回调 → 写磁盘文件 + 换成 URL 引用(HTML 体积保持 ~15KB,不拖垮 getDiscussion);
+// 没回调才退回内联 base64。最多 2 张(控成本/时长);失败保留原 src(picsum 兜底),不阻断整张原型。
+async function fillProtoImages(html, byoKeys, saveProtoImage) {
+  const imgProv = ALL.find((p) => IMAGE_PROVIDER_IDS.includes(p.id) && resolveKey(p, byoKeys));
+  if (!imgProv) return html;
+  const imgKey = resolveKey(imgProv, byoKeys);
+  const slots = [];
+  const re = /<img\b[^>]*?\bdata-gen=(["'])([\s\S]*?)\1[^>]*>/gi;
+  let m;
+  while ((m = re.exec(html)) && slots.length < 2) slots.push({ tag: m[0], prompt: m[2] });
+  if (!slots.length) return html;
+  // 串行(gpt-image-1 速率限制严,并行易 429)+ low 质量(原型配图够用,更快更省)
+  for (const s of slots) {
+    try {
+      const b64 = await generateImage(imgProv, imgKey, `${s.prompt}. Clean modern product imagery, no text/watermark.`, { quality: "low" });
+      const src = saveProtoImage ? await saveProtoImage(b64) : `data:image/png;base64,${b64}`;
+      let nt = s.tag.replace(/\sdata-gen=(["'])[\s\S]*?\1/i, "");
+      nt = /\bsrc=(["'])[\s\S]*?\1/i.test(nt)
+        ? nt.replace(/\bsrc=(["'])[\s\S]*?\1/i, `src="${src}"`)
+        : nt.replace(/<img\b/i, `<img src="${src}"`);
+      html = html.split(s.tag).join(nt);
+    } catch (e) { console.error("[proto-img] 生图失败,保留 picsum 兜底:", String(e?.message || e).slice(0, 160)); }
+  }
+  return html;
 }
 
 // 统一产出入口:文字类走 chatRaw(jsonMode 关),图走 generateImage。
 // 返回 { kind:'text', provider, content } 或 { kind:'image', provider, b64 },外加 latencyMs。
-export async function runProduce({ type, mode, brief, conclusion, evidence, sourceContent, instruction, providerId, byoKeys }) {
+export async function runProduce({ type, mode, brief, conclusion, evidence, sourceContent, instruction, providerId, byoKeys, saveProtoImage }) {
   const provider = ALL.find((p) => p.id === providerId);
   if (!provider) throw new Error(`未知 provider: ${providerId}`);
   const apiKey = resolveKey(provider, byoKeys);
@@ -586,7 +614,9 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
   const timeoutMs = type === "html_proto" || type === "code_sketch" ? 90000 : 50000;
   const content = await chatRaw(provider, apiKey, messages, { jsonMode: false, maxTokens, timeoutMs });
   if (!content || !content.trim()) throw new Error(`${provider.label} 返回空内容`);
-  return { kind: "text", provider: provider.label, content: content.trim(), latencyMs: Date.now() - started };
+  // HTML 原型:把模型标的 data-gen 图槽用真生图填充(落磁盘 + URL 引用,见 fillProtoImages)
+  const finalContent = type === "html_proto" ? await fillProtoImages(content.trim(), byoKeys, saveProtoImage) : content.trim();
+  return { kind: "text", provider: provider.label, content: finalContent, latencyMs: Date.now() - started };
 }
 
 // ============ 审议引擎(白箱)============

@@ -175,7 +175,17 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
-    // ============ 鉴权门:除上面公开端点(status/auth/me),所有 /api/* 都需登录 ============
+    // HTML 原型的内嵌生成图:公开读(文件名是随机 UUID,等于能力令牌;且 sandbox iframe 是 opaque origin 不带 cookie,故不能放鉴权门后)
+    const protoAsset = url.pathname.match(/^\/api\/proto-asset\/([0-9a-f-]{36})\/([0-9a-zA-Z._-]+\.png)$/);
+    if (req.method === "GET" && protoAsset) {
+      const fp = path.join(DATA_DIR, "artifacts", protoAsset[1], protoAsset[2]);
+      if (!fp.startsWith(path.join(DATA_DIR, "artifacts")) || !fs.existsSync(fp)) return json(res, 404, { ok: false, error: "not found" });
+      res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=31536000, immutable" });
+      fs.createReadStream(fp).pipe(res);
+      return;
+    }
+
+    // ============ 鉴权门:除上面公开端点(status/auth/me/proto-asset),所有 /api/* 都需登录 ============
     if (url.pathname.startsWith("/api/")) {
       const u = userFromReq(req);
       if (!u) return json(res, 401, { ok: false, error: "需要登录" });
@@ -615,6 +625,14 @@ const server = http.createServer(async (req, res) => {
         // 产出附件:用户在产出站直接附的图片/文档(让产出能当独立功能用 —— 仿参考图、改写素材)
         const attachCtx = await buildAttachmentContext(body.attachments, byoKeys);
         const baseBrief = convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief;
+        // HTML 原型:把模型标的 data-gen 图槽生成真图后,落成磁盘文件并以 URL 引用(不内联 base64 —— 否则 artifact content 几 MB,拖垮 getDiscussion)
+        const saveProtoImage = async (b64) => {
+          const dir = path.join(DATA_DIR, "artifacts", d.id);
+          fs.mkdirSync(dir, { recursive: true });
+          const fname = `proto-${randomUUID()}.png`;
+          fs.writeFileSync(path.join(dir, fname), Buffer.from(b64, "base64"));
+          return `/api/proto-asset/${d.id}/${fname}`;
+        };
         const out = await runProduce({
           type,
           mode,
@@ -625,6 +643,7 @@ const server = http.createServer(async (req, res) => {
           instruction,
           providerId,
           byoKeys,
+          saveProtoImage,
         });
         let saved;
         if (out.kind === "image") {
