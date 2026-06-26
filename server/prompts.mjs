@@ -261,6 +261,56 @@ export const PRODUCE_TYPES = {
   },
 };
 
+// 方案文档:主脑(Claude)把陪练整段讨论 + 方向卡 + 赞/纠偏信号,收口成一份厚的、固定分节的「方案文档」,
+// 当作交给下游(议会/产出)精修的真正方案(比薄方向卡厚得多)。固定分节 Markdown 模板。
+const SOLDOC_SECTIONS = {
+  idea: [
+    "## 一句话定位",
+    "## 问题 & 为什么是现在",
+    "## 目标用户 & 第一场景",
+    "## 核心方案(怎么运作)",
+    "## 关键功能(P0 必须 / P1 其次)",
+    "## MVP 范围(做什么 · 明确先不做)",
+    "## 关键假设 & 怎么验证",
+    "## 风险 & 缓解",
+    "## 里程碑 / 下一步",
+    "## 需你拍板(开放问题)",
+  ],
+  copy: [
+    "## 一句话定位",
+    "## 受众 & 触达场景",
+    "## 要打的核心信息(3 条内)",
+    "## 内容结构 / 主线",
+    "## 分发与钩子",
+    "## 关键假设 & 怎么验证",
+    "## 风险 & 取舍",
+    "## 下一步",
+  ],
+};
+export function buildSolutionDocPrompt({ mode, brief, transcript, card }) {
+  const sections = (SOLDOC_SECTIONS[mode === "copy" ? "copy" : "idea"]).join("\n");
+  return [
+    {
+      role: "system",
+      content: `你是这条点子的主脑(产品 + 技术负责人)。把"陪练"阶段的整段讨论收口成一份可直接交给下游执行的「方案文档」——
+这是真正的方案,不是要点概括,要厚、要有判断、能让没参与讨论的人照着干。
+
+硬要求:
+- **严格、且只用**下面这套固定小节,标题原样、按序;不要加别的顶层小节、不要写前言后记。
+- 每节都要有**务实、有取舍**的实质内容(具体到能执行)。讨论没覆盖到的,就基于已有信息**合理推断并标注"(假设)"**,不要写"视情况而定/有待确认"这种空话。
+- 充分吸收讨论里:用户**点赞 ⭐**的点(优先纳入)、**纠偏 🚫**的方向(已排除,绝不写回)。
+- 纯 Markdown 输出。
+
+固定小节:
+${sections}`,
+    },
+    {
+      role: "user",
+      content: `点子/背景:\n${brief}\n\n${card ? `想清楚阶段的方向卡(要点,供参考):\n${card}\n\n` : ""}陪练完整对话:\n${transcript}`,
+    },
+  ];
+}
+
 export function buildProducePrompt({ type, mode, brief, conclusion, evidence, sourceContent, instruction }) {
   const spec = PRODUCE_TYPES[type] || PRODUCE_TYPES.copy;
   const ctx = [

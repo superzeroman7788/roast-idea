@@ -214,6 +214,8 @@ function App() {
   const [clarify, setClarify] = useState<ClarifyOutput | null>(null); // 想清楚(旧单脑,保留兼容)
   const [relayHops, setRelayHops] = useState<RelayHop[]>([]); // 跨模型接力轨迹
   const [relayCard, setRelayCard] = useState<DirectionCard | null>(null); // 方向卡
+  const [solutionDoc, setSolutionDoc] = useState<string | null>(null); // 方案文档(主脑收口的厚方案,交下游精修)
+  const [makingSolDoc, setMakingSolDoc] = useState(false);
   // 选角配置(§2.1)
   const [showSeatConfig, setShowSeatConfig] = useState(false);
   const [personaLib, setPersonaLib] = useState<{ functional: PersonaInfo[]; opinionated: { idea: PersonaInfo[]; copy: PersonaInfo[] }; providers: { id: string; label: string }[] } | null>(null);
@@ -363,6 +365,7 @@ function App() {
     setPhase("drafting"); setUserInput(""); setRunError(""); setAttachments([]); setExcludedIds(new Set());
     setArtifacts([]); setRefineFor(null); setRefineText(""); setProduceType("copy");
     setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]);
+    setSolutionDoc(null); setMakingSolDoc(false);
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
@@ -396,7 +399,7 @@ function App() {
       setConverged(dis.converged || null);
       setArtifacts(dis.artifacts || []); setRefineFor(null); setRefineText("");
       setViewpoints(dis.viewpoints || []); setDeliberation(dis.deliberation || null); setClarify(dis.clarify || null); setDelibFails([]);
-      setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null);
+      setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null); setSolutionDoc(dis.solutionDoc || null);
       setCuration(deriveCuration(dis.humanSignals || [])); setReplyOpen(null); setReplyText("");
       setPhase(dis.status === "finalized" ? "finalized" : "awaiting-user");
       // 按恢复内容选落点 tab + 清挂起交接/下拉 + 复位议会强度
@@ -439,7 +442,7 @@ function App() {
     // 注意:token 必须在 ensureDiscussion 之后拿 —— ensureDiscussion 内部会 ++token.current,
     // 先拿会让本次 produce 的 SSE 立刻被判为已取消(net::ERR_ABORTED)。
     const t = ++token.current;
-    const ho = pendingHandoff.current; pendingHandoff.current = ""; // 一次性消费,与 relay/council 一致
+    const ho = pendingHandoff.current || solutionDoc || ""; pendingHandoff.current = ""; // 方案文档当持久方案源(没显式交接也用)
     const produceAtts = hadDiscussion ? atts : []; // 刚建的讨论附件已被 /start 消费,别重复发
     try {
       await streamSSE(
@@ -680,6 +683,17 @@ function App() {
     if (!discussion || deliberating || busy) return;
     deliberate("clarify", undefined, discussion.id);
   }
+  // 出方案文档:主脑读整段对话 + 方向卡 + 赞/纠偏 → 厚的固定分节方案文档(交下游精修的真正方案)
+  async function makeSolutionDoc() {
+    if (!discussion || makingSolDoc || deliberating || busy) return;
+    setMakingSolDoc(true); setRunError("");
+    try {
+      const r = await fetch(`/api/discussion/${discussion.id}/solution-doc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }).then((x) => x.json());
+      if (r.ok && r.md) setSolutionDoc(r.md);
+      else setRunError(r.error || "方案文档生成失败");
+    } catch (e) { setRunError((e as Error).message); }
+    finally { setMakingSolDoc(false); }
+  }
 
   // 议会站:温和/拷问审议。clarification=底部补的一句背景(折进 brief)。
   // 重跑议会会清空旧观点 + 你的策展 → 有策展时先确认(避免静默丢失)
@@ -691,7 +705,7 @@ function App() {
     setTab("council"); setSendMenuFor(null);
     setCouncilIntensity(intensity);
     setRunConfig((rc) => (rc ? { ...rc, posture: intensity } : rc));
-    const ho = pendingHandoff.current; pendingHandoff.current = "";
+    const ho = pendingHandoff.current || solutionDoc || ""; pendingHandoff.current = ""; // 没显式交接也用方案文档当源
     const id = await ensureDiscussion();
     if (id) deliberate(intensity, clarification, id, ho || undefined);
   }
@@ -709,7 +723,7 @@ function App() {
   // 每站产出的规范 MD(= 工作台文档 + 交接载荷)
   function docFor(t: Tab): string {
     if (t === "search") return evidenceToMd(pack, excludedIds);
-    if (t === "relay") return cardToMd(relayCard);
+    if (t === "relay") return solutionDoc || cardToMd(relayCard); // 优先送厚的方案文档,没有才退回薄方向卡
     if (t === "council") return converged ? convergedToMd(converged) : "";
     return "";
   }
@@ -1424,7 +1438,7 @@ function App() {
     return (
       <button className="clk" onClick={() => togglePin(turn)} title={active ? "已纳入主脑方案(点击移除)" : "点赞:让主脑重视这条、收进方案"}
         style={{ display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid " + (active ? "rgba(232,154,42,.6)" : "var(--line2)"), background: active ? "rgba(232,154,42,.16)" : "rgba(255,255,255,.02)", color: active ? "#F2BF52" : "var(--muted)", borderRadius: 8, padding: small ? "6px 11px" : "8px 14px", fontFamily: "var(--mono)", fontSize: 11, fontWeight: 700, letterSpacing: ".4px", cursor: "pointer" }}>
-        <span style={{ fontSize: 12 }}>{active ? "✓" : "▲"}</span>{active ? "已纳入主脑方案" : "点赞 · 纳入主脑"}
+        <span style={{ fontSize: 13 }}>👍</span>{active ? "已纳入主脑方案" : "点赞 · 纳入主脑"}
       </button>
     );
   };
@@ -1508,7 +1522,7 @@ function App() {
               {turn.id && !turn.failed ? <LikeBtn turn={turn} small /> : <span />}
               {turn.id && !turn.failed && (corrected
                 ? <span className="clk" onClick={() => correctTurn(turn, "")} title="撤销纠偏" style={{ fontSize: 9.5, color: "var(--red)" }}>✓ 已纠偏 · 撤销</span>
-                : <span className="clk" onClick={() => { setCorrectFor(turn.id!); setCorrectText(""); }} title="判定这条跑偏 → 带你的纠正重答这条 + 把信号广播给全桌后续" style={{ fontSize: 9.5, color: "var(--faint)" }}>✕ 纠偏</span>)}
+                : <span className="clk" onClick={() => { setCorrectFor(turn.id!); setCorrectText(""); }} title="判定这条跑偏 → 带你的纠正重答这条 + 把信号广播给全桌后续" style={{ fontSize: 11, color: "var(--faint)", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 13 }}>👎</span> 纠偏</span>)}
             </div>
           )}
         </div>
@@ -1787,6 +1801,29 @@ function App() {
           )}
           {llDirSec("dont", "–", "#7B8B9C", "暂不做", c?.dontBuildYet)}
         </div>
+        {turns.length > 0 && (
+          <div style={{ flex: "0 0 auto", padding: "12px 15px", borderTop: "1px solid var(--line)", background: solutionDoc ? "rgba(63,221,138,.05)" : "rgba(232,151,92,.05)", display: "flex", flexDirection: "column", gap: 9 }}>
+            {solutionDoc ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="mono" style={{ fontSize: 10.5, color: "var(--green)" }}>✓ 方案文档已出 · 主脑收口</span>
+                  <span className="ghost-chip" style={{ marginLeft: "auto", padding: "4px 8px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(solutionDoc)}>⧉ 复制</span>
+                  <span className="ghost-chip" style={{ padding: "4px 8px", fontSize: 10 }} onClick={makeSolutionDoc} title="重新收口一版(读最新对话)">↻ 重出</span>
+                </div>
+                <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>这份厚方案 = 交下游精修的真正方案(比方向卡厚):</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={busy || deliberating} onClick={() => sendHandoff("relay", "council")} title="带方案文档进议会,多 AI 署名压测">⚖ 议会压测</button>
+                  <button className="amber-btn" style={{ flex: 1.5, padding: "9px 12px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center" }} disabled={busy || deliberating} onClick={() => sendHandoff("relay", "produce")} title="带方案文档去产出,各模型精修成文案/PRD/PPT/图">⚡ 送到产出 →</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mono" style={{ fontSize: 10, color: "#F2BF52", lineHeight: 1.5 }}>聊清楚了?让主脑把整段对话收口成「方案文档」—— 厚、固定分节,才是交下游精修的真正方案(方向卡只是想清楚的辅助)。</div>
+                <button className="amber-btn" style={{ padding: "11px 12px", fontFamily: "var(--mono)", fontSize: 13, justifyContent: "center" }} disabled={makingSolDoc || busy || deliberating} onClick={makeSolutionDoc}>{makingSolDoc ? "主脑收口中…(读整段对话写方案)" : "📄 出方案文档"}</button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -2039,8 +2076,18 @@ function App() {
               <div className="label" style={{ marginBottom: 7 }}>当前点子</div>
               <div style={{ fontSize: 13, lineHeight: 1.55, color: "#D6DEE7" }}>{brief || "(未填写)"}</div>
             </div>}
+            {solutionDoc && (
+              <div style={{ border: "1px solid rgba(63,221,138,.3)", borderTop: "2px solid var(--green)", borderRadius: 10, background: "rgba(63,221,138,.04)", padding: "12px 13px", display: "flex", flexDirection: "column", gap: 7 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span className="label" style={{ color: "var(--green)" }}>方案文档 · 主脑收口</span>
+                  <span className="ghost-chip" style={{ marginLeft: "auto", padding: "3px 7px", fontSize: 9 }} onClick={() => navigator.clipboard?.writeText(solutionDoc)}>⧉ 复制</span>
+                </div>
+                <div style={{ maxHeight: 340, overflow: "auto", fontSize: 11.5, lineHeight: 1.65, color: "#CCD6E0", whiteSpace: "pre-wrap", borderTop: "1px solid var(--line)", paddingTop: 8 }}>{solutionDoc}</div>
+                <div className="mono" style={{ fontSize: 9, color: "var(--faint)" }}>↓ 下面各模型会精修这份方案 → 文案 / PRD / PPT / 图</div>
+              </div>
+            )}
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-              <div className="label">喂给 AI 的要点</div>
+              <div className="label">{solutionDoc ? "要点速览(完整见上)" : "喂给 AI 的要点"}</div>
               {plan.length === 0 && <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>先在「陪练」出方向卡、或「议会」收敛出方案 —— 这里会汇成喂给 AI 的要点。没有也能直接生成(用点子本身)。</div>}
               {plan.map((p, i) => (
                 <div key={i} style={{ display: "flex", gap: 9, border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.012)" }}>

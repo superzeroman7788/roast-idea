@@ -19,6 +19,7 @@ import {
   runConverge,
   listPersonas,
   reanswerTurn,
+  runSolutionDoc,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
 import {
@@ -47,6 +48,7 @@ import {
   setTurnCorrected,
   listCorrectedTurns,
   updateTurnBody,
+  setSolutionDoc,
   getRunConfig,
   saveRunConfig,
   upsertUser,
@@ -529,6 +531,27 @@ const server = http.createServer(async (req, res) => {
         if (newBody) await updateTurnBody(turn.id, newBody);
       } catch (e) { reError = String(e?.message || e).slice(0, 200); }
       return json(res, 200, { ok: true, corrected: true, correction: note, newBody, reanswerError: reError });
+    }
+
+    // 方案文档:主脑读整段对话 + 方向卡 + 赞/纠偏 → 收口成厚的固定分节方案文档(交下游精修)
+    const soldoc = url.pathname.match(/^\/api\/discussion\/([^/]+)\/solution-doc$/);
+    if (req.method === "POST" && soldoc) {
+      const d = await getDiscussion(soldoc[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      if (!(d.turns || []).some((t) => t.role !== "user" && t.role !== "system")) return json(res, 400, { ok: false, error: "先在陪练聊几句,再出方案文档" });
+      const body = await readJson(req);
+      const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
+      try {
+        const transcript = buildTranscript(d.turns || [], 60);
+        const effBrief = d.brief + (await pinnedBlock(d.id)) + (await correctionBlock(d.id));
+        const c = d.relay?.card;
+        const cardText = c ? [c.oneLine && "内核:" + c.oneLine, c.clear?.length && "已稳定:" + c.clear.join("; "), c.assumptions?.length && "关键假设:" + c.assumptions.join("; "), c.firstNarrowing && "先收窄:" + c.firstNarrowing, (c.dontBuildYet || []).length && "先别建:" + c.dontBuildYet.join("; ")].filter(Boolean).join("\n") : "";
+        const out = await runSolutionDoc({ mode: d.mode, brief: effBrief, transcript, card: cardText, byoKeys });
+        await setSolutionDoc(d.id, out.md);
+        return json(res, 200, { ok: true, md: out.md, by: out.by });
+      } catch (e) {
+        return json(res, 500, { ok: false, error: e?.message || "方案文档生成失败" });
+      }
     }
 
     // ============ 产出层(交付物)============

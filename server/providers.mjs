@@ -7,6 +7,7 @@ import {
   assignDiscussionRoles,
   DISCUSSION_ROLES,
   buildProducePrompt,
+  buildSolutionDocPrompt,
   buildImagePrompt,
   buildOrganizerPrompt,
   buildClarifyPrompt,
@@ -427,6 +428,25 @@ export async function runDiscussionRound(
     }),
   );
   return results;
+}
+
+// 方案文档:主脑(host=Claude)读整段对话 + 方向卡 + 赞/纠偏 → 收口成厚的固定分节方案文档。主脑挂了依次兜底。
+export async function runSolutionDoc({ mode, brief, transcript, card, byoKeys }) {
+  const seats = assignDiscussionSeats(byoKeys);
+  const order = [seats.find((s) => s.role === "host"), ...seats].filter((v, i, a) => v && a.indexOf(v) === i);
+  let lastErr = "no configured provider";
+  for (const seat of order) {
+    const provider = ALL.find((p) => p.id === seat.id);
+    const apiKey = provider ? resolveKey(provider, byoKeys) : "";
+    if (!provider || !apiKey) continue;
+    try {
+      const md = await chatRaw(provider, apiKey, buildSolutionDocPrompt({ mode, brief, transcript, card }), { jsonMode: false, tries: 1, timeoutMs: 60000, maxTokens: 3200 });
+      const clean1 = clean(md);
+      if (clean1 && clean1.length > 60) return { md: clean1, by: provider.label };
+      lastErr = "输出过短";
+    } catch (e) { lastErr = compact(e?.message || String(e)); }
+  }
+  throw new Error("方案文档生成失败:" + lastErr);
 }
 
 // 单脑带纠偏重答(陪练):同一个脑(掉线则 host 兜底)读上下文 + 用户纠偏 → 重出这一条。返回新正文,失败抛。
