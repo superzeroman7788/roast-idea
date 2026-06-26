@@ -127,7 +127,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const email = String(body.email || "").trim().toLowerCase();
       if (!email.includes("@")) return json(res, 400, { ok: false, error: "请填写有效邮箱" });
-      if (!isInvited(email)) return json(res, 200, { ok: true, via: "log" }); // 不透露是否在名单(防探测);名单内才真发
+      // 直登(默认,小圈子内测):名单里的邮箱输完即登,不绕邮件/日志。
+      // 大范围内测时设 ROAST_DIRECT_LOGIN=0 → 切回魔法链接验证(代码保留在下方分支)。
+      const directLogin = process.env.ROAST_DIRECT_LOGIN !== "0";
+      if (!isInvited(email)) {
+        if (directLogin) return json(res, 403, { ok: false, error: "该邮箱不在名单内 —— 找站长把你加进来" });
+        return json(res, 200, { ok: true, via: "log" }); // 魔法模式:不透露是否在名单(防探测)
+      }
+      if (directLogin) {
+        const user = await upsertUser(email);
+        setSessionCookie(res, signSession(user));
+        return json(res, 200, { ok: true, via: "direct", user: { email: user.email } });
+      }
+      // 魔法链接模式(保留,大范围内测再开):发一次性登录链接
       const token = randomBytes(32).toString("base64url");
       try { await createMagicToken(email, tokenHashOf(token), new Date(Date.now() + 15 * 60 * 1000).toISOString()); }
       catch (e) { return json(res, 500, { ok: false, error: "发起失败" }); }

@@ -18,6 +18,7 @@ export function Landing() {
         body: JSON.stringify({ email: e }),
       });
       const d = await res.json();
+      if (d.ok && d.via === "direct") { window.location.href = "/?welcome=1"; return; } // 直登:名单内 → 直接进台
       if (d.ok) setSent(d.via === "email" ? "email" : "log");
       else setErr(d.error || "发起失败,稍后再试");
     } catch {
@@ -45,7 +46,7 @@ export function Landing() {
             <input type="email" value={email} placeholder="你的邮箱(受邀)" autoFocus inputMode="email" autoComplete="email"
               onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
-            <button onClick={send} disabled={busy || !email.trim()}>{busy ? "…" : "发送登录链接 →"}</button>
+            <button onClick={send} disabled={busy || !email.trim()}>{busy ? "…" : "登录 →"}</button>
           </div>
         )}
         {(err || expired) && <div className="land-err">{err || "链接已过期,重新获取一个"}</div>}
