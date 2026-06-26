@@ -194,6 +194,7 @@ function App() {
   type LibArt = Artifact & { discussionId: string; discussionTitle: string };
   const [library, setLibrary] = useState<LibArt[]>([]);
   const [showLibrary, setShowLibrary] = useState(false);
+  const [previewArt, setPreviewArt] = useState<Artifact | null>(null); // HTML 原型放大预览(沙箱 iframe,见 openHtmlPreview)
 
   // 产出层(交付物)
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -235,6 +236,7 @@ function App() {
   const [searchDim, setSearchDim] = useState("all"); // 搜索:左栏选中的侦察维度(过滤中间证据流)
   const [councilSel, setCouncilSel] = useState("all"); // 议会:左栏选中的议题(松筛中间署名观点)
   const [produceModel, setProduceModel] = useState<string>(""); // 产出:选中的模型(provider id),空=用默认第一个
+  const [protoRealImg, setProtoRealImg] = useState(true); // HTML 原型:配真图(gpt-image-1)开关,关=用 picsum 占位省额度
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" } | null>(null); // 产物卡的「改稿/换模型」内联选模型菜单
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
@@ -450,7 +452,7 @@ function App() {
     try {
       await streamSSE(
         `/api/discussion/${did}/produce`,
-        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined, attachments: produceAtts.length ? produceAtts : undefined },
+        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined, attachments: produceAtts.length ? produceAtts : undefined, realImg: type === "html_proto" ? protoRealImg : undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
@@ -490,9 +492,11 @@ function App() {
   // HTML 原型:剥掉模型可能加的 ```html 围栏 → 拿到纯 HTML
   function htmlOf(content?: string | null): string {
     let s = String(content || "").trim();
-    const m = s.match(/```(?:html)?\s*([\s\S]*?)```/i);
-    if (m) s = m[1].trim();
-    return s;
+    // 整段被 ```html … ``` 包裹才剥(锚定首尾,避免正文里出现的 ``` 把文档截断)
+    const m = s.match(/^```(?:html)?\s*([\s\S]*?)\s*```$/i);
+    if (m) return m[1].trim();
+    // 截断输出:只有开头的 ```html 没收尾 → 去掉开头围栏,渲染残页而不是显示字面量 ```html
+    return s.replace(/^```(?:html)?[^\n]*\n?/i, "").trim();
   }
   // 下载前把 /api/proto-asset 生成图抓成 base64 内联,让下载的 .html 离线也能看(file:// 无法解析根相对 URL)
   async function inlineProtoAssets(html: string): Promise<string> {
@@ -513,11 +517,10 @@ function App() {
     const l = document.createElement("a"); l.href = url; l.download = `roast-原型-${(a.id || "p").slice(0, 8)}.html`;
     document.body.appendChild(l); l.click(); l.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
-  function openHtmlPreview(a: Artifact) {
-    const blob = new Blob([htmlOf(a.content)], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank"); setTimeout(() => URL.revokeObjectURL(url), 8000);
-  }
+  // 放大预览:走沙箱 iframe overlay,不能用 window.open(blob) —— blob 文档继承 app origin、无沙箱,
+  // 模型生成的 HTML(可被 brief/附件/证据 prompt 注入)就能同源 fetch 已鉴权的 /api 偷数据。
+  // 沙箱 iframe(allow-scripts、不带 allow-same-origin)= opaque origin,碰不到 app/cookie;srcDoc 又能对 app origin 解析 /api/proto-asset 真图。
+  function openHtmlPreview(a: Artifact) { setPreviewArt(a); }
   // 全局交付物库:拉本用户所有产物
   async function openLibrary() {
     setShowLibrary(true);
@@ -2100,7 +2103,7 @@ function App() {
           {a.type !== "image" && <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" })}>✎ 改稿</button>}
           <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>
           {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.type === "html_proto" ? htmlOf(a.content) : (a.content || ""))}>⧉ 复制</button>}
-          {a.type === "html_proto" && <button className="mbtn" onClick={() => openHtmlPreview(a)}>↗ 新窗口预览</button>}
+          {a.type === "html_proto" && <button className="mbtn" onClick={() => openHtmlPreview(a)}>⛶ 放大预览</button>}
           {a.type === "html_proto" && <button className="mbtn" onClick={() => downloadHtml(a)}>↓ 下载 HTML</button>}
           {a.type !== "image" && a.type !== "html_proto" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
           {a.type === "image" && a.imagePath && <button className="mbtn" onClick={() => downloadArtifactImage(a)}>↓ 下载图</button>}
@@ -2185,7 +2188,15 @@ function App() {
                 {avail.map((p) => <button key={p.id} className={"mbtn" + (model === p.id ? " on" : "")} onClick={() => setProduceModel(p.id)}><span style={{ width: 7, height: 7, borderRadius: 2, background: ccProvColor(p.label) }} />{p.label}</button>)}
                 {avail.length === 0 && <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{fmt === "image" ? "无支持生图的厂商(需 OpenAI)" : "无可用模型"}</span>}
               </div>
-              <button className="amber-btn" style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={producing || !model || (!discussion && !attachments.length)} onClick={() => produce(fmt, model)}>{producing ? "生成中…" : `⚡ 生成 ${fmName}`}</button>
+              {fmt === "html_proto" && (
+                <button
+                  className={"mbtn" + (protoRealImg ? " on" : "")}
+                  title={protoRealImg ? "原型里的图用 gpt-image-1 真生成(贴题,慢 +~30s/耗额度);关掉则用 picsum 占位图" : "原型里的图用 picsum 占位(快/免费但不贴题);开启则真生图"}
+                  onClick={() => setProtoRealImg((v) => !v)}
+                  style={{ flex: "0 0 auto" }}
+                >🖼 配真图 {protoRealImg ? "开" : "关"}</button>
+              )}
+              <button className="amber-btn" style={{ marginLeft: fmt === "html_proto" ? 0 : "auto", padding: "10px 22px", fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={producing || !model || (!discussion && !attachments.length)} onClick={() => produce(fmt, model)}>{producing ? "生成中…" : `⚡ 生成 ${fmName}`}</button>
             </div>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
@@ -2584,6 +2595,20 @@ function App() {
                 );
               })}
             </div>
+          </div>
+        </div>
+      )}
+      {previewArt && (
+        <div className="hist-overlay" onClick={() => setPreviewArt(null)}>
+          <div className="hist-panel" style={{ width: "min(1120px, 95vw)", height: "92vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+            <div className="hist-head">
+              <span>HTML 原型预览 · {previewArt.provider}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button className="mbtn" onClick={() => downloadHtml(previewArt)}>↓ 下载 HTML</button>
+                <button className="hist-close" onClick={() => setPreviewArt(null)} title="关闭">×</button>
+              </div>
+            </div>
+            <iframe srcDoc={htmlOf(previewArt.content)} sandbox="allow-scripts" title="HTML 原型放大预览" style={{ flex: 1, width: "100%", border: "none", borderRadius: "0 0 12px 12px", background: "#fff", minHeight: 0 }} />
           </div>
         </div>
       )}

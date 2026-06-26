@@ -176,7 +176,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     // HTML 原型的内嵌生成图:公开读(文件名是随机 UUID,等于能力令牌;且 sandbox iframe 是 opaque origin 不带 cookie,故不能放鉴权门后)
-    const protoAsset = url.pathname.match(/^\/api\/proto-asset\/([0-9a-f-]{36})\/([0-9a-zA-Z._-]+\.png)$/);
+    // 仅放行 proto-<uuid>.png(原型专用前缀)—— 不暴露同目录下的「配图」产物文件(<uuid>.png,仍走鉴权的 /api/artifact/:id/image)
+    const protoAsset = url.pathname.match(/^\/api\/proto-asset\/([0-9a-f-]{36})\/(proto-[0-9a-f-]{36}\.png)$/);
     if (req.method === "GET" && protoAsset) {
       const fp = path.join(DATA_DIR, "artifacts", protoAsset[1], protoAsset[2]);
       if (!fp.startsWith(path.join(DATA_DIR, "artifacts")) || !fs.existsSync(fp)) return json(res, 404, { ok: false, error: "not found" });
@@ -305,6 +306,11 @@ const server = http.createServer(async (req, res) => {
     // 删除一场讨论(本地数据,用户主动清理)
     if (req.method === "DELETE" && detail) {
       const ok = await deleteDiscussion(detail[1], req.userId);
+      if (ok) {
+        // 删完 DB 行,顺手清这条点子的整个图目录(配图 + 原型 proto-*.png),否则磁盘只增不减
+        const dir = path.join(DATA_DIR, "artifacts", detail[1]);
+        if (dir.startsWith(path.join(DATA_DIR, "artifacts") + path.sep)) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+      }
       return json(res, ok ? 200 : 404, { ok });
     }
 
@@ -625,14 +631,18 @@ const server = http.createServer(async (req, res) => {
         // 产出附件:用户在产出站直接附的图片/文档(让产出能当独立功能用 —— 仿参考图、改写素材)
         const attachCtx = await buildAttachmentContext(body.attachments, byoKeys);
         const baseBrief = convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief;
-        // HTML 原型:把模型标的 data-gen 图槽生成真图后,落成磁盘文件并以 URL 引用(不内联 base64 —— 否则 artifact content 几 MB,拖垮 getDiscussion)
-        const saveProtoImage = async (b64) => {
-          const dir = path.join(DATA_DIR, "artifacts", d.id);
-          fs.mkdirSync(dir, { recursive: true });
-          const fname = `proto-${randomUUID()}.png`;
-          fs.writeFileSync(path.join(dir, fname), Buffer.from(b64, "base64"));
-          return `/api/proto-asset/${d.id}/${fname}`;
-        };
+        // HTML 原型「配真图」开关(默认开):关掉则不生图,保留模型出的 picsum 占位(省额度/更快)
+        const wantRealImg = body.realImg !== false;
+        // 真图落成磁盘文件并以 URL 引用(不内联 base64 —— 否则 artifact content 几 MB,拖垮 getDiscussion)
+        const saveProtoImage = wantRealImg
+          ? async (b64) => {
+              const dir = path.join(DATA_DIR, "artifacts", d.id);
+              fs.mkdirSync(dir, { recursive: true });
+              const fname = `proto-${randomUUID()}.png`;
+              fs.writeFileSync(path.join(dir, fname), Buffer.from(b64, "base64"));
+              return `/api/proto-asset/${d.id}/${fname}`;
+            }
+          : null;
         const out = await runProduce({
           type,
           mode,
@@ -690,9 +700,17 @@ const server = http.createServer(async (req, res) => {
     // 删一条候选交付物(+ 删图文件)
     const artDel = url.pathname.match(/^\/api\/artifact\/([^/]+)$/);
     if (req.method === "DELETE" && artDel) {
+      const art = await getArtifact(artDel[1]); // 先读内容,以便清 html_proto 内嵌的 proto-asset 图文件
       const { deleted, imagePath } = await deleteArtifact(artDel[1]);
-      if (deleted && imagePath) {
-        try { fs.unlinkSync(path.join(DATA_DIR, imagePath)); } catch {}
+      if (deleted) {
+        if (imagePath) { try { fs.unlinkSync(path.join(DATA_DIR, imagePath)); } catch {} }
+        // html_proto:真图是 /api/proto-asset/<did>/proto-*.png(URL 引用,藏在 content 里),逐个删
+        if (art?.type === "html_proto" && art.content) {
+          for (const mm of String(art.content).matchAll(/\/api\/proto-asset\/([0-9a-f-]{36})\/(proto-[0-9a-f-]{36}\.png)/g)) {
+            const fp = path.join(DATA_DIR, "artifacts", mm[1], mm[2]);
+            if (fp.startsWith(path.join(DATA_DIR, "artifacts") + path.sep)) { try { fs.unlinkSync(fp); } catch {} }
+          }
+        }
       }
       return json(res, deleted ? 200 : 404, { ok: deleted });
     }

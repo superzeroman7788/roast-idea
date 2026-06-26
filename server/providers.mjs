@@ -575,7 +575,8 @@ async function fillProtoImages(html, byoKeys, saveProtoImage) {
   if (!imgProv) return html;
   const imgKey = resolveKey(imgProv, byoKeys);
   const slots = [];
-  const re = /<img\b[^>]*?\bdata-gen=(["'])([\s\S]*?)\1[^>]*>/gi;
+  // 引号感知:头尾都允许带引号的属性值含 '>'(如 alt="a > b"),不会被 [^>] 提前截断成残缺 tag
+  const re = /<img\b(?:"[^"]*"|'[^']*'|[^>])*?\bdata-gen=(["'])([\s\S]*?)\1(?:"[^"]*"|'[^']*'|[^>])*>/gi;
   let m;
   while ((m = re.exec(html)) && slots.length < 2) slots.push({ tag: m[0], prompt: m[2] });
   if (!slots.length) return html;
@@ -588,7 +589,9 @@ async function fillProtoImages(html, byoKeys, saveProtoImage) {
       nt = /\bsrc=(["'])[\s\S]*?\1/i.test(nt)
         ? nt.replace(/\bsrc=(["'])[\s\S]*?\1/i, `src="${src}"`)
         : nt.replace(/<img\b/i, `<img src="${src}"`);
-      html = html.split(s.tag).join(nt);
+      // 只替换第一处(两个 byte-identical 图槽各映射到不同的图,不被 split/join 全量覆盖、不浪费第二次生图)
+      const idx = html.indexOf(s.tag);
+      if (idx >= 0) html = html.slice(0, idx) + nt + html.slice(idx + s.tag.length);
     } catch (e) { console.error("[proto-img] 生图失败,保留 picsum 兜底:", String(e?.message || e).slice(0, 160)); }
   }
   return html;
@@ -614,8 +617,8 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
   const timeoutMs = type === "html_proto" || type === "code_sketch" ? 90000 : 50000;
   const content = await chatRaw(provider, apiKey, messages, { jsonMode: false, maxTokens, timeoutMs });
   if (!content || !content.trim()) throw new Error(`${provider.label} 返回空内容`);
-  // HTML 原型:把模型标的 data-gen 图槽用真生图填充(落磁盘 + URL 引用,见 fillProtoImages)
-  const finalContent = type === "html_proto" ? await fillProtoImages(content.trim(), byoKeys, saveProtoImage) : content.trim();
+  // HTML 原型:有 saveProtoImage(配真图开)才把 data-gen 图槽用真生图填充;关掉则保留模型出的 picsum 占位
+  const finalContent = type === "html_proto" && saveProtoImage ? await fillProtoImages(content.trim(), byoKeys, saveProtoImage) : content.trim();
   return { kind: "text", provider: provider.label, content: finalContent, latencyMs: Date.now() - started };
 }
 
