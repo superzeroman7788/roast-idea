@@ -191,6 +191,9 @@ function App() {
   type HistItem = { id: string; mode: DiscussionMode; title: string; status: string; created_at: string; updated_at: string };
   const [history, setHistory] = useState<HistItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  type LibArt = Artifact & { discussionId: string; discussionTitle: string };
+  const [library, setLibrary] = useState<LibArt[]>([]);
+  const [showLibrary, setShowLibrary] = useState(false);
 
   // 产出层(交付物)
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -476,6 +479,18 @@ function App() {
   function exportArtifact(a: Artifact, fmt: "md" | "docx") {
     const payload = { title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] };
     if (fmt === "md") exportMarkdown(payload); else exportDocx(payload);
+  }
+  // 配图下载:同源图片用 a[download] 直接存盘
+  function downloadArtifactImage(a: Artifact) {
+    const l = document.createElement("a");
+    l.href = `/api/artifact/${a.id}/image`;
+    l.download = `roast-配图-${(a.id || "img").slice(0, 8)}.png`;
+    document.body.appendChild(l); l.click(); l.remove();
+  }
+  // 全局交付物库:拉本用户所有产物
+  async function openLibrary() {
+    setShowLibrary(true);
+    try { const r = await fetch("/api/artifacts").then((x) => x.json()); if (r.ok) setLibrary(r.artifacts || []); } catch {}
   }
 
   // ---- 审议引擎(白箱):结构化观点 + 审议综述 ----
@@ -1426,6 +1441,7 @@ function App() {
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           <span className="ghost-chip" onClick={() => setShowSeatConfig(true)}>席位 · {runConfig ? 3 + runConfig.seats.length : maxSeats}</span>
           <span className="ghost-chip" onClick={() => { setShowHistory(true); refreshHistory(); }}>历史 · {history.length}</span>
+          <span className="ghost-chip" title="我所有点子产出过的交付物" onClick={openLibrary}>交付物库</span>
           <span className="ghost-chip" title="登出" onClick={logout}>登出</span>
           <span className="ws">WORKSPACE · 一条点子 · 四站流转</span>
         </div>
@@ -2003,8 +2019,10 @@ function App() {
   };
   const ccPackMd = () => {
     const L: string[] = [`# ${discussion?.title || brief.slice(0, 30) || "立项包"}`, "", "> 一条点子 · 四站流转 · ROAST", "", "## 点子", brief || "(未填写)", ""];
+    // 优先收厚的「方案文档」(主脑收口);没有才退回议会收敛 / 方向卡 / 结论
+    if (solutionDoc) L.push("## 方案文档(主脑收口)", solutionDoc, "");
     const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
-    if (planMd) L.push("## 方案源(陪练方向卡 + 议会收敛)", planMd, "");
+    if (planMd) L.push(converged ? "## 议会收敛" : "## 方向卡", planMd, "");
     const picked = ccPicked();
     picked.filter((a) => a.type !== "image" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
     const imgs = picked.filter((a) => a.type === "image" && a.imagePath);
@@ -2046,6 +2064,7 @@ function App() {
           <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>
           {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.content || "")}>⧉ 复制</button>}
           {a.type !== "image" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
+          {a.type === "image" && a.imagePath && <button className="mbtn" onClick={() => downloadArtifactImage(a)}>↓ 下载图</button>}
         </div>
         {menuOpen && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingTop: 4 }}>
@@ -2489,6 +2508,38 @@ function App() {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {showLibrary && (
+        <div className="hist-overlay" onClick={() => setShowLibrary(false)}>
+          <div className="hist-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="hist-head">
+              <span>我的交付物 · {library.length}</span>
+              <button className="hist-close" onClick={() => setShowLibrary(false)} title="关闭">×</button>
+            </div>
+            <div className="hist-list">
+              {library.length === 0 && <div className="hist-empty">还没有产出过交付物 —— 去「产出」站生成一份</div>}
+              {library.map((a) => {
+                const fm = PRODUCE_FORMATS.find((f) => f.id === a.type);
+                return (
+                  <div className="hist-item" key={a.id}>
+                    <div className="hist-item-main" style={{ minWidth: 0 }}>
+                      <span className="mono" style={{ fontSize: 10, fontWeight: 700, color: fm?.c || "#9fd6ea", border: "1px solid " + ((fm?.c || "#7e97b3") + "55"), borderRadius: 5, padding: "2px 7px", flex: "0 0 auto" }}>{ARTIFACT_TYPE_LABEL[a.type]}</span>
+                      <span className="hist-title" title={a.discussionTitle}>{a.discussionTitle || "(无标题点子)"}</span>
+                    </div>
+                    <div className="hist-item-meta" style={{ gap: 9 }}>
+                      <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{a.provider}</span>
+                      <span className="hist-date">{fmtDate(a.createdAt || "")}</span>
+                      {a.type === "image"
+                        ? <button className="hist-del" style={{ color: "var(--cyan)" }} title="下载图" onClick={() => downloadArtifactImage(a)}>↓</button>
+                        : <button className="hist-del" style={{ color: "var(--cyan)" }} title="导出 MD" onClick={() => exportArtifact(a, "md")}>↓</button>}
+                      <button className="hist-del" style={{ color: "var(--green)" }} title="打开这条点子的产出站" onClick={() => { setShowLibrary(false); loadDiscussion(a.discussionId).then(() => switchTab("produce")); }}>↗</button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

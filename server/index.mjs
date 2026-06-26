@@ -33,6 +33,7 @@ import {
   listDiscussions,
   deleteDiscussion,
   saveArtifact,
+  listAllArtifacts,
   getArtifact,
   chooseArtifact,
   deleteArtifact,
@@ -276,6 +277,11 @@ const server = http.createServer(async (req, res) => {
     // 历史列表:过往讨论(标题/模式/状态/时间),供前端「历史」面板浏览
     if (req.method === "GET" && url.pathname === "/api/discussions") {
       return json(res, 200, { ok: true, discussions: await listDiscussions(req.userId, 100) });
+    }
+
+    // 全局交付物库:本用户所有产物(跨点子汇总)
+    if (req.method === "GET" && url.pathname === "/api/artifacts") {
+      return json(res, 200, { ok: true, artifacts: await listAllArtifacts(req.userId, 300) });
     }
 
     // 恢复会话

@@ -413,6 +413,16 @@ export async function saveArtifact({ discussionId, type, provider, content, imag
   );
   return rowToArtifact(await get(`SELECT * FROM artifacts WHERE id = ?`, [id]));
 }
+// 全局交付物库:某用户所有讨论下的产物(跨点子汇总,按时间倒序)。join discussions 拿标题 + 校验归属。
+export async function listAllArtifacts(userId, limit = 300) {
+  const rows = await all(
+    `SELECT a.id, a.discussion_id, a.type, a.provider, a.content, a.image_path, a.status, a.created_at, d.title AS dtitle
+     FROM artifacts a JOIN discussions d ON a.discussion_id = d.id
+     WHERE d.user_id = ? ORDER BY a.created_at DESC LIMIT ?`,
+    [userId, limit],
+  );
+  return rows.map((r) => ({ id: r.id, discussionId: r.discussion_id, discussionTitle: r.dtitle, type: r.type, provider: r.provider, content: r.content, imagePath: r.image_path, status: r.status, createdAt: r.created_at }));
+}
 export async function listArtifacts(discussionId) {
   return (await all(`SELECT * FROM artifacts WHERE discussion_id = ? ORDER BY created_at ASC`, [discussionId])).map(rowToArtifact);
 }
