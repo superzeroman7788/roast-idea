@@ -107,8 +107,34 @@ bash scripts/mac-release.sh
 
 > 两套签名相互独立:**minisign**(`~/.tauri/roast.key`)保更新包完整性;**Apple Developer ID 签名 + 公证**满足 Gatekeeper。发版要两者都有。
 
+## CI 自动发版(推荐,已接好)
+
+`.github/workflows/mac-release.yml`:**push 一个 `v*` tag(如 `v0.1.1`)→ GitHub macOS runner 自动构建 + 签名 + 公证 + 建 Release + 生成并上传 `latest.json`**。本地什么都不用跑。公开仓库 macOS runner 不计费。
+
+**一次性:在仓库 Settings → Secrets and variables → Actions 加这些 secret**(只存 GitHub,日志不回显):
+
+| Secret | 取哪儿 |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | `cat ~/.tauri/roast.key` 的全文 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码(没设留空) |
+| `APPLE_CERTIFICATE` | Developer ID Application `.p12` 的 base64(`base64 -i cert.p12 \| pbcopy`) |
+| `APPLE_CERTIFICATE_PASSWORD` | 该 `.p12` 密码 |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <名字> (<TeamID>)` |
+| `APPLE_ID` | `ln5423696@gmail.com` |
+| `APPLE_PASSWORD` | App 专用密码 |
+| `APPLE_TEAM_ID` | Team ID |
+
+**每次发版:**
+```bash
+# 1) bump 版本(两处对齐)
+#    src-tauri/tauri.conf.json 的 "version" + 根 package.json 的 "version"
+# 2) 提交 + 打 tag(必须和 version 一致,workflow 会校验)
+git commit -am "release: v0.1.1"
+git tag v0.1.1 && git push && git push --tags
+```
+推上去后 Actions 自动出包、建 Release、传 `latest.json` → 用户下次开 App 自动更新。
+
 ## 还没做 / 可加
 
 - **Keychain 存 API Key**:若以后让 App 直连各家 LLM(BYO key),用 `tauri-plugin-keychain` / `keyring` 存密钥,不落明文。当前瘦壳所有调用都走 Render 后端,key 在 Render env,Mac 端不持有。
 - **原生菜单 / Dock / 通知 / 开机音**:可在 `lib.rs` 加。
-- **CI 出包**:GitHub Actions 跑 `tauri-action`,push tag 自动构建 + 签名 + 建 Release + 生成 latest.json(把上面手动流程自动化)。
