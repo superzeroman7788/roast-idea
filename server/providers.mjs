@@ -585,10 +585,13 @@ async function fillProtoImages(html, byoKeys, saveProtoImage) {
     try {
       const b64 = await generateImage(imgProv, imgKey, `${s.prompt}. Clean modern product imagery, no text/watermark.`, { quality: "low" });
       const src = saveProtoImage ? await saveProtoImage(b64) : `data:image/png;base64,${b64}`;
+      // 真图 404 兜底(免费层 /data 是临时盘,重部署/休眠后图会没)→ onerror 退回模型原本的 picsum 占位,不显示裂图
+      const origSrc = (s.tag.match(/\bsrc=(["'])([\s\S]*?)\1/i) || [])[2] || `https://picsum.photos/seed/${encodeURIComponent((s.prompt || "p").slice(0, 24))}/800/600`;
+      const onerr = ` onerror="this.onerror=null;this.src='${origSrc.replace(/['"\\]/g, "")}'"`;
       let nt = s.tag.replace(/\sdata-gen=(["'])[\s\S]*?\1/i, "");
       nt = /\bsrc=(["'])[\s\S]*?\1/i.test(nt)
-        ? nt.replace(/\bsrc=(["'])[\s\S]*?\1/i, `src="${src}"`)
-        : nt.replace(/<img\b/i, `<img src="${src}"`);
+        ? nt.replace(/\bsrc=(["'])[\s\S]*?\1/i, `src="${src}"${onerr}`)
+        : nt.replace(/<img\b/i, `<img src="${src}"${onerr}`);
       // 只替换第一处(两个 byte-identical 图槽各映射到不同的图,不被 split/join 全量覆盖、不浪费第二次生图)
       const idx = html.indexOf(s.tag);
       if (idx >= 0) html = html.slice(0, idx) + nt + html.slice(idx + s.tag.length);
