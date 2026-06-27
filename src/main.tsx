@@ -2248,8 +2248,6 @@ function App() {
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             <div className="label">本轮产物 · {artifacts.length}</div>
-            {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "选格式 + 模型,在下方写要求或 📎 附素材,直接生成 —— 产出也能当独立工具用。"}</div>}
-            {artifacts.map((a) => ccArtCard(a))}
             {producing && (
               <div style={{ border: "1px solid var(--line)", borderRadius: 11, padding: "15px 17px", background: "rgba(255,255,255,.012)", display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -2259,6 +2257,8 @@ function App() {
                 <div className="gen" style={{ height: 9, borderRadius: 5, width: "76%" }} />
               </div>
             )}
+            {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "选格式 + 模型,在下方写要求或 📎 附素材,直接生成 —— 产出也能当独立工具用。"}</div>}
+            {[...artifacts].reverse().map((a) => ccArtCard(a))}
           </div>
           <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
             {attachments.length > 0 && (
@@ -2302,7 +2302,7 @@ function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div className="label">本条点子产物</div>
               {artifacts.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>还没有产物</div>}
-              {artifacts.map((a) => { const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : PRODUCE_FORMATS[1])); return (
+              {[...artifacts].reverse().map((a) => { const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : PRODUCE_FORMATS[1])); return (
                 <div key={a.id} style={{ display: "flex", gap: 9, border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.012)", alignItems: "center" }}>
                   <span style={{ flex: "0 0 auto", width: 22, height: 22, borderRadius: 6, display: "grid", placeItems: "center", fontSize: 11, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.ic}</span>
                   <div style={{ minWidth: 0, flex: 1 }}>
