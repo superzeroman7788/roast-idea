@@ -618,9 +618,13 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
   // HTML 原型/代码草稿很长,默认 1100 token 会截断半截;按 type 给足
   // 输出上限:设计文档/PRD/PPT/HTML原型/代码 都可能很长 → 给足,否则生成到一半就被截断(2400 太小)
   const longForm = type === "design_doc" || type === "prd" || type === "ppt" || type === "html_proto" || type === "code_sketch";
-  const maxTokens = longForm ? 8000 : type === "critique" ? 4000 : type === "copy" ? 2600 : 2000;
-  const timeoutMs = longForm ? 150000 : 60000;
-  const content = await chatRaw(provider, apiKey, messages, { jsonMode: false, maxTokens, timeoutMs });
+  // HTML 原型(MVP):Tailwind 类 + 中文内容很吃 token,哪怕"最小完整 app"也常需 ~1 万 token →
+  // Claude/OpenAI(高输出)给 12000、超时 240s,配合 prompt 的「最小但完整」铁律,刚好够写完不截断;
+  // 其余模型守 8000(输出上限,避免超限报错)。tries:1 不重试(长生成重试只会更久)。
+  const bigCoder = (type === "html_proto" || type === "code_sketch") && (providerId === "claude" || providerId === "openai");
+  const maxTokens = bigCoder ? 12000 : longForm ? 8000 : type === "critique" ? 4000 : type === "copy" ? 2600 : 2000;
+  const timeoutMs = bigCoder ? 240000 : longForm ? 150000 : 60000;
+  const content = await chatRaw(provider, apiKey, messages, { jsonMode: false, maxTokens, timeoutMs, tries: 1 });
   if (!content || !content.trim()) throw new Error(`${provider.label} 返回空内容`);
   // HTML 原型:有 saveProtoImage(配真图开)才把 data-gen 图槽用真生图填充;关掉则保留模型出的 picsum 占位
   const finalContent = type === "html_proto" && saveProtoImage ? await fillProtoImages(content.trim(), byoKeys, saveProtoImage) : content.trim();

@@ -299,7 +299,7 @@ export const PRODUCE_FORMATS: ProduceFormat[] = [
   { id: "design_doc", ic: "◳", name: "设计文档", en: "DESIGN", c: "#E8975C", sub: "信息架构 / 流程" },
   { id: "image", ic: "◍", name: "配图", en: "IMAGE", c: "#7C8DFF", sub: "封面 / 示意图" },
   { id: "ppt", ic: "▦", name: "PPT", en: "DECK", c: "#F2BF52", sub: "路演 / 介绍" },
-  { id: "html_proto", ic: "▢", name: "HTML 原型", en: "PROTOTYPE", c: "#FF8AC2", sub: "可点击界面" },
+  { id: "html_proto", ic: "▢", name: "HTML 原型", en: "PROTOTYPE", c: "#FF8AC2", sub: "可点透的 MVP" },
 ];
 
 export const ROLE_LABEL: Record<string, string> = {
