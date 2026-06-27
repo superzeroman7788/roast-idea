@@ -774,3 +774,66 @@ THE HUMAN'S CURATION (only this shapes convergence):
     },
   ];
 }
+
+// ============ 自动档 Auto-Pilot ============
+// 透镜库(固定,轮换):每轮换一副,逼出新视角(反熵手段 B)。
+export const AUTO_LENSES = [
+  { id: "premortem", name: "Pre-mortem", hint: "假设这个点子一年后彻底失败了,复盘最可能的死因——是需求假、获客贵、还是留存崩?" },
+  { id: "inversion", name: "反演", hint: "不问怎么做成,问怎么把它做砸 / 怎么做到大 10 倍 / 怎么砍到 1/10——从极端反推关键变量。" },
+  { id: "analogy", name: "跨行业类比", hint: "别的行业谁解过结构相同的问题?把他们的做法平移过来会怎样、哪里不成立?" },
+  { id: "scale", name: "放大·缩小尺度", hint: "用户量 ×100 或 ÷100、预算 ×10 或归零,这个方案哪里先崩、哪里反而更好?" },
+  { id: "second_order", name: "二阶效应", hint: "假设它成功了,会引发什么后续后果 / 反作用 / 被谁反制?一阶之外的连锁是什么?" },
+  { id: "user_lens", name: "目标用户视角", hint: "完全站进最典型用户的某个真实时刻,他此刻真正在乎什么、会不会用、为什么不用?" },
+];
+export const ARTIFACT_HINTS = ["落地页", "App 截图", "PRD", "设计文档", "HTML 原型", "竞品对比", "定价页", "用户故事"];
+
+const AUTO_JSON = `只返回一个 JSON 对象,不要任何解释、不要 Markdown 围栏。`;
+
+// 导演:每轮广播结构化任务单(第 1 轮含对点子的解读)。融入上轮未解 + 盲点 + 本轮透镜 + 人的插话。
+export function buildAutoDirectorPrompt({ brief, roundIndex, prevFields, openIssues = [], blindSpots = [], lens, humanNote }) {
+  const ctx = [
+    `原始点子:\n${brief}`,
+    roundIndex > 1 ? `上一轮已得方向:${prevFields?.direction || "(无)"}` : "",
+    openIssues.length ? `上一轮未解的关键问题:\n- ${openIssues.join("\n- ")}` : "",
+    blindSpots.length ? `上一轮标出的盲点(本轮专攻):\n- ${blindSpots.join("\n- ")}` : "",
+    lens ? `本轮透镜「${lens.name}」:${lens.hint}` : "",
+    humanNote ? `★ 创始人刚插了一句(最高优先,必须吸收):${humanNote}` : "",
+  ].filter(Boolean).join("\n\n");
+  return [
+    { role: "system", content: `你是「导演」,自动档一轮讨论的调度者。读点子与上下文,给三个产出 agent 派活,让这一轮真正比上一轮往前走(别原地复读)。\n${OUTPUT_LANG}\n${AUTO_JSON}\nJSON 结构:{ "read": "对点子的自然语言解读(第1轮两三句、之后一句)", "focus": "本轮要推进/攻克的重点(结合未解问题+盲点+透镜)", "tasks": { "direction": "给『方向』agent 的具体指令", "questions": "给『提问』agent 的指令", "evidence": "给『证据/分歧』agent 的指令" } }` },
+    { role: "user", content: `第 ${roundIndex} 轮。\n\n${ctx}` },
+  ];
+}
+
+// 产出 agent(3 角色,各认领字段;角色↔模型解耦,跨厂商出多样性)。
+export function buildAutoProducePrompt({ role, brief, roundIndex, taskOrder, lens, prevFields, evidence = [] }) {
+  const lensLine = lens ? `\n本轮用「${lens.name}」透镜:${lens.hint}` : "";
+  const focus = taskOrder?.focus ? `\n本轮重点:${taskOrder.focus}` : "";
+  const base = `原始点子:\n${brief}${focus}${lensLine}`;
+  if (role === "direction") {
+    return [
+      { role: "system", content: `你负责给点子收一个「一句话方向」并建议最该先做的产出物。导演指令:${taskOrder?.tasks?.direction || "收敛出最锐利、最可执行的方向。"}\n${OUTPUT_LANG}\n${AUTO_JSON}\nJSON:{ "direction": "一句话方向(锐利、具体、可执行)", "artifacts_hint": ["从 ${ARTIFACT_HINTS.join("/")} 里挑 1-2 个最该先做的"], "note": "你这么定的理由/独到视角,50 字内" }` },
+      { role: "user", content: `${base}${roundIndex > 1 && prevFields?.direction ? `\n\n上一轮方向:${prevFields.direction}\n——若仍成立可微调、别硬改;若透镜照出更好的就换。` : ""}` },
+    ];
+  }
+  if (role === "questions") {
+    return [
+      { role: "system", content: `你负责挖出「现在最该让创始人拍板的开放问题」(会自动注入议会拷问)。导演指令:${taskOrder?.tasks?.questions || "挖出最致命、最该先答的待决问题。"}\n${OUTPUT_LANG}\n${AUTO_JSON}\nJSON:{ "open_questions": ["3-6 条待拍板的关键问题,每条具体、能逼出决定"], "note": "为什么是这几条,50 字内" }` },
+      { role: "user", content: `${base}${roundIndex > 1 && prevFields?.open_questions?.length ? `\n\n上一轮的问题:\n- ${prevFields.open_questions.join("\n- ")}\n——已答的去掉,补上新暴露的;别原样重列。` : ""}` },
+    ];
+  }
+  // evidence / 分歧
+  const ev = evidence.length ? `\n可引用的证据(标 [E#]):\n${evidence.slice(0, 12).map((e, i) => `[E${i + 1}] ${(e.title || e.text || "").slice(0, 80)}`).join("\n")}` : `\n(本轮暂无真证据——没有就标"待检索/假设",绝不编造可信度。)`;
+  return [
+    { role: "system", content: `你是带证据意识的反方/审视者,出一张署名观点卡,专挑别人没说的角度、标出分歧。导演指令:${taskOrder?.tasks?.evidence || "用证据或明确假设支撑,标出你与主流判断的分歧。"}\n${OUTPUT_LANG}\n${AUTO_JSON}\nJSON:{ "stance": "Ship|Fix|Kill|Pause", "text": "你的署名观点(具体、带证据引用 [E#] 或明确标假设)", "evidence_refs": ["引用的 E# 或 '假设'"], "dissent": "你和主流判断分歧在哪(一句)" }` },
+    { role: "user", content: `${base}${ev}` },
+  ];
+}
+
+// 导演轮末评估(收敛分由 JS 规则算,不在这里;这里只判 SPEC 满足度 + 盲点 + 停不停)。
+export function buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes = [] }) {
+  return [
+    { role: "system", content: `你是「导演」,评估本轮自动档讨论。判断离"一份可带进站打磨的粗稿"还差多少。\n${OUTPUT_LANG}\n${AUTO_JSON}\nJSON:{ "spec_satisfaction": 1-5 的整数(5=粗稿已足够带进站), "open_issues": ["仍未解决的关键问题"], "blind_spots": ["谁都没提、但很关键的盲点,供下一轮专攻"], "stop_recommendation": true 或 false, "reason": "一句话:为何建议停/继续" }` },
+    { role: "user", content: `第 ${roundIndex} 轮产物:\n点子:${brief}\n方向:${fields?.direction || "(无)"}\n待拍板:\n- ${(fields?.open_questions || []).join("\n- ") || "(无)"}\n建议产出:${(fields?.artifacts_hint || []).join("、") || "(无)"}\n各 agent 视角:\n${agentNotes.map((n) => "· " + n).join("\n") || "(无)"}` },
+  ];
+}

@@ -20,6 +20,7 @@ import {
   listPersonas,
   reanswerTurn,
   runSolutionDoc,
+  runAutoRound,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
 import {
@@ -50,6 +51,7 @@ import {
   listCorrectedTurns,
   updateTurnBody,
   setSolutionDoc,
+  setAutoRun,
   getRunConfig,
   saveRunConfig,
   upsertUser,
@@ -574,6 +576,87 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return json(res, 500, { ok: false, error: e?.message || "方案文档生成失败" });
       }
+    }
+
+    // ============ 自动档 Auto-Pilot ============
+    // 跑一轮(SSE 流式):导演任务单 → 3 产出 agent 并行 → 合并字段 → 收敛判定 → 评估。吃 humanNote(轮间插话)。
+    const autoRound = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/round$/);
+    if (req.method === "POST" && autoRound) {
+      const d = await getDiscussion(autoRound[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const body = await readJson(req);
+      const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
+      const humanNote = body.humanNote ? String(body.humanNote).slice(0, 600) : "";
+      const prevState = d.autoRun || { rounds: [], md: null };
+      const roundIndex = (prevState.rounds?.length || 0) + 1;
+      const MAX_ROUNDS = Number(process.env.AUTO_MAX_ROUNDS || 10); // 硬截断层(轮次,先松,用户后期评估)
+      sseHead(res);
+      if (roundIndex > MAX_ROUNDS) { sseSend(res, "capped", { roundIndex, maxRounds: MAX_ROUNDS }); res.end(); return; }
+      try {
+        const evidence = d.evidencePack?.items || [];
+        const round = await runAutoRound({ brief: d.brief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
+        const rounds = [...(prevState.rounds || []), round];
+        const md = { brief_original: d.brief, ...round.fields };
+        let best = 0, bestSat = -1;
+        rounds.forEach((r, i) => { const s = r.eval?.spec_satisfaction || 0; if (s > bestSat) { bestSat = s; best = i; } });
+        const fourFilled = !!(round.fields.direction && round.fields.open_questions?.length && round.fields.artifacts_hint?.length);
+        await setAutoRun(d.id, { rounds, md, bestRoundIndex: best, status: "paused", updatedAt: new Date().toISOString() });
+        sseSend(res, "round-done", {
+          roundIndex, fields: round.fields, convergence: round.convergence, eval: round.eval,
+          canStop: fourFilled,                                              // 规则层:四强字段全非空,可注入
+          stopRecommended: fourFilled && !!round.eval?.stop_recommendation, // LLM 层:导演也建议停
+          repeatFlagged: !!round.convergence?.repeat,                       // 反熵:疑似复读 → 提示人插话(不自动停)
+          maxRounds: MAX_ROUNDS,
+        });
+      } catch (e) { sseSend(res, "error", { error: String(e?.message || e).slice(0, 200) }); }
+      res.end(); return;
+    }
+
+    // 注入(先快照后覆写):自动档草稿 → 建一张 relay.card(四站通用交接物)写进讨论,前端再跳目标站
+    const autoInject = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/inject$/);
+    if (req.method === "POST" && autoInject) {
+      const d = await getDiscussion(autoInject[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const body = await readJson(req);
+      const target = ["relay", "council", "produce"].includes(body.target) ? body.target : "relay";
+      const md = d.autoRun?.md;
+      if (!md) return json(res, 400, { ok: false, error: "还没有自动档草稿可注入" });
+      const missing = [];
+      if (!md.direction) missing.push("direction(方向)");
+      if (target === "council" && !(md.open_questions?.length)) missing.push("open_questions(待拍板≥1)");
+      if (missing.length) return json(res, 400, { ok: false, missing });
+      const card = { oneLine: md.direction, clear: [], expandedAngles: [], assumptions: [], firstNarrowing: "", decisionsForYou: md.open_questions || [], inviteYourInput: "", dontBuildYet: [] };
+      const relay = { card, hops: [{ order: 1, seat: "自动档", role: "auto", lens: null, added: [], framing: null, failed: false, latencyMs: 0 }], auto: true, artifactsHint: md.artifacts_hint || [] };
+      try {
+        const state = { ...d.autoRun, injectBackup: { relay: d.relay || null, at: new Date().toISOString(), target, roundIndex: d.autoRun?.rounds?.length || 0 } };
+        await setAutoRun(d.id, state); // 先快照(快照失败下面 catch,绝不裸覆写)
+        await saveRelay(d.id, relay);  // 再覆写
+        return json(res, 200, { ok: true, target, card, hasBackup: true });
+      } catch (e) {
+        return json(res, 500, { ok: false, error: "注入失败: " + String(e?.message || e).slice(0, 120) });
+      }
+    }
+
+    // 还原(一键):把注入前的 relay 快照写回
+    const autoRestore = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/restore$/);
+    if (req.method === "POST" && autoRestore) {
+      const d = await getDiscussion(autoRestore[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const bk = d.autoRun?.injectBackup;
+      if (!bk) return json(res, 400, { ok: false, error: "没有可还原的快照" });
+      await saveRelay(d.id, bk.relay || null);
+      const state = { ...d.autoRun }; delete state.injectBackup;
+      await setAutoRun(d.id, state);
+      return json(res, 200, { ok: true });
+    }
+
+    // 重置自动档 run
+    const autoReset = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/reset$/);
+    if (req.method === "POST" && autoReset) {
+      const d = await getDiscussion(autoReset[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      await setAutoRun(d.id, null);
+      return json(res, 200, { ok: true });
     }
 
     // ============ 产出层(交付物)============

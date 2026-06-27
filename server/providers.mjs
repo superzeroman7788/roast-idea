@@ -24,6 +24,10 @@ import {
   buildDomainDetectPrompt,
   PERSONAS,
   DEFAULT_RUN_CONFIG,
+  AUTO_LENSES,
+  buildAutoDirectorPrompt,
+  buildAutoProducePrompt,
+  buildAutoEvalPrompt,
 } from "./prompts.mjs";
 
 const OPENAI_COMPATIBLE = [
@@ -1237,4 +1241,103 @@ export async function runFinalize({ mode, brief, evidence, transcript, byoKeys, 
   const messages = buildFinalizePrompt({ mode, brief, evidence, transcript });
   const md = await chatRaw(provider, apiKey, messages, { jsonMode: false });
   return { conclusion: clean(md), by: provider.label };
+}
+
+// ============ 自动档 Auto-Pilot 引擎 ============
+// embedding(OpenAI text-embedding-3-small):收敛第二层语义确认 + 反熵 C 去重。无 OpenAI key 则返回 null(收敛保守判未复读)。
+async function embed(text, byoKeys) {
+  const openai = ALL.find((p) => p.id === "openai");
+  const key = openai ? resolveKey(openai, byoKeys) : "";
+  if (!openai || !key || !text) return null;
+  try {
+    const res = await fetch(`${openai.baseURL}/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: process.env.OPENAI_EMBED_MODEL || "text-embedding-3-small", input: String(text).slice(0, 2000) }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()).data?.[0]?.embedding || null;
+  } catch { return null; }
+}
+function cosineSim(a, b) {
+  if (!a || !b || a.length !== b.length) return null;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : null;
+}
+
+// 收敛判定(修正版三层,白箱、零 LLM 介入):
+// L1 结构计数(毫秒):open_questions 条目增减 或 artifacts_hint 变了 → 有进展、放行。
+// L2 仅 L1 无结构变化时:算 direction 本轮 vs 上轮余弦,<阈值=真换方向放行;≥阈值=同义改写/原样 → 判复读。
+// L3(硬截断:token/时间)在 index 层。阈值可调 + 每轮日志打印实算 sim,跑真数据再校准。
+const AUTO_CONV_SIM = Number(process.env.AUTO_CONV_SIM || 0.95);
+async function computeConvergence(cur, prev, byoKeys) {
+  if (!prev) return { repeat: false, reason: "首轮,无上轮可比", layer: 0, sim: null, threshold: AUTO_CONV_SIM };
+  const setEq = (a = [], b = []) => a.length === b.length && a.every((x) => b.includes(x));
+  const oqChanged = !setEq(cur.open_questions || [], prev.open_questions || []);
+  const hintChanged = !setEq(cur.artifacts_hint || [], prev.artifacts_hint || []);
+  if (oqChanged || hintChanged) {
+    const what = [oqChanged && "待拍板项变了", hintChanged && "产出建议变了"].filter(Boolean).join("、");
+    return { repeat: false, reason: `结构有进展(${what})`, layer: 1, sim: null, threshold: AUTO_CONV_SIM };
+  }
+  const [ea, eb] = await Promise.all([embed(cur.direction, byoKeys), embed(prev.direction, byoKeys)]);
+  const sim = cosineSim(ea, eb);
+  if (sim == null) return { repeat: false, reason: "embedding 不可用,保守判未复读", layer: 2, sim: null, threshold: AUTO_CONV_SIM };
+  const repeat = sim >= AUTO_CONV_SIM;
+  return { repeat, reason: repeat ? `方向语义几乎没变(余弦 ${sim.toFixed(3)} ≥ ${AUTO_CONV_SIM})→ 判复读` : `方向语义有变(余弦 ${sim.toFixed(3)} < ${AUTO_CONV_SIM})→ 有进展`, layer: 2, sim, threshold: AUTO_CONV_SIM };
+}
+
+// 跑一轮:导演任务单 → 3 产出 agent 并行(allSettled,单挂不雪崩)→ 合并强字段 → 收敛判定 → 导演评估。
+// onEvent(ev,data):'task-order'|'agent'|'fields'|'convergence'|'eval'。角色↔模型每轮轮换(跨厂商出多样性)。
+export async function runAutoRound({ brief, roundIndex, prevState, humanNote, evidence = [], byoKeys }, onEvent) {
+  const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
+  const seats = assignDiscussionSeats(byoKeys);
+  if (!seats.length) throw new Error("没有可用模型(去 .env.local 配 key)");
+  const lens = AUTO_LENSES[(roundIndex - 1) % AUTO_LENSES.length];
+  const prevRound = prevState?.rounds?.[prevState.rounds.length - 1] || null;
+  const prevFields = prevRound?.fields || null;
+  const openIssues = prevRound?.eval?.open_issues || [];
+  const blindSpots = prevRound?.eval?.blind_spots || [];
+
+  const dir = await hedgedChatJSON(buildAutoDirectorPrompt({ brief, roundIndex, prevFields, openIssues, blindSpots, lens, humanNote }), byoKeys, { label: "auto-director", maxTokens: 1500 });
+  const taskOrder = dir.out || { read: "", focus: "(导演评估失败,本轮自由发挥)", tasks: {} };
+  await emit("task-order", { roundIndex, lens: { id: lens.id, name: lens.name, hint: lens.hint }, taskOrder, by: dir.seat, humanNote: humanNote || null });
+
+  const roles = ["direction", "questions", "evidence"];
+  const assign = roles.map((role, i) => ({ role, seat: seats[(roundIndex - 1 + i) % seats.length] }));
+  const settled = await Promise.allSettled(assign.map(async ({ role, seat }) => {
+    const provider = ALL.find((p) => p.id === seat.id);
+    const apiKey = resolveKey(provider, byoKeys);
+    const out = await chatJSON(provider, apiKey, buildAutoProducePrompt({ role, brief, roundIndex, taskOrder, lens, prevFields, evidence }), { tries: 1, timeoutMs: 40000, maxTokens: 1800 });
+    return { role, model: seat.label, out };
+  }));
+  const agents = [];
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i], role = roles[i], model = assign[i].seat.label;
+    const a = r.status === "fulfilled" && r.value.out ? { role, model, out: r.value.out, failed: false } : { role, model, out: null, failed: true, error: compact(r.reason?.message || String(r.reason || "失败")) };
+    agents.push(a); await emit("agent", a);
+  }
+
+  const dirA = agents.find((a) => a.role === "direction")?.out || {};
+  const qA = agents.find((a) => a.role === "questions")?.out || {};
+  const evA = agents.find((a) => a.role === "evidence")?.out || {};
+  const fields = {
+    direction: dirA.direction || prevFields?.direction || "",
+    artifacts_hint: Array.isArray(dirA.artifacts_hint) ? dirA.artifacts_hint.slice(0, 3) : (prevFields?.artifacts_hint || []),
+    open_questions: Array.isArray(qA.open_questions) ? qA.open_questions.slice(0, 8) : (prevFields?.open_questions || []),
+  };
+  const viewpoint = evA.text ? { stance: evA.stance || "Fix", text: evA.text, evidence_refs: evA.evidence_refs || [], dissent: evA.dissent || "", model: agents.find((a) => a.role === "evidence")?.model } : null;
+  await emit("fields", { fields, viewpoint });
+
+  const convergence = await computeConvergence(fields, prevFields, byoKeys);
+  console.log(`[auto-conv] r${roundIndex} layer${convergence.layer} repeat=${convergence.repeat} sim=${convergence.sim ?? "-"}`);
+  await emit("convergence", convergence);
+
+  const notes = agents.filter((a) => a.out).map((a) => `${a.role}@${a.model}: ${String(a.out.note || a.out.dissent || a.out.text || "").slice(0, 80)}`);
+  const ev = await hedgedChatJSON(buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes: notes }), byoKeys, { label: "auto-eval", maxTokens: 1200 });
+  const evalOut = ev.out || { spec_satisfaction: 3, open_issues: [], blind_spots: [], stop_recommendation: false, reason: "评估失败,默认继续" };
+  await emit("eval", evalOut);
+
+  return { index: roundIndex, lens: { id: lens.id, name: lens.name }, humanNote: humanNote || null, taskOrder, agents: agents.map((a) => ({ role: a.role, model: a.model, failed: a.failed, error: a.error, out: a.out })), fields, viewpoint, convergence, eval: evalOut };
 }

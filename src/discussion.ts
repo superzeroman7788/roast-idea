@@ -322,10 +322,18 @@ export const ROLE_COLOR: Record<string, string> = {
 };
 
 // ===== 四站工作台:搜索/陪练/议会/产出(相互独立 + MD 文档交接) =====
-export type Tab = "search" | "relay" | "council" | "produce";
-export const TAB_ORDER: Tab[] = ["search", "relay", "council", "produce"];
-export const TAB_LABEL: Record<Tab, string> = { search: "搜索", relay: "陪练", council: "议会", produce: "产出" };
-export const TAB_SUB: Record<Tab, string> = { search: "事实侦察", relay: "想清楚", council: "温和/拷问", produce: "生图/文/PPT" };
+export type Tab = "search" | "relay" | "council" | "produce" | "auto";
+export const TAB_ORDER: Tab[] = ["search", "relay", "council", "produce", "auto"];
+export const TAB_LABEL: Record<Tab, string> = { search: "搜索", relay: "陪练", council: "议会", produce: "产出", auto: "自动档" };
+export const TAB_SUB: Record<Tab, string> = { search: "事实侦察", relay: "想清楚", council: "温和/拷问", produce: "生图/文/PPT", auto: "⚡ 加速器" };
+
+// 自动档 Auto-Pilot 类型
+export interface AutoFields { direction: string; artifacts_hint: string[]; open_questions: string[]; }
+export interface AutoConvergence { repeat: boolean; reason: string; layer: number; sim: number | null; threshold: number; }
+export interface AutoEval { spec_satisfaction: number; open_issues: string[]; blind_spots: string[]; stop_recommendation: boolean; reason: string; }
+export interface AutoAgent { role: "direction" | "questions" | "evidence"; model: string; failed: boolean; error?: string; out: Record<string, unknown> | null; }
+export interface AutoRound { index: number; lens: { id: string; name: string }; humanNote: string | null; taskOrder: { read?: string; focus?: string; tasks?: Record<string, string> }; agents: AutoAgent[]; fields: AutoFields; viewpoint: { stance: string; text: string; dissent: string; model?: string } | null; convergence: AutoConvergence; eval: AutoEval; }
+export interface AutoRun { rounds: AutoRound[]; md: (AutoFields & { brief_original?: string }) | null; bestRoundIndex?: number; status?: string; injectBackup?: { target: string; at: string } | null; }
 
 // 议会内部强度:温和(council)⇄ 拷问(roast)
 export type CouncilIntensity = "council" | "roast";

@@ -43,6 +43,9 @@ import {
   credScore,
   CONFIDENCE_CN,
   PRODUCE_FORMATS,
+  AutoRun,
+  AutoRound,
+  AutoFields,
 } from "./discussion";
 import { Landing } from "./Landing";
 import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
@@ -238,6 +241,12 @@ function App() {
   const [produceModel, setProduceModel] = useState<string>(""); // 产出:选中的模型(provider id),空=用默认第一个
   const [protoRealImg, setProtoRealImg] = useState(true); // HTML 原型:配真图(gpt-image-1)开关,关=用 picsum 占位省额度
   const [artInstr, setArtInstr] = useState(""); // 产物「改稿」给同模型的一句指令
+  // 自动档 Auto-Pilot
+  const [autoRun, setAutoRun] = useState<AutoRun | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoLive, setAutoLive] = useState<any>(null); // 当前轮流式累积
+  const [autoNote, setAutoNote] = useState(""); // 轮间插话
+  const [autoInjected, setAutoInjected] = useState<string | null>(null); // 已注入到哪个站
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
@@ -373,6 +382,7 @@ function App() {
     setArtifacts([]); setRefineFor(null); setRefineText(""); setProduceType("copy");
     setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]);
     setSolutionDoc(null); setMakingSolDoc(false);
+    setAutoRun(null); setAutoLive(null); setAutoBusy(false); setAutoNote(""); setAutoInjected(null);
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
@@ -407,6 +417,7 @@ function App() {
       setArtifacts(dis.artifacts || []); setRefineFor(null); setRefineText("");
       setViewpoints(dis.viewpoints || []); setDeliberation(dis.deliberation || null); setClarify(dis.clarify || null); setDelibFails([]);
       setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null); setSolutionDoc(dis.solutionDoc || null);
+      setAutoRun(dis.autoRun || null); setAutoLive(null);
       setCuration(deriveCuration(dis.humanSignals || [])); setReplyOpen(null); setReplyText("");
       setPhase(dis.status === "finalized" ? "finalized" : "awaiting-user");
       // 按恢复内容选落点 tab + 清挂起交接/下拉 + 复位议会强度
@@ -785,6 +796,8 @@ function App() {
     if (t === "search") return pack && pack.items.length > 0 ? "done" : "idle";
     if (t === "relay") return relayCard ? "done" : "idle";
     if (t === "council") return converged || viewpoints.length > 0 ? "done" : "idle";
+    if (t === "auto") return autoBusy && tab === "auto" ? "run" : (autoRun?.rounds?.length ? "done" : "idle");
+    if (t === "produce") return artifacts.length > 0 ? "done" : "idle";
     return artifacts.length > 0 ? "done" : "idle";
   }
   // 纯切站(浏览):清旧站报错 + 收下拉(run 函数会另行清,无冲突)
@@ -1230,7 +1243,7 @@ function App() {
   );
 
   // 交接目标 + 各站输出底部的「送到下一站」内联条
-  const onwardOf: Record<Tab, Tab[]> = { search: ["relay", "council"], relay: ["council", "produce"], council: ["produce"], produce: [] };
+  const onwardOf: Record<Tab, Tab[]> = { search: ["relay", "council"], relay: ["council", "produce"], council: ["produce"], produce: [], auto: [] };
   const handoffBar = (from: Tab) => {
     if (!docFor(from) || !onwardOf[from].length) return null;
     return (
@@ -1425,6 +1438,7 @@ function App() {
       relay: { ph: drafting ? "说说你的点子,开始想清楚…" : "回应搭子 / 补充想法,继续往下聊…", hint: turns.length ? "一来一往聊清楚;理清了点中央「出方向卡」召多脑" : `搭子 ${dialogueN === 1 ? "主脑" : dialogueN + " 人"} 会专注回应、帮你想清楚`, run: () => sendClarify(bindBrief ? brief : userInput), label: busy ? "回应中…" : deliberating ? "出卡中…" : "发送", disabled: needIdea || busy || deliberating },
       council: { ph: drafting ? "描述你的点子,送进议会…" : "可补一句背景再审议(留空直接审)", hint: "温和=多视角综述;拷问=强制魔鬼 + R3 交叉", run: runCouncilBtn, label: deliberating ? "审议中…" : viewpoints.length ? "再审一轮 →" : "送进议会 →", disabled: needIdea || deliberating || busy },
       produce: { ph: "在中央选「格式」+ 模型生成;改稿在卡片上点「改」", hint: "把方案交给某个 AI 产出文案/PRD/图", run: () => {}, label: "在中央选模型生成", disabled: true },
+      auto: { ph: "", hint: "", run: () => {}, label: "", disabled: true },
     };
     const c = cfg[tab];
     return (
@@ -2583,12 +2597,204 @@ function App() {
     );
   };
 
+  // ============ 自动档 Auto-Pilot ============
+  const autoMdText = (md: AutoFields & { brief_original?: string }) =>
+    [`# ${brief?.split("\n")[0]?.slice(0, 40) || "自动档草稿"}`, "", "## 一句话方向", md.direction || "", "", `## 待拍板(自动注议会)`, ...((md.open_questions || []).map((q) => "- " + q)), "", "## 建议产出", (md.artifacts_hint || []).join("、"), "", "## 原始点子", md.brief_original || brief || ""].join("\n");
+  async function runAutoPilotRound(humanNote?: string) {
+    if (autoBusy) return;
+    const did = await ensureDiscussion(false, undefined, true);
+    if (!did) return;
+    const t = ++token.current;
+    setAutoBusy(true); setRunError("");
+    const roundIndex = (autoRun?.rounds?.length || 0) + 1;
+    setAutoLive({ roundIndex, taskOrder: null, lens: null, agents: [], fields: null, viewpoint: null, convergence: null, eval: null, done: false, humanNote: humanNote || null });
+    try {
+      await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "task-order") setAutoLive((p: any) => ({ ...p, taskOrder: d.taskOrder, lens: d.lens, by: d.by }));
+          else if (ev === "agent") setAutoLive((p: any) => ({ ...p, agents: [...(p?.agents || []), d] }));
+          else if (ev === "fields") setAutoLive((p: any) => ({ ...p, fields: d.fields, viewpoint: d.viewpoint }));
+          else if (ev === "convergence") setAutoLive((p: any) => ({ ...p, convergence: d }));
+          else if (ev === "eval") setAutoLive((p: any) => ({ ...p, eval: d }));
+          else if (ev === "round-done") setAutoLive((p: any) => ({ ...p, done: true, roundDone: d }));
+          else if (ev === "capped") { setRunError(`已达上限 ${d.maxRounds} 轮 —— 收当前最佳轮`); setAutoLive((p: any) => ({ ...p, done: true })); }
+          else if (ev === "error") setRunError(d.error);
+        }, () => cancelled(t));
+      if (!cancelled(t)) {
+        const r = await fetch(`/api/discussion/${did}`).then((x) => x.json()).catch(() => null);
+        if (r?.discussion?.autoRun) setAutoRun(r.discussion.autoRun);
+        setAutoNote("");
+      }
+    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
+    finally { if (!cancelled(t)) setAutoBusy(false); }
+  }
+  async function autoInject(target: "relay" | "council" | "produce") {
+    if (!discussion) return;
+    try {
+      const r = await fetch(`/api/discussion/${discussion.id}/autopilot/inject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target }) }).then((x) => x.json());
+      if (r.ok) { setAutoInjected(target); await loadDiscussion(discussion.id); switchTab(target); }
+      else setRunError(r.missing ? "注入缺字段:" + r.missing.join("、") : (r.error || "注入失败"));
+    } catch (e) { setRunError((e as Error).message); }
+  }
+  async function autoReset() {
+    if (discussion) { try { await fetch(`/api/discussion/${discussion.id}/autopilot/reset`, { method: "POST" }); } catch {} }
+    setAutoRun(null); setAutoLive(null); setAutoInjected(null); setAutoNote("");
+  }
+  const autoSpark = (rounds: AutoRound[]) => {
+    const w = 224, h = 46, pad = 7;
+    const xs = rounds.map((_, i) => pad + (rounds.length === 1 ? (w - 2 * pad) / 2 : i * (w - 2 * pad) / (rounds.length - 1)));
+    const ys = rounds.map((r) => h - pad - ((Math.max(1, Math.min(5, r.eval?.spec_satisfaction || 1)) - 1) / 4) * (h - 2 * pad));
+    const pts = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(" ");
+    return (
+      <svg width={w} height={h} style={{ display: "block" }}>
+        {rounds.length > 1 && <polyline points={pts} fill="none" stroke="var(--cyan)" strokeWidth="1.6" />}
+        {xs.map((x, i) => <circle key={i} cx={x} cy={ys[i]} r={rounds[i].convergence?.repeat ? 3.6 : 2.6} fill={rounds[i].convergence?.repeat ? "var(--red)" : "var(--cyan)"} />)}
+      </svg>
+    );
+  };
+  const ROLE_CN: Record<string, string> = { direction: "方向", questions: "待拍板", evidence: "证据/分歧" };
+  const acBody = () => {
+    const rounds = autoRun?.rounds || [];
+    const md = autoRun?.md;
+    const stage: any = autoLive || (rounds.length ? { ...rounds[rounds.length - 1], done: true, roundIndex: rounds.length } : null);
+    const fourFilled = !!(md?.direction && md?.open_questions?.length && md?.artifacts_hint?.length);
+    return (
+      <div className="ll" style={{ gridTemplateColumns: "256px 1fr 322px" }}>
+        {/* 左:进度 + 收敛趋势 + 点子 */}
+        <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)" }}><span className="label">进度 · AUTO-PILOT</span></div>
+          <div style={{ flex: 1, overflow: "auto", padding: "14px 15px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 8px", textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 800, color: "var(--cyan)", fontFamily: "var(--mono)" }}>{rounds.length}</div><div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>已跑轮</div></div>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 8px", textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 800, color: "var(--green)", fontFamily: "var(--mono)" }}>{rounds.length ? (rounds[rounds.length - 1].eval?.spec_satisfaction ?? "–") : "–"}<span style={{ fontSize: 11, color: "var(--faint)" }}>/5</span></div><div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>成稿度</div></div>
+            </div>
+            {rounds.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <span className="label">收敛趋势 · CONVERGENCE</span>
+                <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "8px 6px", background: "rgba(255,255,255,.012)" }}>{autoSpark(rounds)}</div>
+                <div className="mono" style={{ fontSize: 9.5, color: rounds[rounds.length - 1].convergence?.repeat ? "var(--red)" : "var(--faint)", lineHeight: 1.5 }}>{rounds[rounds.length - 1].convergence?.reason}</div>
+              </div>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span className="label">当前点子</span>
+              {discussion ? <div style={{ fontSize: 12, color: "#C2CCD6", lineHeight: 1.55, border: "1px solid var(--line)", borderRadius: 8, padding: "10px 11px" }}>{brief}</div>
+                : <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 84, resize: "vertical", lineHeight: 1.5 }} value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="一个模糊点子…" />}
+            </div>
+          </div>
+        </div>
+        {/* 中:workflow 舞台 */}
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
+            <span className="label">⚡ 自动档舞台</span>
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>导演调度 · 三脑并行 · 反熵防复读 · 人轮间插话</span>
+            {rounds.length > 0 && <button className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={autoReset}>↺ 重置</button>}
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "18px 22px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            {!stage && (
+              <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.9, maxWidth: 420 }}>
+                输入一个模糊点子 → 自动档并行跑 <b>方向 / 待拍板 / 证据</b> 三路 + 导演调度 + 反熵防复读,几轮跑出一份能带进站打磨的<b>粗稿</b>。
+                <div style={{ marginTop: 18 }}><button className="amber-btn" style={{ padding: "12px 26px", fontSize: 14, fontFamily: "var(--mono)" }} disabled={autoBusy || !brief.trim()} onClick={() => runAutoPilotRound()}>⚡ 开始自动档</button></div>
+              </div>
+            )}
+            {stage && (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 13, fontWeight: 700, color: "var(--cyan)" }}>ROUND {stage.roundIndex}</span>
+                  {stage.lens && <span className="agent-pill" style={{ color: "#C9A6FF" }}><span className="d" style={{ background: "#C9A6FF" }} />透镜 · {stage.lens.name}</span>}
+                  {stage.humanNote && <span className="mono" style={{ fontSize: 10, color: "#F2BF52" }}>↳ 你插了一句</span>}
+                  {!stage.done && <span className="breath" style={{ marginLeft: "auto" }} />}
+                </div>
+                {stage.taskOrder ? <div style={{ border: "1px solid rgba(232,151,92,.3)", borderLeft: "2px solid var(--c-claude)", borderRadius: 9, background: "rgba(232,151,92,.05)", padding: "11px 13px" }}>
+                  <div className="mono" style={{ fontSize: 9, color: "var(--c-claude)", marginBottom: 5 }}>导演 · 任务单{stage.by ? " · " + stage.by : ""}</div>
+                  {stage.taskOrder.read && <div style={{ fontSize: 12.5, color: "#EEE3D2", lineHeight: 1.55, marginBottom: 6 }}>{stage.taskOrder.read}</div>}
+                  {stage.taskOrder.focus && <div style={{ fontSize: 11.5, color: "var(--cyan)", lineHeight: 1.5 }}>▸ 本轮重点:{stage.taskOrder.focus}</div>}
+                </div> : !stage.done && <div className="gen" style={{ height: 44, borderRadius: 9 }} />}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 11 }}>
+                  {["direction", "questions", "evidence"].map((role) => {
+                    const a: any = (stage.agents || []).find((x: any) => x.role === role);
+                    const col = a ? agentColor(agentKey(a.model)) : "var(--faint)";
+                    return (
+                      <div key={role} style={{ border: "1px solid var(--line)", borderTop: "2px solid " + col, borderRadius: 9, padding: "10px 11px", minHeight: 84, background: "rgba(255,255,255,.012)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: 2, background: col }} />
+                          <span style={{ fontSize: 11.5, fontWeight: 700, color: "#D6DEE7" }}>{ROLE_CN[role]}</span>
+                          {a && <span className="mono" style={{ marginLeft: "auto", fontSize: 9, color: col }}>{a.model}</span>}
+                        </div>
+                        {!a ? <div className="gen" style={{ height: 32, borderRadius: 6 }} />
+                          : a.failed ? <div style={{ fontSize: 10.5, color: "var(--red)" }}>挂了:{(a.error || "").slice(0, 40)}</div>
+                            : <div style={{ fontSize: 11, color: "#C2CCD6", lineHeight: 1.5 }}>
+                                {role === "direction" && <span>{a.out?.direction}</span>}
+                                {role === "questions" && <ul style={{ margin: 0, paddingLeft: 14 }}>{((a.out?.open_questions as string[]) || []).slice(0, 5).map((q, i) => <li key={i} style={{ marginBottom: 2 }}>{q}</li>)}</ul>}
+                                {role === "evidence" && <span><b style={{ color: col }}>{a.out?.stance}</b> · {a.out?.text}</span>}
+                              </div>}
+                      </div>
+                    );
+                  })}
+                </div>
+                {stage.eval && <div style={{ display: "flex", gap: 11, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 200, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 12px" }}>
+                    <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginBottom: 5 }}>导演评估 · 成稿度 {stage.eval.spec_satisfaction}/5</div>
+                    <div style={{ fontSize: 11.5, color: "#C2CCD6", lineHeight: 1.5 }}>{stage.eval.reason}</div>
+                    {(stage.eval.blind_spots || []).length > 0 && <div style={{ marginTop: 7, fontSize: 10.5, color: "#F2BF52", lineHeight: 1.5 }}>盲点(下轮专攻):{(stage.eval.blind_spots || []).join("、")}</div>}
+                  </div>
+                  {stage.convergence && <div style={{ flex: 1, minWidth: 200, border: "1px solid " + (stage.convergence.repeat ? "rgba(255,93,110,.4)" : "var(--line)"), borderRadius: 9, padding: "10px 12px", background: stage.convergence.repeat ? "rgba(255,93,110,.06)" : "transparent" }}>
+                    <div className="mono" style={{ fontSize: 9, color: stage.convergence.repeat ? "var(--red)" : "var(--faint)", marginBottom: 5 }}>收敛判定 · L{stage.convergence.layer}{stage.convergence.sim != null ? " · 余弦 " + stage.convergence.sim.toFixed(3) : ""}</div>
+                    <div style={{ fontSize: 11.5, color: stage.convergence.repeat ? "#ff8a93" : "#C2CCD6", lineHeight: 1.5 }}>{stage.convergence.reason}</div>
+                    {stage.convergence.repeat && <div style={{ marginTop: 6, fontSize: 10.5, color: "#F2BF52" }}>⚠ 疑似复读 —— 建议插一句新角度,或「够了收草稿」</div>}
+                  </div>}
+                </div>}
+              </>
+            )}
+            {rounds.length > 1 && <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span className="label">历史轮</span>
+              {rounds.slice(0, -1).map((r) => <div key={r.index} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "var(--muted)", border: "1px solid var(--line)", borderRadius: 7, padding: "6px 9px" }}>
+                <span className="mono" style={{ color: "var(--faint)" }}>R{r.index}</span><span style={{ color: "#C9A6FF" }}>{r.lens?.name}</span><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.fields?.direction}</span><span className="mono" style={{ color: r.convergence?.repeat ? "var(--red)" : "var(--faint)" }}>{r.eval?.spec_satisfaction}/5</span>
+              </div>)}
+            </div>}
+          </div>
+          {rounds.length > 0 && (
+            <div style={{ flex: "0 0 auto", padding: "12px 18px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 9 }}>
+              <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 44, resize: "vertical", lineHeight: 1.5 }} value={autoNote} onChange={(e) => setAutoNote(e.target.value)} placeholder="插一句:喂个新角度 / 纠正理解(人是最强反熵)—— 留空直接续跑" disabled={autoBusy} />
+              <button className="mbtn" style={{ justifyContent: "center" }} disabled={autoBusy} onClick={() => runAutoPilotRound(autoNote.trim() || undefined)}>{autoBusy ? "跑这一轮中…" : autoNote.trim() ? "↳ 带这句续跑" : "续跑一轮 →"}</button>
+            </div>
+          )}
+        </div>
+        {/* 右:MD 粗稿 + 分发 */}
+        <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="label">MD 粗稿 · DRAFT</span>
+            {md && <span className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(autoMdText(md))}>⧉ 复制</span>}
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "15px", display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
+            {!md ? <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>跑起来后这里实时长出四个强字段:一句话方向 / 待拍板 / 建议产出 / 原始点子。攒够了注入某站继续细化。</div>
+              : <>
+                <div style={{ border: "1px solid rgba(72,220,255,.3)", borderTop: "2px solid var(--cyan)", borderRadius: 9, padding: "11px 13px", background: "rgba(72,220,255,.05)" }}><div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 4 }}>一句话方向</div><div style={{ fontSize: 13, color: "#E6EEF6", lineHeight: 1.5, fontWeight: 600 }}>{md.direction || "(待生成)"}</div></div>
+                <div><div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginBottom: 5 }}>待拍板(自动注议会)· {md.open_questions?.length || 0}</div><ul style={{ margin: 0, paddingLeft: 15, display: "flex", flexDirection: "column", gap: 4 }}>{(md.open_questions || []).map((q, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.5 }}>{q}</li>)}</ul></div>
+                <div><div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginBottom: 5 }}>建议产出</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{(md.artifacts_hint || []).map((h, i) => <span key={i} className="agent-pill" style={{ color: "var(--green)" }}>{h}</span>)}</div></div>
+              </>}
+          </div>
+          <div style={{ flex: "0 0 auto", padding: "13px 15px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 9 }}>
+            {autoInjected && <div className="mono" style={{ fontSize: 10, color: "var(--green)" }}>✓ 已注入 {TAB_LABEL[autoInjected as Tab]} · <span className="clk" style={{ color: "var(--cyan)" }} onClick={async () => { if (discussion) { await fetch(`/api/discussion/${discussion.id}/autopilot/restore`, { method: "POST" }); await loadDiscussion(discussion.id); setAutoInjected(null); } }}>一键还原</span></div>}
+            <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{fourFilled ? "四强字段齐 → 注入任意站继续打磨:" : "再跑一两轮把字段攒齐,即可注入。"}</div>
+            <div style={{ display: "flex", gap: 7 }}>
+              <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={!md?.direction || autoBusy} onClick={() => autoInject("relay")}>陪练</button>
+              <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={!md?.open_questions?.length || autoBusy} onClick={() => autoInject("council")} title="需待拍板≥1">议会</button>
+              <button className="amber-btn" style={{ flex: 1.2, padding: "9px 10px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center" }} disabled={!md?.direction || autoBusy} onClick={() => autoInject("produce")}>产出 →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="app">
       {topChrome()}
       {tab === "relay" ? llBody()
         : tab === "search" ? ssBody()
         : tab === "produce" ? ccBody()
+        : tab === "auto" ? acBody()
         : tab === "council" ? ycBody()
         : <div className="grid work">
             {conversationCol()}
@@ -2598,7 +2804,7 @@ function App() {
 
       {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
 
-      {tab !== "relay" && tab !== "search" && tab !== "produce" && tab !== "council" && composerBar()}
+      {tab !== "relay" && tab !== "search" && tab !== "produce" && tab !== "council" && tab !== "auto" && composerBar()}
       {showHistory && (
         <div className="hist-overlay" onClick={() => setShowHistory(false)}>
           <div className="hist-panel" onClick={(e) => e.stopPropagation()}>

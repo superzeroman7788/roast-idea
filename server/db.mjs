@@ -89,6 +89,7 @@ async function migrate() {
     `ALTER TABLE discussion_turns ADD COLUMN correction TEXT`,             // 纠偏说明(原方向 + 用户纠正),广播给后续
     `ALTER TABLE discussions ADD COLUMN user_id TEXT`, // 用户体系:讨论归属(NULL=历史遗留,启动时迁给站长)
     `ALTER TABLE discussions ADD COLUMN solution_doc TEXT`, // 方案文档:主脑收口的厚方案,交下游精修
+    `ALTER TABLE discussions ADD COLUMN auto_run TEXT`,     // 自动档 Auto-Pilot:整条 run 状态(rounds/md/收敛史)
   ]) {
     try { await client.execute(stmt); } catch {}
   }
@@ -268,6 +269,7 @@ export async function getDiscussion(id, userId) {
     clarify: d.clarify ? JSON.parse(d.clarify) : null,
     relay: d.relay ? JSON.parse(d.relay) : null,
     solutionDoc: d.solution_doc || null,
+    autoRun: d.auto_run ? JSON.parse(d.auto_run) : null,
     evidencePack: d.evidence_pack ? JSON.parse(d.evidence_pack) : null,
     roles: d.roles ? JSON.parse(d.roles) : null,
     createdAt: d.created_at, updatedAt: d.updated_at,
@@ -290,6 +292,11 @@ export async function saveRelay(id, relay) {
 }
 export async function setSolutionDoc(id, md) {
   await run(`UPDATE discussions SET solution_doc = ?, updated_at = ? WHERE id = ?`, [md || null, new Date().toISOString(), id]);
+}
+
+// 自动档:整条 run 状态(JSON)
+export async function setAutoRun(id, state) {
+  await run(`UPDATE discussions SET auto_run = ?, updated_at = ? WHERE id = ?`, [state ? JSON.stringify(state) : null, new Date().toISOString(), id]);
 }
 export async function finalizeDiscussion(id, conclusion, converged) {
   const now = new Date().toISOString();
