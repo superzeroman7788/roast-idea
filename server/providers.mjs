@@ -1290,7 +1290,7 @@ async function computeConvergence(cur, prev, byoKeys) {
 
 // 跑一轮:导演任务单 → 3 产出 agent 并行(allSettled,单挂不雪崩)→ 合并强字段 → 收敛判定 → 导演评估。
 // onEvent(ev,data):'task-order'|'agent'|'fields'|'convergence'|'eval'。角色↔模型每轮轮换(跨厂商出多样性)。
-export async function runAutoRound({ brief, roundIndex, prevState, humanNote, evidence = [], byoKeys }, onEvent) {
+export async function runAutoRound({ discId, brief, roundIndex, prevState, humanNote, evidence = [], byoKeys }, onEvent) {
   const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
   const seats = assignDiscussionSeats(byoKeys);
   if (!seats.length) throw new Error("没有可用模型(去 .env.local 配 key)");
@@ -1299,6 +1299,8 @@ export async function runAutoRound({ brief, roundIndex, prevState, humanNote, ev
   const prevFields = prevRound?.fields || null;
   const openIssues = prevRound?.eval?.open_issues || [];
   const blindSpots = prevRound?.eval?.blind_spots || [];
+  // 反熵 A(应急):第 2 轮起(冷启动第 1 轮禁 A)用盲点/未解问题把证据按相关度重排喂证据 agent;无证据则空,绝不编造
+  const evForAgents = roundIndex >= 2 ? await retrieveForBlindSpots(discId, evidence, [...openIssues, ...blindSpots].join(" "), byoKeys) : evidence.slice(0, 6);
 
   const dir = await hedgedChatJSON(buildAutoDirectorPrompt({ brief, roundIndex, prevFields, openIssues, blindSpots, lens, humanNote }), byoKeys, { label: "auto-director", maxTokens: 1500 });
   const taskOrder = dir.out || { read: "", focus: "(导演评估失败,本轮自由发挥)", tasks: {} };
@@ -1309,7 +1311,7 @@ export async function runAutoRound({ brief, roundIndex, prevState, humanNote, ev
   const settled = await Promise.allSettled(assign.map(async ({ role, seat }) => {
     const provider = ALL.find((p) => p.id === seat.id);
     const apiKey = resolveKey(provider, byoKeys);
-    const out = await chatJSON(provider, apiKey, buildAutoProducePrompt({ role, brief, roundIndex, taskOrder, lens, prevFields, evidence }), { tries: 1, timeoutMs: 40000, maxTokens: 1800 });
+    const out = await chatJSON(provider, apiKey, buildAutoProducePrompt({ role, brief, roundIndex, taskOrder, lens, prevFields, evidence: evForAgents }), { tries: 1, timeoutMs: 40000, maxTokens: 1800 });
     return { role, model: seat.label, out };
   }));
   const agents = [];
@@ -1328,6 +1330,8 @@ export async function runAutoRound({ brief, roundIndex, prevState, humanNote, ev
     open_questions: Array.isArray(qA.open_questions) ? qA.open_questions.slice(0, 8) : (prevFields?.open_questions || []),
   };
   const viewpoint = evA.text ? { stance: evA.stance || "Fix", text: evA.text, evidence_refs: evA.evidence_refs || [], dissent: evA.dissent || "", model: agents.find((a) => a.role === "evidence")?.model } : null;
+  // 反熵 C(去重):viewpoint embedding 比对历史账本,太像则标"近似已说"(白箱提示,不强制重生)
+  if (viewpoint) { const dd = await dedupViewpoint(discId, roundIndex, viewpoint.text, byoKeys); viewpoint.dupSim = dd.dupSim; viewpoint.dup = dd.dupSim != null && dd.dupSim >= AUTO_CONV_SIM; }
   await emit("fields", { fields, viewpoint });
 
   const convergence = await computeConvergence(fields, prevFields, byoKeys);
@@ -1340,4 +1344,30 @@ export async function runAutoRound({ brief, roundIndex, prevState, humanNote, ev
   await emit("eval", evalOut);
 
   return { index: roundIndex, lens: { id: lens.id, name: lens.name }, humanNote: humanNote || null, taskOrder, agents: agents.map((a) => ({ role: a.role, model: a.model, failed: a.failed, error: a.error, out: a.out })), fields, viewpoint, convergence, eval: evalOut };
+}
+
+// 自动档反熵 A/C 的 per-discussion 内存 embedding 账本(进程内,重启即丢——MVP,验证有效再上向量库)。
+const AUTO_STORE = new Map(); // discId -> { evid:[{item,vec}], views:[{round,text,vec}] }
+function autoStore(discId) { const k = discId || "_"; if (!AUTO_STORE.has(k)) AUTO_STORE.set(k, { evid: [], views: [] }); return AUTO_STORE.get(k); }
+
+// A 定向检索:用盲点/未解问题当 query,把本讨论证据按余弦相关度重排,取 top-K 喂证据 agent(证据 embedding 缓存)。
+async function retrieveForBlindSpots(discId, evidence, query, byoKeys, k = 6) {
+  if (!evidence?.length || !query.trim()) return (evidence || []).slice(0, k);
+  const store = autoStore(discId);
+  if (store.evid.length !== evidence.length) {
+    store.evid = [];
+    for (const item of evidence) { const vec = await embed(String(item.title || item.claim || item.snippet || item.text || "").slice(0, 400), byoKeys); store.evid.push({ item, vec }); }
+  }
+  const qv = await embed(query, byoKeys);
+  if (!qv) return evidence.slice(0, k);
+  return store.evid.map((e) => ({ item: e.item, s: cosineSim(e.vec, qv) ?? -1 })).sort((a, b) => b.s - a.s).slice(0, k).map((x) => x.item);
+}
+// C 去重:新 viewpoint embedding 与历史账本比对,返回最相似度(≥阈值即"近似已说");并入账本。
+async function dedupViewpoint(discId, roundIndex, text, byoKeys) {
+  if (!text) return { dupSim: null };
+  const store = autoStore(discId);
+  const vec = await embed(String(text).slice(0, 600), byoKeys);
+  let dupSim = null;
+  if (vec) { for (const v of store.views) { const s = cosineSim(vec, v.vec); if (s != null && (dupSim == null || s > dupSim)) dupSim = s; } store.views.push({ round: roundIndex, text, vec }); }
+  return { dupSim };
 }

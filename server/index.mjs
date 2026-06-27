@@ -594,7 +594,7 @@ const server = http.createServer(async (req, res) => {
       if (roundIndex > MAX_ROUNDS) { sseSend(res, "capped", { roundIndex, maxRounds: MAX_ROUNDS }); res.end(); return; }
       try {
         const evidence = d.evidencePack?.items || [];
-        const round = await runAutoRound({ brief: d.brief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
+        const round = await runAutoRound({ discId: d.id, brief: d.brief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
         const rounds = [...(prevState.rounds || []), round];
         const md = { brief_original: d.brief, ...round.fields };
         let best = 0, bestSat = -1;

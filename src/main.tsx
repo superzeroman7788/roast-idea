@@ -2719,6 +2719,7 @@ function App() {
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                           <span style={{ width: 6, height: 6, borderRadius: 2, background: col }} />
                           <span style={{ fontSize: 11.5, fontWeight: 700, color: "#D6DEE7" }}>{ROLE_CN[role]}</span>
+                          {role === "evidence" && stage.viewpoint?.dup && <span className="mono" title={"与历史观点近似(余弦 " + (stage.viewpoint.dupSim?.toFixed?.(2) ?? "") + ")—— 反熵 C 去重提示"} style={{ fontSize: 8.5, color: "var(--red)", border: "1px solid rgba(255,93,110,.4)", borderRadius: 4, padding: "1px 4px" }}>近似已说</span>}
                           {a && <span className="mono" style={{ marginLeft: "auto", fontSize: 9, color: col }}>{a.model}</span>}
                         </div>
                         {!a ? <div className="gen" style={{ height: 32, borderRadius: 6 }} />
