@@ -217,7 +217,7 @@ async function runAnthropic(provider, { mode, brief, angle, apiKey, evidence }) 
     },
     body: JSON.stringify({
       model,
-      max_tokens: 900,
+      max_tokens: 4000,
       temperature: 0.55,
       system: system.content,
       messages: [{ role: "user", content: user.content }],
@@ -333,7 +333,7 @@ async function fetchRetry(url, makeOpts, tries = 2) {
 }
 
 // 统一聊天调用:Anthropic vs OpenAI 兼容;jsonMode 控制是否强制 JSON(finalize 出 markdown 不用)。
-async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2, timeoutMs = 45000, maxTokens = 1100 } = {}) {
+async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2, timeoutMs = 60000, maxTokens = 4000 } = {}) {
   const model = process.env[provider.modelEnv] || provider.defaultModel;
   if (provider.id === "claude") {
     const [system, user] = messages;
@@ -440,7 +440,7 @@ export async function runSolutionDoc({ mode, brief, transcript, card, byoKeys })
     const apiKey = provider ? resolveKey(provider, byoKeys) : "";
     if (!provider || !apiKey) continue;
     try {
-      const md = await chatRaw(provider, apiKey, buildSolutionDocPrompt({ mode, brief, transcript, card }), { jsonMode: false, tries: 1, timeoutMs: 60000, maxTokens: 3200 });
+      const md = await chatRaw(provider, apiKey, buildSolutionDocPrompt({ mode, brief, transcript, card }), { jsonMode: false, tries: 1, timeoutMs: 150000, maxTokens: 8000 });
       const clean1 = clean(md);
       if (clean1 && clean1.length > 60) return { md: clean1, by: provider.label };
       lastErr = "输出过短";
@@ -893,7 +893,7 @@ async function hedgedChatJSON(prompt, byoKeys, { graceMs = 6000, timeoutMs = 300
 export async function runClarifyCard({ mode, brief, evidence, byoKeys }, onEvent) {
   const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
   const started = Date.now();
-  const { out, seat, err } = await hedgedChatJSON(buildClarifyCardPrompt({ mode, brief, evidence }), byoKeys, { label: "clarify", maxTokens: 2000 });
+  const { out, seat, err } = await hedgedChatJSON(buildClarifyCardPrompt({ mode, brief, evidence }), byoKeys, { label: "clarify", maxTokens: 4000 });
   const card = out ? normCard(out) : null;
   const hop = { order: 1, seat: seat || "—", role: "synth", lens: null, added: [], framing: null, failed: !card, error: card ? undefined : err, latencyMs: Date.now() - started };
   await emit("relay-hop", hop);
@@ -905,7 +905,7 @@ export async function runClarifyCard({ mode, brief, evidence, byoKeys }, onEvent
 // 侦察简报合成:读全部证据 → 关键结论 + 整体可信度 + 建议(同对冲,~10s 内出)。供搜索站右栏。
 export async function synthesizeEvidenceBrief({ brief, items, mode, byoKeys }) {
   if (!Array.isArray(items) || !items.length) return null;
-  const { out } = await hedgedChatJSON(buildEvidenceBriefPrompt({ brief, items, mode }), byoKeys, { label: "brief", maxTokens: 1100 });
+  const { out } = await hedgedChatJSON(buildEvidenceBriefPrompt({ brief, items, mode }), byoKeys, { label: "brief", maxTokens: 3000 });
   if (!out) return null;
   const validCats = ["competitor", "demand", "pricing", "pain", "trend", "viral", "userVoice", "competitorCopy", "platform", "risk"];
   const categories = {};
@@ -936,7 +936,7 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     const apiKey = resolveKey(prov, byoKeys);
     const started = Date.now();
     try {
-      const plan = await chatJSON(prov, apiKey, buildOrganizerPrompt({ mode, brief, evidence }), { maxTokens: 1800 });
+      const plan = await chatJSON(prov, apiKey, buildOrganizerPrompt({ mode, brief, evidence }), { maxTokens: 4000 });
       organizerPlan = formatOrganizerPlan(plan);
       const evIds = [...new Set((plan.keyPoints || []).flatMap((k) => (Array.isArray(k?.evidenceIds) ? k.evidenceIds : [])))].filter(Boolean);
       const vp = { seat: seats.organizer.label, roleAngle: "organizer", stance: null, text: organizerPlan, evidenceIds: evIds, isHardestKill: false, round: 1, latencyMs: Date.now() - started };
@@ -1015,7 +1015,7 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     const prov = ALL.find((p) => p.id === seats.verifier.id);
     const apiKey = resolveKey(prov, byoKeys);
     try {
-      const out = await chatJSON(prov, apiKey, buildVerifierPrompt({ brief, evidence, viewpoints: r2 }), { maxTokens: 1600 });
+      const out = await chatJSON(prov, apiKey, buildVerifierPrompt({ brief, evidence, viewpoints: r2 }), { maxTokens: 4000 });
       const checks = Array.isArray(out.checks) ? out.checks : [];
       for (const ch of checks) {
         const idx = Number(ch?.index);
@@ -1068,7 +1068,7 @@ export async function runDeliberation({ mode, brief, evidence, byoKeys, runConfi
     const apiKey = resolveKey(prov, byoKeys);
     try {
       // 主席综述字段多(共识/矛盾/盲点/独到…),默认 1100 token 会把 JSON 截断成 "Unterminated string" → 整段综述丢失 + heal 重试白等 45s。给足 token。
-      const s = await chatJSON(prov, apiKey, buildChairmanSummaryPrompt({ brief, viewpoints: collected }), { maxTokens: 2600, timeoutMs: 60000 });
+      const s = await chatJSON(prov, apiKey, buildChairmanSummaryPrompt({ brief, viewpoints: collected }), { maxTokens: 6000, timeoutMs: 120000 });
       deliberation = {
         consensus: asStrArr(s.consensus),
         contradictions: asStrArr(s.contradictions),
@@ -1186,7 +1186,7 @@ async function describeImage(dataUrl, byoKeys) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model,
-      max_tokens: 450,
+      max_tokens: 1500,
       messages: [
         {
           role: "user",
