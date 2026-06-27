@@ -242,6 +242,7 @@ function App() {
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
   // 方向卡分段折叠:key→是否收起。默认折起最长的几段(新角度/关键假设/暂不做)
   const [cardCollapsed, setCardCollapsed] = useState<Record<string, boolean>>({ angles: true, assumptions: true, dont: true });
+  const [dirOpen, setDirOpen] = useState(false); // 陪练右栏「方向卡」整块折叠,默认收起(内核置顶、聊天在下)
   const pendingHandoff = useRef(""); // 上游交接 MD,注入下一站运行后清空
 
   const token = useRef(0);
@@ -1799,57 +1800,103 @@ function App() {
   const llDirectionCard = () => {
     const adopted = turns.filter((t) => t.pinned && t.id);
     const c = relayCard;
+    const recent = turns.filter((t) => t.role !== "system").slice(-6); // 最新对话(右栏底部快速回看)
     return (
       <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
           <span className="label">方向卡 · DIRECTION</span>
-          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => setCardCollapsed(["clear", "angles", "assumptions", "decide", "dont"].some((k) => !cardCollapsed[k]) ? { clear: true, angles: true, assumptions: true, decide: true, dont: true } : {})}>{["clear", "angles", "assumptions", "decide", "dont"].some((k) => !cardCollapsed[k]) ? "收起全部" : "展开全部"}</span>}
-          {c && <span className="ghost-chip" style={{ padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制</span>}
+          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制</span>}
         </div>
-        <div style={{ flex: 1, minHeight: 0, padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
-          <div style={{ border: "1px solid rgba(232,151,92,.35)", borderTop: "2px solid var(--c-claude)", borderRadius: 10, background: "linear-gradient(180deg,rgba(232,151,92,.08),rgba(255,255,255,.01))", padding: "13px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ width: 7, height: 7, borderRadius: 2, background: "var(--c-claude)" }} />
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#EEE3D2" }}>主脑方案</span>
-              <span className="mono" style={{ fontSize: 9, color: "var(--faint)", letterSpacing: 1 }}>MASTER PLAN</span>
-              <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: adopted.length ? "#F2BF52" : "var(--faint)" }}>已纳入 {adopted.length}</span>
-            </div>
-            {adopted.length === 0
-              ? <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.55 }}>给任意搭子的回答点「点赞」→ 强制纳入主脑方案,主脑出卡时会围绕它收敛。</div>
-              : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {adopted.map((t) => { const k = agentKey(t.speaker); return (
-                    <div key={t.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.02)" }}>
-                      <span style={{ flex: "0 0 auto", width: 6, height: 6, borderRadius: 2, marginTop: 5, background: agentColor(k) }} />
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div className="mono" style={{ fontSize: 9, color: agentColor(k), marginBottom: 3 }}>{t.speaker} · 强制纳入</div>
-                        <div style={{ fontSize: 12, color: "#CCD6E0", lineHeight: 1.45 }}>{(t.body || "").slice(0, 120)}{(t.body || "").length > 120 ? "…" : ""}</div>
-                      </div>
-                      <span className="clk" onClick={() => togglePin(t)} title="移除" style={{ color: "var(--faint)", fontSize: 14, lineHeight: 1 }}>×</span>
-                    </div>); })}
-                </div>}
-          </div>
-          {!c && <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>和搭子聊清楚后,点中央「理清了 · 出方向卡」—— 主脑(Claude)读整段对话收口,这里会长出:已稳定 / 新角度 / 需你拍板 / 暂不做。</div>}
-          {c?.oneLine && <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "11px 13px", background: "rgba(72,220,255,.05)" }}><div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 4 }}>一句话内核</div><div style={{ fontSize: 13, color: "#DCE6EF", lineHeight: 1.5, fontWeight: 600 }}>{c.oneLine}</div></div>}
-          {llDirSec("clear", "✓", "#3FDD8A", "已稳定", c?.clear)}
-          {llDirSec("angles", "+", "#34D2E6", "接力铺开的新角度", c?.expandedAngles)}
-          {llDirSec("assumptions", "!", "#E8975C", "关键假设", c?.assumptions)}
-          {c && (c.firstNarrowing || (c.decisionsForYou && c.decisionsForYou.length > 0)) && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div className="clk" onClick={() => toggleSec("decide")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: "var(--cyan)", border: "1px solid rgba(52,210,230,.5)", background: "var(--cyan2)" }}>◆</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>需要你拍板</span>
-                <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--faint)", width: 10, textAlign: "center" }}>{cardCollapsed.decide ? "▸" : "▾"}</span>
+        <div style={{ flex: 1, minHeight: 0, padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* ① 一句话内核 —— 置顶 */}
+          {c?.oneLine
+            ? <div style={{ border: "1px solid rgba(72,220,255,.32)", borderTop: "2px solid var(--cyan)", borderRadius: 10, padding: "12px 14px", background: "rgba(72,220,255,.06)" }}>
+                <div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 5, letterSpacing: 1 }}>一句话内核 · CORE</div>
+                <div style={{ fontSize: 14, color: "#E6EEF6", lineHeight: 1.5, fontWeight: 600 }}>{c.oneLine}</div>
               </div>
-              {!cardCollapsed.decide && (
-                <div style={{ border: "1px solid rgba(232,154,42,.4)", borderRadius: 10, padding: 13, background: "rgba(232,154,42,.06)" }}>
-                  {c.firstNarrowing && <div style={{ fontSize: 13.5, fontWeight: 700, color: "#EEE3D2", lineHeight: 1.4 }}>{c.firstNarrowing}</div>}
-                  {c.decisionsForYou && c.decisionsForYou.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 }}>{c.decisionsForYou.map((x, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.5 }}>{x}</li>)}</ul>}
-                  {c.inviteYourInput && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 10, lineHeight: 1.5 }}>💬 {c.inviteYourInput}</div>}
+            : <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>和搭子聊清楚后,点中央「理清了 · 出方向卡」—— 主脑(Claude)读整段对话收口,这里会长出一句内核 + 方向卡(已稳定 / 新角度 / 需你拍板 / 暂不做)。</div>}
+
+          {/* ② 方向卡 —— 整块折叠,默认收起 */}
+          {c && (
+            <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
+              <div className="clk" onClick={() => setDirOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 13px", background: "rgba(232,151,92,.06)" }}>
+                <span style={{ width: 7, height: 7, borderRadius: 2, background: "var(--c-claude)" }} />
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#EEE3D2" }}>方向卡</span>
+                <span className="mono" style={{ fontSize: 9, color: "var(--faint)" }}>主脑收口</span>
+                {adopted.length > 0 && <span className="mono" style={{ fontSize: 9.5, color: "#F2BF52" }}>· 已纳入 {adopted.length}</span>}
+                <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{dirOpen ? "▾ 收起" : "▸ 展开"}</span>
+              </div>
+              {dirOpen && (
+                <div style={{ padding: "14px 13px", display: "flex", flexDirection: "column", gap: 16, borderTop: "1px solid var(--line)" }}>
+                  <div style={{ border: "1px solid rgba(232,151,92,.3)", borderRadius: 9, background: "rgba(232,151,92,.05)", padding: "11px 12px", display: "flex", flexDirection: "column", gap: 9 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: "#EEE3D2" }}>主脑方案</span>
+                      <span className="mono" style={{ fontSize: 9, color: "var(--faint)", letterSpacing: 1 }}>MASTER PLAN</span>
+                      <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: adopted.length ? "#F2BF52" : "var(--faint)" }}>已纳入 {adopted.length}</span>
+                    </div>
+                    {adopted.length === 0
+                      ? <div style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.5 }}>给任意搭子的回答点「👍」→ 纳入主脑方案,主脑出卡围绕它收敛。</div>
+                      : <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                          {adopted.map((t) => { const k = agentKey(t.speaker); return (
+                            <div key={t.id} style={{ display: "flex", gap: 7, alignItems: "flex-start", border: "1px solid var(--line)", borderRadius: 7, padding: "8px 9px", background: "rgba(255,255,255,.02)" }}>
+                              <span style={{ flex: "0 0 auto", width: 6, height: 6, borderRadius: 2, marginTop: 5, background: agentColor(k) }} />
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div className="mono" style={{ fontSize: 9, color: agentColor(k), marginBottom: 3 }}>{t.speaker} · 强制纳入</div>
+                                <div style={{ fontSize: 11.5, color: "#CCD6E0", lineHeight: 1.45 }}>{(t.body || "").slice(0, 110)}{(t.body || "").length > 110 ? "…" : ""}</div>
+                              </div>
+                              <span className="clk" onClick={(e) => { e.stopPropagation(); togglePin(t); }} title="移除" style={{ color: "var(--faint)", fontSize: 13, lineHeight: 1 }}>×</span>
+                            </div>); })}
+                        </div>}
+                  </div>
+                  {llDirSec("clear", "✓", "#3FDD8A", "已稳定", c?.clear)}
+                  {llDirSec("angles", "+", "#34D2E6", "接力铺开的新角度", c?.expandedAngles)}
+                  {llDirSec("assumptions", "!", "#E8975C", "关键假设", c?.assumptions)}
+                  {(c.firstNarrowing || (c.decisionsForYou && c.decisionsForYou.length > 0)) && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div className="clk" onClick={() => toggleSec("decide")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: "var(--cyan)", border: "1px solid rgba(52,210,230,.5)", background: "var(--cyan2)" }}>◆</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: "#D6DEE7" }}>需要你拍板</span>
+                        <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--faint)", width: 10, textAlign: "center" }}>{cardCollapsed.decide ? "▸" : "▾"}</span>
+                      </div>
+                      {!cardCollapsed.decide && (
+                        <div style={{ border: "1px solid rgba(232,154,42,.4)", borderRadius: 10, padding: 13, background: "rgba(232,154,42,.06)" }}>
+                          {c.firstNarrowing && <div style={{ fontSize: 13, fontWeight: 700, color: "#EEE3D2", lineHeight: 1.4 }}>{c.firstNarrowing}</div>}
+                          {c.decisionsForYou && c.decisionsForYou.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 }}>{c.decisionsForYou.map((x, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.5 }}>{x}</li>)}</ul>}
+                          {c.inviteYourInput && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 10, lineHeight: 1.5 }}>💬 {c.inviteYourInput}</div>}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {llDirSec("dont", "–", "#7B8B9C", "暂不做", c?.dontBuildYet)}
                 </div>
               )}
             </div>
           )}
-          {llDirSec("dont", "–", "#7B8B9C", "暂不做", c?.dontBuildYet)}
+
+          {/* ③ 最新对话 —— 右栏底部快速回看,点开看大图 */}
+          {recent.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="label">最新对话 · RECENT</span>
+                <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, color: "var(--faint)" }}>近 {recent.length} 条</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {recent.map((t, i) => {
+                  const isUser = t.role === "user";
+                  const col = isUser ? "var(--cyan)" : agentColor(agentKey(t.speaker));
+                  return (
+                    <div key={t.id || i} className={t.id ? "clk" : ""} onClick={() => t.id && setDetailId(t.id)} title={t.id ? "看大图" : ""} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px", background: "rgba(255,255,255,.015)" }}>
+                      <span style={{ flex: "0 0 auto", width: 6, height: 6, borderRadius: 2, marginTop: 5, background: col }} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="mono" style={{ fontSize: 9, color: col, marginBottom: 3 }}>{isUser ? "你" : t.speaker}</div>
+                        <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.45 }}>{(t.body || "").replace(/\s+/g, " ").slice(0, 100)}{(t.body || "").length > 100 ? "…" : ""}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
         {turns.length > 0 && (
           <div style={{ flex: "0 0 auto", padding: "12px 15px", borderTop: "1px solid var(--line)", background: solutionDoc ? "rgba(63,221,138,.05)" : "rgba(232,151,92,.05)", display: "flex", flexDirection: "column", gap: 9 }}>
