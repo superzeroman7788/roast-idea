@@ -2145,7 +2145,7 @@ function App() {
           ? <div style={{ border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden", background: "#fff" }}>
               <iframe srcDoc={htmlOf(a.content)} sandbox="allow-scripts" title="HTML 原型预览" style={{ width: "100%", height: 440, border: "none", display: "block", background: "#fff" }} />
             </div>
-          : <div style={{ fontSize: 13, color: "#C2CCD6", lineHeight: 1.65, whiteSpace: "pre-wrap", borderLeft: "1px solid var(--line)", paddingLeft: 13, maxHeight: 260, overflow: "auto" }}>{(a.content || "").slice(0, 1400)}</div>}
+          : <div style={{ fontSize: 13, color: "#C2CCD6", lineHeight: 1.65, whiteSpace: "pre-wrap", borderLeft: "1px solid var(--line)", paddingLeft: 13, maxHeight: 460, overflow: "auto" }}>{a.content || ""}</div>}
         <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 10, borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
           {a.type !== "image" && <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" })}>✎ 改稿</button>}
           <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>
