@@ -323,9 +323,9 @@ export const ROLE_COLOR: Record<string, string> = {
 
 // ===== 四站工作台:搜索/陪练/议会/产出(相互独立 + MD 文档交接) =====
 export type Tab = "search" | "relay" | "council" | "produce" | "auto";
-export const TAB_ORDER: Tab[] = ["search", "relay", "council", "produce", "auto"];
-export const TAB_LABEL: Record<Tab, string> = { search: "搜索", relay: "陪练", council: "议会", produce: "产出", auto: "自动档" };
-export const TAB_SUB: Record<Tab, string> = { search: "事实侦察", relay: "想清楚", council: "温和/拷问", produce: "生图/文/PPT", auto: "⚡ 加速器" };
+export const TAB_ORDER: Tab[] = ["auto", "search", "relay", "council", "produce"];
+export const TAB_LABEL: Record<Tab, string> = { auto: "自动档", search: "搜索", relay: "陪练", council: "议会", produce: "产出" };
+export const TAB_SUB: Record<Tab, string> = { auto: "⚡ 第零站·加速器", search: "事实侦察", relay: "想清楚", council: "温和/拷问", produce: "生图/文/PPT" };
 
 // 自动档 Auto-Pilot 类型
 export interface AutoFields { direction: string; artifacts_hint: string[]; open_questions: string[]; }

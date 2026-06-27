@@ -1306,8 +1306,12 @@ export async function runAutoRound({ discId, brief, roundIndex, prevState, human
   const taskOrder = dir.out || { read: "", focus: "(导演评估失败,本轮自由发挥)", tasks: {} };
   await emit("task-order", { roundIndex, lens: { id: lens.id, name: lens.name, hint: lens.hint }, taskOrder, by: dir.seat, humanNote: humanNote || null });
 
+  // 三产出 agent 固定用强模型跨厂商阵容(Claude/OpenAI/DeepSeek 前三名),每轮只轮换"角色↔模型"映射出多样性 ——
+  // 不随轮次漂到弱模型(Kimi/OpenRouter 等),免得后面几轮质量掉 + 撞 429。配置不足 3 家时池缩小(角色复用同模型)。
+  const AGENT_RANK = { claude: 0, openai: 1, deepseek: 2, qwen: 3, openrouter: 4, agnes: 5, kimi: 6 };
+  const pool = [...seats].sort((a, b) => (AGENT_RANK[a.id] ?? 9) - (AGENT_RANK[b.id] ?? 9)).slice(0, 3);
   const roles = ["direction", "questions", "evidence"];
-  const assign = roles.map((role, i) => ({ role, seat: seats[(roundIndex - 1 + i) % seats.length] }));
+  const assign = roles.map((role, i) => ({ role, seat: pool[(roundIndex - 1 + i) % pool.length] }));
   const settled = await Promise.allSettled(assign.map(async ({ role, seat }) => {
     const provider = ALL.find((p) => p.id === seat.id);
     const apiKey = resolveKey(provider, byoKeys);

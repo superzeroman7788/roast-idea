@@ -247,6 +247,8 @@ function App() {
   const [autoLive, setAutoLive] = useState<any>(null); // 当前轮流式累积
   const [autoNote, setAutoNote] = useState(""); // 轮间插话
   const [autoInjected, setAutoInjected] = useState<string | null>(null); // 已注入到哪个站
+  const [autoLooping, setAutoLooping] = useState(false); // 自动连跑中(不打断就一直跑)
+  const autoLoopRef = useRef(false); // 异步循环读最新值,避免闭包陈旧
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
@@ -2600,14 +2602,15 @@ function App() {
   // ============ 自动档 Auto-Pilot ============
   const autoMdText = (md: AutoFields & { brief_original?: string }) =>
     [`# ${brief?.split("\n")[0]?.slice(0, 40) || "自动档草稿"}`, "", "## 一句话方向", md.direction || "", "", `## 待拍板(自动注议会)`, ...((md.open_questions || []).map((q) => "- " + q)), "", "## 建议产出", (md.artifacts_hint || []).join("、"), "", "## 原始点子", md.brief_original || brief || ""].join("\n");
-  async function runAutoPilotRound(humanNote?: string) {
-    if (autoBusy) return;
-    const did = await ensureDiscussion(false, undefined, true);
-    if (!did) return;
+  async function runAutoPilotRound(humanNote?: string, didOverride?: string): Promise<any> {
+    if (autoBusy) return null;
+    const did = didOverride || await ensureDiscussion(false, undefined, true);
+    if (!did) return null;
     const t = ++token.current;
     setAutoBusy(true); setRunError("");
     const roundIndex = (autoRun?.rounds?.length || 0) + 1;
     setAutoLive({ roundIndex, taskOrder: null, lens: null, agents: [], fields: null, viewpoint: null, convergence: null, eval: null, done: false, humanNote: humanNote || null });
+    let doneData: any = null, capped = false;
     try {
       await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined },
         (ev, d) => {
@@ -2617,8 +2620,8 @@ function App() {
           else if (ev === "fields") setAutoLive((p: any) => ({ ...p, fields: d.fields, viewpoint: d.viewpoint }));
           else if (ev === "convergence") setAutoLive((p: any) => ({ ...p, convergence: d }));
           else if (ev === "eval") setAutoLive((p: any) => ({ ...p, eval: d }));
-          else if (ev === "round-done") setAutoLive((p: any) => ({ ...p, done: true, roundDone: d }));
-          else if (ev === "capped") { setRunError(`已达上限 ${d.maxRounds} 轮 —— 收当前最佳轮`); setAutoLive((p: any) => ({ ...p, done: true })); }
+          else if (ev === "round-done") { doneData = d; setAutoLive((p: any) => ({ ...p, done: true, roundDone: d })); }
+          else if (ev === "capped") { capped = true; setRunError(`已达上限 ${d.maxRounds} 轮 —— 收当前最佳轮`); setAutoLive((p: any) => ({ ...p, done: true })); }
           else if (ev === "error") setRunError(d.error);
         }, () => cancelled(t));
       if (!cancelled(t)) {
@@ -2628,7 +2631,28 @@ function App() {
       }
     } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
     finally { if (!cancelled(t)) setAutoBusy(false); }
+    return cancelled(t) ? null : (capped ? { capped: true } : doneData);
   }
+  // 自动连跑:跑一轮 → 若仍在 loop 且不该暂停(疑似复读 / 导演建议停 / 到顶)→ 隔 ~1.6s 续下一轮,期间用户可暂停/插话
+  async function loopAuto(did: string, note?: string) {
+    const done = await runAutoPilotRound(note, did);
+    if (!done || !autoLoopRef.current) { setAutoLooping(false); autoLoopRef.current = false; return; }
+    const pause = done.capped || done.repeatFlagged || done.stopRecommended || (done.roundIndex >= done.maxRounds);
+    if (pause) { setAutoLooping(false); autoLoopRef.current = false; return; }
+    await new Promise((r) => setTimeout(r, 1600));
+    if (autoLoopRef.current) loopAuto(did);
+  }
+  async function startAutoPilot() {
+    if (autoBusy || !brief.trim()) return;
+    const did = await ensureDiscussion(true, brief.trim(), true); // 强制新讨论(新 idea,不读过往对话)
+    if (!did) return;
+    setAutoRun(null); setAutoLive(null); setAutoInjected(null);
+    setAutoLooping(true); autoLoopRef.current = true;
+    loopAuto(did);
+  }
+  function pauseAuto() { setAutoLooping(false); autoLoopRef.current = false; }
+  function resumeAuto() { if (!discussion) return; setAutoLooping(true); autoLoopRef.current = true; loopAuto(discussion.id); }
+  function newAutoIdea() { pauseAuto(); setAutoRun(null); setAutoLive(null); setAutoInjected(null); setAutoNote(""); setDiscussion(null); setBrief(""); }
   async function autoInject(target: "relay" | "council" | "produce") {
     if (!discussion) return;
     try {
@@ -2676,25 +2700,26 @@ function App() {
                 <div className="mono" style={{ fontSize: 9.5, color: rounds[rounds.length - 1].convergence?.repeat ? "var(--red)" : "var(--faint)", lineHeight: 1.5 }}>{rounds[rounds.length - 1].convergence?.reason}</div>
               </div>
             )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rounds.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span className="label">当前点子</span>
-              {discussion ? <div style={{ fontSize: 12, color: "#C2CCD6", lineHeight: 1.55, border: "1px solid var(--line)", borderRadius: 8, padding: "10px 11px" }}>{brief}</div>
-                : <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 84, resize: "vertical", lineHeight: 1.5 }} value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="一个模糊点子…" />}
-            </div>
+              <div style={{ fontSize: 12, color: "#C2CCD6", lineHeight: 1.55, border: "1px solid var(--line)", borderRadius: 8, padding: "10px 11px" }}>{brief}</div>
+            </div>}
           </div>
         </div>
         {/* 中:workflow 舞台 */}
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
             <span className="label">⚡ 自动档舞台</span>
-            <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>导演调度 · 三脑并行 · 反熵防复读 · 人轮间插话</span>
-            {rounds.length > 0 && <button className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={autoReset}>↺ 重置</button>}
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>导演调度 · 三脑并行 · 反熵防复读 · 自动连跑(随时可打断)</span>
+            {autoLooping && <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--cyan)", display: "inline-flex", alignItems: "center", gap: 5 }}><span className="breath" />自动连跑中</span>}
+            {rounds.length > 0 && <button className="ghost-chip" style={{ marginLeft: autoLooping ? 8 : "auto", fontSize: 10 }} onClick={newAutoIdea}>↺ 新点子</button>}
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 22px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             {!stage && (
-              <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.9, maxWidth: 420 }}>
-                输入一个模糊点子 → 自动档并行跑 <b>方向 / 待拍板 / 证据</b> 三路 + 导演调度 + 反熵防复读,几轮跑出一份能带进站打磨的<b>粗稿</b>。
-                <div style={{ marginTop: 18 }}><button className="amber-btn" style={{ padding: "12px 26px", fontSize: 14, fontFamily: "var(--mono)" }} disabled={autoBusy || !brief.trim()} onClick={() => runAutoPilotRound()}>⚡ 开始自动档</button></div>
+              <div style={{ margin: "auto", maxWidth: 540, display: "flex", flexDirection: "column", gap: 15, textAlign: "center" }}>
+                <div className="board-empty" style={{ lineHeight: 1.9 }}>输入一个<b>模糊的新点子</b> → 自动档并行跑 <b>方向 / 待拍板 / 证据</b> 三路 + 导演调度 + 反熵防复读,<b>自动连跑</b>几轮出一份能带进站打磨的粗稿(你随时可暂停 / 插一句 / 够了收草稿)。</div>
+                <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 92, resize: "vertical", lineHeight: 1.6, fontSize: 13.5 }} value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="一个模糊的新点子…(例:一个帮播客创作者把长音频自动剪成短视频片段的工具)" autoFocus />
+                <div><button className="amber-btn" style={{ padding: "12px 28px", fontSize: 14, fontFamily: "var(--mono)" }} disabled={autoBusy || !brief.trim()} onClick={startAutoPilot}>⚡ 开始自动档(自动连跑)</button></div>
               </div>
             )}
             {stage && (
@@ -2756,8 +2781,16 @@ function App() {
           </div>
           {rounds.length > 0 && (
             <div style={{ flex: "0 0 auto", padding: "12px 18px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 9 }}>
-              <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 44, resize: "vertical", lineHeight: 1.5 }} value={autoNote} onChange={(e) => setAutoNote(e.target.value)} placeholder="插一句:喂个新角度 / 纠正理解(人是最强反熵)—— 留空直接续跑" disabled={autoBusy} />
-              <button className="mbtn" style={{ justifyContent: "center" }} disabled={autoBusy} onClick={() => runAutoPilotRound(autoNote.trim() || undefined)}>{autoBusy ? "跑这一轮中…" : autoNote.trim() ? "↳ 带这句续跑" : "续跑一轮 →"}</button>
+              {autoLooping ? (
+                <button className="mbtn" style={{ justifyContent: "center", borderColor: "var(--cyan)", color: "var(--cyan)" }} onClick={pauseAuto}>⏸ 暂停自动(跑完这轮停)</button>
+              ) : (
+                <>
+                  <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 44, resize: "vertical", lineHeight: 1.5 }} value={autoNote} onChange={(e) => setAutoNote(e.target.value)} placeholder="插一句:喂个新角度 / 纠正理解(人是最强反熵)—— 留空则只是继续自动" disabled={autoBusy} />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={autoBusy} onClick={() => { const n = autoNote.trim(); if (discussion) { setAutoLooping(true); autoLoopRef.current = true; loopAuto(discussion.id, n || undefined); } }}>{autoBusy ? "跑这一轮中…" : autoNote.trim() ? "↳ 带这句续跑(恢复自动)" : "▶ 继续自动"}</button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
