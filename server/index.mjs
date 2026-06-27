@@ -612,7 +612,7 @@ const server = http.createServer(async (req, res) => {
       const instruction = body.instruction ? String(body.instruction).slice(0, 2000) : "";
       // 交接来的方案文档(MD,如 方向卡/收敛方案 → 产出):优先作为产出的"方案源"
       const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
-      const validTypes = ["copy", "prd", "design_doc", "code_sketch", "image", "ppt", "html_proto"];
+      const validTypes = ["copy", "prd", "design_doc", "code_sketch", "image", "ppt", "html_proto", "critique"];
       if (!validTypes.includes(type)) return json(res, 400, { ok: false, error: "invalid type" });
       if (!providerId) return json(res, 400, { ok: false, error: "provider required" });
 

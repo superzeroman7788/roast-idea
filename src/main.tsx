@@ -237,7 +237,8 @@ function App() {
   const [councilSel, setCouncilSel] = useState("all"); // 议会:左栏选中的议题(松筛中间署名观点)
   const [produceModel, setProduceModel] = useState<string>(""); // 产出:选中的模型(provider id),空=用默认第一个
   const [protoRealImg, setProtoRealImg] = useState(true); // HTML 原型:配真图(gpt-image-1)开关,关=用 picsum 占位省额度
-  const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" } | null>(null); // 产物卡的「改稿/换模型」内联选模型菜单
+  const [artInstr, setArtInstr] = useState(""); // 产物「改稿」给同模型的一句指令
+  const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
   // 方向卡分段折叠:key→是否收起。默认折起最长的几段(新角度/关键假设/暂不做)
@@ -2105,7 +2106,7 @@ function App() {
     const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
     if (planMd) L.push(converged ? "## 议会收敛" : "## 方向卡", planMd, "");
     const picked = ccPicked();
-    picked.filter((a) => a.type !== "image" && a.type !== "html_proto" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
+    picked.filter((a) => a.type !== "image" && a.type !== "html_proto" && a.type !== "critique" && a.content).forEach((a) => L.push(`## ${ARTIFACT_TYPE_LABEL[a.type]} · ${a.provider}`, a.content, ""));
     const protos = picked.filter((a) => a.type === "html_proto");
     if (protos.length) { L.push("## HTML 原型"); protos.forEach((a) => L.push(`- ${a.provider}:见单独的 .html 文件(产物卡「↓ 下载 HTML」)`)); L.push(""); }
     const imgs = picked.filter((a) => a.type === "image" && a.imagePath);
@@ -2125,10 +2126,12 @@ function App() {
     else exportMarkdown({ title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] });
   };
   const ccArtCard = (a: Artifact) => {
-    const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : PRODUCE_FORMATS[1]));
+    const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : a.type === "critique" ? { ic: "🔍", name: "挑刺", c: "#FF8A6B" } : PRODUCE_FORMATS[1]));
     const pc = ccProvColor(a.provider);
     const menuOpen = artMenu?.id === a.id;
-    const avail = ccAvail(a.type).filter((p) => (artMenu?.mode === "refine" ? p.label !== a.provider : true));
+    const isCrit = a.type === "critique";
+    const avail = ccAvail(a.type).filter((p) => (artMenu?.mode === "critique" ? p.label !== a.provider : true));
+    const sameModelId = produceProviders.find((p) => p.label === a.provider)?.id || avail[0]?.id;
     return (
       <div key={a.id} style={{ border: "1px solid var(--line)", borderLeft: "2px solid " + fm.c, borderRadius: 11, padding: "15px 17px", background: "rgba(255,255,255,.015)", display: "flex", flexDirection: "column", gap: 11 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
@@ -2136,8 +2139,8 @@ function App() {
           <span style={{ fontFamily: "var(--mono)", fontSize: 10, padding: "2px 8px", borderRadius: 5, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.name}</span>
           <span style={{ fontSize: 14, fontWeight: 700, color: "#EEF2F6" }}>{ARTIFACT_TYPE_LABEL[a.type]}</span>
           <span className="agent-pill" style={{ color: pc }}><span className="d" style={{ background: pc }} />{a.provider}</span>
-          <button className="mbtn" style={{ marginLeft: "auto", padding: "4px 10px", ...(a.status === "chosen" ? { borderColor: "var(--green)", color: "var(--green)", background: "rgba(63,227,160,.12)" } : {}) }} onClick={() => chooseArt(a.id, a.type)} title={a.status === "chosen" ? "已采用 —— 立项包用这版" : "采用这版 —— 立项包只收已采用的,同类其余转候选"}>{a.status === "chosen" ? "✓ 已采用" : "采用"}</button>
-          <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ color: "var(--faint)", fontSize: 14 }}>×</span>
+          {!isCrit && <button className="mbtn" style={{ marginLeft: "auto", padding: "4px 10px", ...(a.status === "chosen" ? { borderColor: "var(--green)", color: "var(--green)", background: "rgba(63,227,160,.12)" } : {}) }} onClick={() => chooseArt(a.id, a.type)} title={a.status === "chosen" ? "已采用 —— 立项包用这版" : "采用这版 —— 立项包只收已采用的,同类其余转候选"}>{a.status === "chosen" ? "✓ 已采用" : "采用"}</button>}
+          <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ color: "var(--faint)", fontSize: 14, marginLeft: isCrit ? "auto" : 0 }}>×</span>
         </div>
         {a.type === "image" && a.imagePath
           ? <img src={`/api/artifact/${a.id}/image`} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
@@ -2147,19 +2150,30 @@ function App() {
             </div>
           : <div style={{ fontSize: 13, color: "#C2CCD6", lineHeight: 1.65, whiteSpace: "pre-wrap", borderLeft: "1px solid var(--line)", paddingLeft: 13, maxHeight: 460, overflow: "auto" }}>{a.content || ""}</div>}
         <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 10, borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-          {a.type !== "image" && <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" })}>✎ 改稿</button>}
-          <button className="mbtn" disabled={producing} onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>
+          {a.type !== "image" && !isCrit && <button className="mbtn" disabled={producing} title={`让 ${a.provider} 自己按你的指令改这版(不换模型)`} onClick={() => { setArtInstr(""); setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" }); }}>✎ 改稿</button>}
+          {a.type !== "image" && !isCrit && <button className="mbtn" disabled={producing} title="让另一家 AI 只挑刺、不改写 —— 读完你自己决定怎么改" onClick={() => setArtMenu(menuOpen && artMenu?.mode === "critique" ? null : { id: a.id, mode: "critique" })}>🔍 让另一家挑刺</button>}
+          {!isCrit && <button className="mbtn" disabled={producing} title="换一家从头另出一版,并排比较(不在原稿上改)" onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>}
           {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.type === "html_proto" ? htmlOf(a.content) : (a.content || ""))}>⧉ 复制</button>}
           {a.type === "html_proto" && <button className="mbtn" onClick={() => openHtmlPreview(a)}>⛶ 放大预览</button>}
           {a.type === "html_proto" && <button className="mbtn" onClick={() => downloadHtml(a)}>↓ 下载 HTML</button>}
           {a.type !== "image" && a.type !== "html_proto" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
           {a.type === "image" && a.imagePath && <button className="mbtn" onClick={() => downloadArtifactImage(a)}>↓ 下载图</button>}
         </div>
-        {menuOpen && (
+        {menuOpen && artMenu?.mode === "refine" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 7, paddingTop: 4 }}>
+            <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>让 <b style={{ color: pc }}>{a.provider}</b> 自己改(给一句具体要求,不换模型):</span>
+            <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", resize: "vertical", minHeight: 50, lineHeight: 1.5 }} value={artInstr} autoFocus placeholder="例如:把 MVP 范围写具体 / 风险那节再补 2 条 / 语气更克制 …(⌘/Ctrl+Enter 提交)" onChange={(e) => setArtInstr(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { if (sameModelId) { produce(a.type, sameModelId, a.id, artInstr.trim() || undefined); setArtMenu(null); setArtInstr(""); } } if (e.key === "Escape") { setArtMenu(null); setArtInstr(""); } }} />
+            <div style={{ display: "flex", gap: 7 }}>
+              <button className="mbtn" disabled={producing || !sameModelId} onClick={() => { produce(a.type, sameModelId!, a.id, artInstr.trim() || undefined); setArtMenu(null); setArtInstr(""); }}>✎ 让 {a.provider} 改这版</button>
+              <button className="ghost-chip" onClick={() => { setArtMenu(null); setArtInstr(""); }}>取消</button>
+            </div>
+          </div>
+        )}
+        {menuOpen && artMenu?.mode !== "refine" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingTop: 4 }}>
-            <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{artMenu?.mode === "refine" ? "交给哪家改:" : "换哪家重生:"}</span>
-            {avail.map((p) => <button key={p.id} className="mbtn" disabled={producing} onClick={() => { produce(a.type, p.id, artMenu?.mode === "refine" ? a.id : undefined); setArtMenu(null); }}>{p.label}</button>)}
-            {avail.length === 0 && <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>无可用模型</span>}
+            <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{artMenu?.mode === "critique" ? "让哪家挑刺(只批不改):" : "换哪家从头重生:"}</span>
+            {avail.map((p) => <button key={p.id} className="mbtn" disabled={producing} onClick={() => { if (artMenu?.mode === "critique") produce("critique", p.id, a.id); else produce(a.type, p.id, undefined); setArtMenu(null); }}>{p.label}</button>)}
+            {avail.length === 0 && <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{artMenu?.mode === "critique" ? "没有别家可挑刺" : "无可用模型"}</span>}
           </div>
         )}
       </div>
@@ -2302,7 +2316,7 @@ function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div className="label">本条点子产物</div>
               {artifacts.length === 0 && <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>还没有产物</div>}
-              {[...artifacts].reverse().map((a) => { const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : PRODUCE_FORMATS[1])); return (
+              {[...artifacts].reverse().map((a) => { const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : a.type === "critique" ? { ic: "🔍", name: "挑刺", c: "#FF8A6B" } : PRODUCE_FORMATS[1])); return (
                 <div key={a.id} style={{ display: "flex", gap: 9, border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", background: "rgba(255,255,255,.012)", alignItems: "center" }}>
                   <span style={{ flex: "0 0 auto", width: 22, height: 22, borderRadius: 6, display: "grid", placeItems: "center", fontSize: 11, color: fm.c, border: "1px solid " + fm.c + "44", background: fm.c + "14" }}>{fm.ic}</span>
                   <div style={{ minWidth: 0, flex: 1 }}>

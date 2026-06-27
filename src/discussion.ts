@@ -263,7 +263,7 @@ export const ANGLE_LABEL: Record<string, string> = {
 };
 
 // 产出层(交付物):把方案变成文案/PRD/设计文档/代码草稿/配图
-export type ArtifactType = "copy" | "prd" | "design_doc" | "code_sketch" | "image" | "ppt" | "html_proto";
+export type ArtifactType = "copy" | "prd" | "design_doc" | "code_sketch" | "image" | "ppt" | "html_proto" | "critique";
 
 export type Artifact = {
   id: string;
@@ -288,6 +288,7 @@ export const ARTIFACT_TYPE_LABEL: Record<ArtifactType, string> = {
   image: "配图",
   ppt: "PPT",
   html_proto: "HTML 原型",
+  critique: "挑刺",
 };
 
 // 产出站格式格(中栏五宫格):id 对应 ArtifactType

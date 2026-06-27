@@ -237,6 +237,15 @@ export function assignDiscussionRoles(count) {
 // ============ 产出层(交付物):把方案变成文案/PRD/设计文档/代码草稿 ============
 // 文字类交付物:复用 chatRaw(jsonMode 关 → 出 markdown/代码,不是 JSON)。
 export const PRODUCE_TYPES = {
+  critique: {
+    label: "挑刺意见",
+    system: `你是严苛但建设性的审稿人。任务是**只挑刺、绝不改写或重写文档**。读完给你的文档,用 Markdown 列出:
+## 缺口(该覆盖却没覆盖的)
+## 站不住的地方(可疑假设 / 逻辑漏洞 / 可能的事实错误)
+## 盲点(没人提、但很关键的角度)
+## 最该补强的 2-3 处(按优先级,每条说清"为什么"+"往哪个方向补")
+直接、具体、对事不对人;不复述原文、不给改写版、不客套。`,
+  },
   copy: {
     label: "文案",
     system: `你是资深增长文案。把方案变成可直接投放/上线的中文文案初稿:一个主标题、2-3 个副标题/卖点、一段正文、一个明确的行动号召(CTA)。语言具体、有钩子,不说空话。输出 Markdown。`,
@@ -334,8 +343,10 @@ export function buildProducePrompt({ type, mode, brief, conclusion, evidence, so
     evidenceBlock(evidence),
   ];
   let task;
-  if (mode === "refine" && sourceContent) {
-    task = `下面是另一家 AI 出的「${spec.label}」初稿,请在保留其可取之处的基础上修改/改进:\n\n---\n${sourceContent}\n---\n\n修改要求:${instruction || "整体打磨,使其更清晰、更可用。"}`;
+  if (type === "critique" && sourceContent) {
+    task = `下面是一份已产出的交付物,请作为审稿人**只挑刺、不要改写**:\n\n---\n${sourceContent}\n---\n\n${instruction ? `额外重点关注:${instruction}\n` : ""}按系统提示的分节,列出问题与最该补强处。`;
+  } else if (mode === "refine" && sourceContent) {
+    task = `下面是这份「${spec.label}」的已有初稿,请在保留其可取之处的基础上,按要求修改/改进(不要推倒重来):\n\n---\n${sourceContent}\n---\n\n修改要求:${instruction || "整体打磨,使其更清晰、更可用。"}`;
   } else {
     task = `请基于以上方案,产出一份高质量的「${spec.label}」初稿。${instruction ? `额外要求:${instruction}` : ""}`;
   }

@@ -618,7 +618,7 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
   // HTML 原型/代码草稿很长,默认 1100 token 会截断半截;按 type 给足
   // 输出上限:设计文档/PRD/PPT/HTML原型/代码 都可能很长 → 给足,否则生成到一半就被截断(2400 太小)
   const longForm = type === "design_doc" || type === "prd" || type === "ppt" || type === "html_proto" || type === "code_sketch";
-  const maxTokens = longForm ? 8000 : type === "copy" ? 2600 : 2000;
+  const maxTokens = longForm ? 8000 : type === "critique" ? 4000 : type === "copy" ? 2600 : 2000;
   const timeoutMs = longForm ? 150000 : 60000;
   const content = await chatRaw(provider, apiKey, messages, { jsonMode: false, maxTokens, timeoutMs });
   if (!content || !content.trim()) throw new Error(`${provider.label} 返回空内容`);
