@@ -1562,7 +1562,7 @@ function App() {
         <div style={{ padding: "9px 12px", borderTop: "1px solid var(--line)" }}>
           {editing ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              <input className="yc-reply" value={correctText} autoFocus placeholder="这条哪儿不对?(可留空,直接否掉)" onChange={(e) => setCorrectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") correctTurn(turn, correctText.trim()); if (e.key === "Escape") { setCorrectFor(null); setCorrectText(""); } }} />
+              <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", resize: "vertical", minHeight: 56, lineHeight: 1.5 }} value={correctText} autoFocus placeholder="这条哪儿不对?(可留空,直接否掉)· Enter 提交,Shift+Enter 换行" onChange={(e) => setCorrectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); correctTurn(turn, correctText.trim()); } if (e.key === "Escape") { setCorrectFor(null); setCorrectText(""); } }} />
               <div style={{ display: "flex", gap: 7 }}>
                 <button className="mbtn" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => correctTurn(turn, correctText.trim())}>纠偏 · 重答这条 + 告诉全桌</button>
                 <button className="ghost-chip" onClick={() => { setCorrectFor(null); setCorrectText(""); }}>取消</button>
