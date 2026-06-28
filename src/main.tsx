@@ -178,17 +178,22 @@ const AG: Record<string, { n: string; c: string }> = {
   claude: { n: "Claude", c: "var(--c-claude)" },
   openai: { n: "OpenAI", c: "var(--c-openai)" },
   deepseek: { n: "DeepSeek", c: "var(--c-deepseek)" },
+  qwen: { n: "Qwen", c: "#C58BF2" },
+  zhipu: { n: "智谱", c: "#3FE3A0" },
 };
-const AG_ROLE: Record<string, string> = { claude: "主脑 · 建框架", openai: "假设猎手 · 验路径", deepseek: "反方 · 找盲点" };
+const AG_ROLE: Record<string, string> = { claude: "主脑 · 建框架", openai: "假设猎手 · 验路径", deepseek: "反方 · 找盲点", qwen: "本土视角 · 补证据", zhipu: "分歧 · 替代方案" };
+const DIALOGUE_TITLE: Record<number, string> = { 1: "主脑 Claude", 2: "Claude + OpenAI", 3: "Claude + OpenAI + DeepSeek", 5: "Claude + OpenAI + DeepSeek + Qwen + 智谱" };
 function agentKey(speaker?: string): string {
   const s = (speaker || "").toLowerCase();
   if (s.includes("claude")) return "claude";
   if (s.includes("openai") || s.includes("gpt")) return "openai";
   if (s.includes("deepseek")) return "deepseek";
+  if (s.includes("qwen") || s.includes("通义")) return "qwen";
+  if (s.includes("智谱") || s.includes("zhipu") || s.includes("glm")) return "zhipu";
   return "claude";
 }
 function agentColor(key: string): string { return AG[key]?.c || "var(--c-claude)"; }
-const LL_LINEUP = [["claude"], ["claude", "openai"], ["claude", "openai", "deepseek"]];
+const LL_LINEUP: Record<number, string[]> = { 1: ["claude"], 2: ["claude", "openai"], 3: ["claude", "openai", "deepseek"], 5: ["claude", "openai", "deepseek", "qwen", "zhipu"] };
 
 function App() {
   const [mode, setMode] = useState<DiscussionMode>("idea");
@@ -1385,11 +1390,11 @@ function App() {
               <div className="ch-orb"><span className="ch-core" /></div>
               <div className="ch-seats">
                 <span className="ch-lab">对话搭子</span>
-                {[1, 2, 3].map((n) => (
-                  <button key={n} className={`ch-seat${dialogueN === n ? " on" : ""}`} disabled={busy} onClick={() => setDialogueN(n)} title={["主脑 Claude", "主脑 Claude + 副脑 OpenAI", "Claude + OpenAI + DeepSeek"][n - 1]}>{n === 1 ? "主脑" : `${n} 脑`}</button>
+                {[1, 2, 3, 5].map((n) => (
+                  <button key={n} className={`ch-seat${dialogueN === n ? " on" : ""}`} disabled={busy} onClick={() => setDialogueN(n)} title={DIALOGUE_TITLE[n]}>{n === 1 ? "主脑" : `${n} 脑`}</button>
                 ))}
               </div>
-              <div className="ch-lineup">{["Claude", "Claude · OpenAI", "Claude · OpenAI · DeepSeek"][dialogueN - 1]}</div>
+              <div className="ch-lineup">{(LL_LINEUP[dialogueN] || ["claude"]).map((k) => AG[k]?.n || k).join(" · ")}</div>
               <div className="ch-hint">{turns.length ? "聊清楚了就召多脑出卡 ↓" : "在下方说说你的点子,搭子会专注回应、帮你想清楚"}</div>
               <button className="btn primary" disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>理清了 → 出方向卡</button>
             </div>
@@ -1703,10 +1708,10 @@ function App() {
   };
 
   // 陪练空场 HUD:三脑环绕「IDEA · 核心」星图(沿用议会图谱动效 §4/§5)。在场搭子按 dialogueN 点亮,其余暗置。
-  const LL_HEX: Record<string, string> = { claude: "#e8975c", openai: "#4fd8c0", deepseek: "#8aa0ff" };
+  const LL_HEX: Record<string, string> = { claude: "#e8975c", openai: "#4fd8c0", deepseek: "#8aa0ff", qwen: "#C58BF2", zhipu: "#3FE3A0" };
   const llIdleOrb = () => {
-    const brains = ["claude", "openai", "deepseek"];
-    const active = new Set(LL_LINEUP[dialogueN - 1]);
+    const brains = LL_LINEUP[dialogueN] || ["claude"];
+    const active = new Set(brains);
     const C = 260, R = 150;
     const pos = brains.map((_, i) => { const a = (-90 + (i * 360) / brains.length) * (Math.PI / 180); return { x: C + R * Math.cos(a), y: C + R * Math.sin(a) }; });
     return (
@@ -1752,7 +1757,7 @@ function App() {
     const userBubble = lastUserIdx >= 0 ? turns[lastUserIdx] : null;
     const replies = (lastUserIdx >= 0 ? turns.slice(lastUserIdx + 1) : turns).filter((t) => t.role !== "user" && t.role !== "system");
     const pending = busy ? Math.max(0, dialogueN - replies.length) : 0;
-    const lineup = LL_LINEUP[dialogueN - 1].map((k) => AG[k].n).join(" · ");
+    const lineup = (LL_LINEUP[dialogueN] || ["claude"]).map((k) => AG[k]?.n || k).join(" · ");
     return (
       <div className="viewin" style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }} key="list">
         <div style={{ padding: "13px 24px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 11 }}>
@@ -1763,7 +1768,7 @@ function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <span className="breath" /><span className="label">对话搭子</span>
             <div className="seg">
-              {[1, 2, 3].map((n) => <button key={n} className={dialogueN === n ? "on" : ""} disabled={busy || deliberating} onClick={() => setDialogueN(n)}>{n === 1 ? "主脑" : n + " 脑"}</button>)}
+              {[1, 2, 3, 5].map((n) => <button key={n} className={dialogueN === n ? "on" : ""} disabled={busy || deliberating} title={DIALOGUE_TITLE[n]} onClick={() => setDialogueN(n)}>{n === 1 ? "主脑" : n + " 脑"}</button>)}
             </div>
             <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{lineup}</span>
             <button className="amber-btn" style={{ marginLeft: "auto", padding: "9px 18px", fontSize: 13, fontFamily: "var(--mono)" }} disabled={!discussion || busy || deliberating || !turns.length} onClick={synthesizeCard}>{deliberating ? "主脑收口中…" : "理清了 · 出方向卡 ↓"}</button>
