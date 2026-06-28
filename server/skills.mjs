@@ -21,6 +21,7 @@ function parseFrontmatter(content) {
 
 function stationMatches(stationMeta, station) {
   if (!station || !stationMeta) return true;
+  if (stationMeta === "global") return true;
   // handles "[produce, agent]" or "produce"
   return stationMeta.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).includes(station);
 }

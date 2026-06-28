@@ -1,7 +1,7 @@
 ---
 name: ai-system-prompt-builder
 description: Create, rewrite, audit, or compress high-quality system prompts and agent instructions for external AI assistants, especially Chinese AI models such as Kimi, DeepSeek, Qwen, Doubao, Wenxin, and Zhipu/GLM. Use when the user asks to make a system prompt, agent prompt, custom assistant instruction, behavior spec, safety/style policy, or domestic-model-adapted prompt from scratch or from an existing prompt file.
-station: [produce, agent]
+station: global
 kind: instruction
 version: 1
 ---

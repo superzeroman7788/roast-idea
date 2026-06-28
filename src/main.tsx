@@ -312,7 +312,7 @@ function App() {
     refreshHistory();
     fetch("/api/produce-providers").then((r) => r.json()).then((d) => { if (d.ok) setProduceProviders(d.providers || []); }).catch(() => {});
     fetch("/api/personas").then((r) => r.json()).then((d) => { if (d.ok) setPersonaLib({ functional: d.functional, opinionated: d.opinionated, providers: d.providers || [] }); }).catch(() => {});
-    fetch("/api/skills?station=produce").then((r) => r.json()).then((d) => { if (d.ok) setSkillList(d.skills || []); }).catch(() => {});
+    fetch("/api/skills").then((r) => r.json()).then((d) => { if (d.ok) setSkillList(d.skills || []); }).catch(() => {});
     // 刷新恢复:把上次的工作台接回来(存在才载,已删则清记号),感知上不再"丢工作台"
     const last = localStorage.getItem("roast_last_did");
     if (last) fetch(`/api/discussion/${last}`).then((r) => r.json()).then((d) => { if (d.ok && d.discussion) loadDiscussion(last); else localStorage.removeItem("roast_last_did"); }).catch(() => {});
@@ -355,6 +355,13 @@ function App() {
     document.addEventListener("keydown", onEsc);
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onEsc); };
   }, [sendMenuFor]);
+
+  useEffect(() => {
+    if (!skillPickerOpen) return;
+    const onDown = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest(".skill-picker-wrap")) setSkillPickerOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [skillPickerOpen]);
 
   function stopTimer() { if (timer.current) clearInterval(timer.current); timer.current = null; }
   function startTimer() {
@@ -626,7 +633,7 @@ function App() {
     try {
       await streamSSE(
         `/api/discussion/${did}/deliberate`,
-        { runConfig: runConfig || undefined, posture: usePosture, excludedIds: [...excludedIds], clarification: clarification || undefined, handoff: handoff || undefined },
+        { runConfig: runConfig || undefined, posture: usePosture, excludedIds: [...excludedIds], clarification: clarification || undefined, handoff: handoff || undefined, skillName: loadedSkill?.name || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "viewpoint") { setViewpoints((prev) => [...prev, d as Viewpoint]); setDelibPhase((d as Viewpoint).round >= 2 ? "critics" : "organizer"); }
@@ -1476,34 +1483,7 @@ function App() {
               <div className="agent-box-head">
                 <span>⚡ 马仔执行</span>
                 <span className="agent-box-sub">gpt-4o-mini · code_interpreter · web_search</span>
-                {/* Skill 选择器 */}
-                <div className="skill-picker-wrap" style={{ marginLeft: "auto", position: "relative" }}>
-                  {loadedSkill ? (
-                    <span className="skill-badge">
-                      Skill: {loadedSkill.name}
-                      <button className="skill-badge-x" onClick={() => setLoadedSkill(null)}>×</button>
-                    </span>
-                  ) : skillList.length > 0 ? (
-                    <>
-                      <button className="skill-load-btn" onClick={() => setSkillPickerOpen((o) => !o)}>加载 Skill ▾</button>
-                      {skillPickerOpen && (
-                        <div className="skill-dropdown" onClick={(e) => e.stopPropagation()}>
-                          {skillList.map((sk) => (
-                            <button key={sk.name} className="skill-dropdown-item" onClick={() => {
-                              fetch(`/api/skills/${sk.name}`).then(r => r.json()).then(d => {
-                                if (d.ok) setLoadedSkill({ name: d.skill.name, body: d.skill.body });
-                              }).catch(() => {});
-                              setSkillPickerOpen(false);
-                            }}>
-                              <span className="skill-item-name">{sk.name}</span>
-                              <span className="skill-item-desc">{sk.description.slice(0, 60)}…</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : null}
-                </div>
+                {loadedSkill && <span className="skill-badge" style={{ marginLeft: "auto" }}>Skill: {loadedSkill.name}</span>}
               </div>
               <div className="agent-input-row">
                 <textarea
@@ -1700,6 +1680,36 @@ function App() {
           );
         })}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {/* 全局 Skill 选择器 */}
+          {skillList.length > 0 && (
+            <div className="skill-picker-wrap">
+              {loadedSkill ? (
+                <span className="skill-badge">
+                  Skill: {loadedSkill.name}
+                  <button className="skill-badge-x" onClick={() => setLoadedSkill(null)}>×</button>
+                </span>
+              ) : (
+                <>
+                  <button className="skill-load-btn" onClick={() => setSkillPickerOpen((o) => !o)}>加载 Skill ▾</button>
+                  {skillPickerOpen && (
+                    <div className="skill-dropdown" onClick={(e) => e.stopPropagation()}>
+                      {skillList.map((sk) => (
+                        <button key={sk.name} className="skill-dropdown-item" onClick={() => {
+                          fetch(`/api/skills/${sk.name}`).then(r => r.json()).then(d => {
+                            if (d.ok) setLoadedSkill({ name: d.skill.name, body: d.skill.body });
+                          }).catch(() => {});
+                          setSkillPickerOpen(false);
+                        }}>
+                          <span className="skill-item-name">{sk.name}</span>
+                          <span className="skill-item-desc">{sk.description.slice(0, 60)}…</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           <span className="ghost-chip" onClick={() => setShowSeatConfig(true)}>席位 · {runConfig ? 3 + runConfig.seats.length : maxSeats}</span>
           <span className="ghost-chip" onClick={() => { setShowHistory(true); refreshHistory(); }}>历史 · {history.length}</span>
           <span className="ghost-chip" title="我所有点子产出过的交付物" onClick={openLibrary}>交付物库</span>
@@ -2827,7 +2837,7 @@ function App() {
     setAutoLive({ roundIndex, lineup: null, lens: null, challenger: null, compliance: null, agents: [], fields: null, viewpoint: null, convergence: null, eval: null, done: false, humanNote: humanNote || null });
     let doneData: any = null, capped = false;
     try {
-      await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined },
+      await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined, skillName: loadedSkill?.name || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "lineup") setAutoLive((p: any) => ({ ...p, roundIndex: d.roundIndex ?? p?.roundIndex, lineup: d.lineup, lens: d.lens, by: d.lineup?.director }));

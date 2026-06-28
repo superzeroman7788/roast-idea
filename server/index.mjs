@@ -458,8 +458,10 @@ const server = http.createServer(async (req, res) => {
         sseSend(res, "deliberate-start", { discussionId: d.id, posture });
         // 想清楚阶段的完整对话(用户 + 协同搭子)= 理解这个项目的根基,折进 brief 喂给本站;再加上游交接的方案文档。
         const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
+        const deliberSkillName = body.skillName ? String(body.skillName) : "";
+        const deliberSkill = deliberSkillName ? loadSkill(deliberSkillName) : null;
         const convo = buildTranscript(d.turns || [], 40);
-        let effBrief = d.brief;
+        let effBrief = deliberSkill ? `[Skill: ${deliberSkill.name}]\n${deliberSkill.body}\n\n---\n\n${d.brief}` : d.brief;
         if (convo) effBrief += `\n\n想清楚阶段的完整对话(理解这个项目的根基,优先于初稿):\n${convo}`;
         effBrief += await pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
         effBrief += await correctionBlock(d.id); // 用户纠偏的方向 → 方向卡当"已排除方向",不再 building
@@ -604,6 +606,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
       const humanNote = body.humanNote ? String(body.humanNote).slice(0, 600) : "";
+      const autoSkillName = body.skillName ? String(body.skillName) : "";
+      const autoSkill = autoSkillName ? loadSkill(autoSkillName) : null;
+      const autoBrief = autoSkill ? `[Skill: ${autoSkill.name}]\n${autoSkill.body}\n\n---\n\n${d.brief}` : d.brief;
       const prevState = d.autoRun || { rounds: [], md: null };
       const roundIndex = (prevState.rounds?.length || 0) + 1;
       const MAX_ROUNDS = Number(process.env.AUTO_MAX_ROUNDS || 10); // 硬截断层(轮次,先松,用户后期评估)
@@ -611,7 +616,7 @@ const server = http.createServer(async (req, res) => {
       if (roundIndex > MAX_ROUNDS) { sseSend(res, "capped", { roundIndex, maxRounds: MAX_ROUNDS }); res.end(); return; }
       try {
         const evidence = d.evidencePack?.items || [];
-        const round = await runAutoRound({ discId: d.id, brief: d.brief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
+        const round = await runAutoRound({ discId: d.id, brief: autoBrief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
         const rounds = [...(prevState.rounds || []), round];
         const md = { brief_original: d.brief, ...round.fields };
         let best = 0, bestScore = -1;
