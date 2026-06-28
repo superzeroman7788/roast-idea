@@ -405,6 +405,7 @@ export async function runDiscussionRound(
     seats.map(async (seat) => {
       // 本席 → 兜底脑(掉线/过载续上,如陪练主脑 Claude 529 → 副脑接);council 不传 fallback,行为不变
       const chain = [seat, ...fallback.filter((f) => f.id !== seat.id)];
+      const hasFallback = chain.length > 1; // 陪练有兜底脑链;议会没有
       const started = Date.now();
       let lastErr = "not configured";
       for (const cand of chain) {
@@ -413,7 +414,9 @@ export async function runDiscussionRound(
         if (!provider || !apiKey) continue;
         try {
           const messages = buildTurnPrompt({ mode, provider: cand.label, role: seat.role, brief, evidence, transcript, userTurn });
-          const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true });
+          // 有兜底链(陪练)→ 单次尝试 + 45s 上限:某脑慢/写长文档卡住就立刻换更快的脑,不再 2 次重试 × 多脑各 60s 叠成数分钟假死。
+          // 无兜底(议会)→ 保留 2 次重试兜稳。真要厚文档走右侧「出方案文档」(8000 token / 150s 专用通道,不在对话里硬挤)。
+          const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true, tries: hasFallback ? 1 : 2, timeoutMs: hasFallback ? 45000 : 60000 });
           const parsed = parseTurnJson(rawText);
           const turn = {
             ok: true,
