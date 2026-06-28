@@ -2914,9 +2914,9 @@ function App() {
     const stage: any = autoLive || (rounds.length ? { ...rounds[rounds.length - 1], done: true, roundIndex: rounds.length } : null);
     const fourFilled = !!(md?.direction && md?.open_questions?.length && md?.artifacts_hint?.length);
     return (
-      <div className="ll" style={{ gridTemplateColumns: "256px 1fr 322px" }}>
+      <div className="ll" style={{ gridTemplateColumns: "256px 1fr 322px", overflow: "hidden" }}>
         {/* 左:进度 + 收敛趋势 + 点子 */}
-        <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)" }}><span className="label">进度 · AUTO-PILOT</span></div>
           <div style={{ flex: 1, overflow: "auto", padding: "14px 15px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             <div style={{ display: "flex", gap: 10 }}>
@@ -2937,7 +2937,7 @@ function App() {
           </div>
         </div>
         {/* 中:workflow 舞台 */}
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
           <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
             <span className="label">⚡ 自动档舞台</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>导演调度 · 三脑并行 · 反熵防复读 · 自动连跑(随时可打断)</span>
@@ -3062,7 +3062,7 @@ function App() {
           )}
         </div>
         {/* 右:MD 粗稿 + 分发 */}
-        <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
             <span className="label">MD 粗稿 · DRAFT</span>
             {md && <span className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={() => copy(autoMdText(md), "已复制草稿")}>⧉ 复制</span>}
