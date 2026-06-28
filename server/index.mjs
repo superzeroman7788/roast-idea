@@ -21,6 +21,7 @@ import {
   reanswerTurn,
   runSolutionDoc,
   runAutoRound,
+  runAgentTask,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
 import {
@@ -792,6 +793,39 @@ const server = http.createServer(async (req, res) => {
         sseSend(res, "produce-done", { discussionId: d.id });
       } catch (error) {
         sseSend(res, "error", { error: error?.message || "produce failed" });
+      }
+      res.end();
+      return;
+    }
+
+    // 马仔 Agent 执行任务(OpenAI Responses API + code_interpreter)
+    const agentRun = url.pathname.match(/^\/api\/discussion\/([^/]+)\/agent$/);
+    if (req.method === "POST" && agentRun) {
+      const d = await getDiscussion(agentRun[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const body = await readJson(req);
+      const task = String(body.task || "").trim().slice(0, 2000);
+      if (!task) return json(res, 400, { ok: false, error: "task required" });
+      const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
+
+      sseHead(res);
+      const ctrl = new AbortController();
+      req.on("close", () => ctrl.abort());
+      try {
+        const convoCtx = buildTranscript(d.turns || [], 20);
+        const brief = d.conclusion
+          ? `${d.brief}\n\n## 方案结论\n${d.conclusion}`
+          : convoCtx ? `${d.brief}\n\n## 讨论摘要\n${convoCtx}` : d.brief;
+        await runAgentTask({
+          brief,
+          task,
+          byoKeys,
+          signal: ctrl.signal,
+          onEvent: (type, data) => sseSend(res, `agent-${type}`, data),
+        });
+        sseSend(res, "agent-done", {});
+      } catch (err) {
+        sseSend(res, "error", { error: err?.message || "agent failed" });
       }
       res.end();
       return;

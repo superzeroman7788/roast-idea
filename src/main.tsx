@@ -277,6 +277,12 @@ function App() {
   const [autoNote, setAutoNote] = useState(""); // 轮间插话
   const [autoInjected, setAutoInjected] = useState<string | null>(null); // 已注入到哪个站
   const [autoLooping, setAutoLooping] = useState(false); // 自动连跑中(不打断就一直跑)
+  // 马仔 Agent
+  const [agentTask, setAgentTask] = useState("");
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentLog, setAgentLog] = useState<{ type: string; text: string }[]>([]);
+  const [agentHtml, setAgentHtml] = useState("");
+  const [agentFiles, setAgentFiles] = useState<{ mimeType: string; b64: string }[]>([]);
   const autoLoopRef = useRef(false); // 异步循环读最新值,避免闭包陈旧
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
@@ -511,6 +517,30 @@ function App() {
       );
     } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
     finally { if (!cancelled(t)) setProducing(false); }
+  }
+
+  async function runAgent() {
+    const task = agentTask.trim();
+    if (!task || agentRunning || !discussion) return;
+    setAgentRunning(true); setAgentLog([]); setAgentHtml(""); setAgentFiles([]); setRunError("");
+    const t = ++token.current;
+    try {
+      await streamSSE(
+        `/api/discussion/${discussion.id}/agent`,
+        { task },
+        (ev, d) => {
+          if (cancelled(t)) return;
+          if (ev === "agent-thinking") setAgentLog((p) => [...p, { type: "thinking", text: d.delta || "" }]);
+          else if (ev === "agent-code") setAgentLog((p) => [...p, { type: "code", text: d.delta || "" }]);
+          else if (ev === "agent-output") setAgentLog((p) => [...p, { type: "output", text: d.text || "" }]);
+          else if (ev === "agent-html-artifact") setAgentHtml(d.html || "");
+          else if (ev === "agent-file-artifact") setAgentFiles((p) => [...p, { mimeType: d.mimeType, b64: d.b64 }]);
+          else if (ev === "error") setRunError(d.error || "agent failed");
+        },
+        () => cancelled(t),
+      );
+    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
+    finally { if (!cancelled(t)) setAgentRunning(false); }
   }
 
   async function chooseArt(id: string, type: ArtifactType) {
@@ -850,7 +880,7 @@ function App() {
   function cancelRun() {
     token.current++; // 让所有在飞 streamSSE 的 isCancelled() 即刻为真 → 看门狗断开连接
     autoLoopRef.current = false;
-    setBusy(false); setDeliberating(false); setMakingSolDoc(false); setProducing(false); setAutoBusy(false); setAutoLooping(false); setReconActive(false);
+    setBusy(false); setDeliberating(false); setMakingSolDoc(false); setProducing(false); setAutoBusy(false); setAutoLooping(false); setReconActive(false); setAgentRunning(false);
     setPhase((p) => (p === "drafting" ? "drafting" : "awaiting-user"));
     setRunError("已停止当前请求 —— 可以重发了。");
   }
@@ -1421,12 +1451,87 @@ function App() {
     );
     // produce
     const planReady = !!(converged || relayCard || conclusion);
+    // agent log: collapse into continuous text chunks by type for display
+    const agentLogMerged = agentLog.reduce<{ type: string; text: string }[]>((acc, e) => {
+      if (acc.length && acc[acc.length - 1].type === e.type) { acc[acc.length - 1].text += e.text; return acc; }
+      return [...acc, { ...e }];
+    }, []);
     return (
       <div className="station">
         <div className="station-head">产出 · 让某个 AI 生成</div>
-        <div className="station-sub">把方案交给一个模型 → 文案 / PRD / 设计文档 / 配图</div>
+        <div className="station-sub">把方案交给一个模型 → 文案 / PRD / 设计文档 / 配图 · 或用⚡马仔直接执行任务</div>
         <div className="station-canvas" style={{ alignItems: "stretch", justifyContent: "flex-start" }}>
-          {planReady ? <div className="out-scroll">{deliverBlock()}</div>
+          {planReady ? <div className="out-scroll">
+            {deliverBlock()}
+            {/* ── 马仔 Agent 执行区 ── */}
+            <div className="agent-box">
+              <div className="agent-box-head">⚡ 马仔执行 <span className="agent-box-sub">gpt-4o-mini · code_interpreter · web_search</span></div>
+              <div className="agent-input-row">
+                <textarea
+                  className="agent-input"
+                  rows={2}
+                  placeholder="告诉马仔要做什么，例如：把上面的方案做成一个可查询的 HTML 数据展示页"
+                  value={agentTask}
+                  onChange={(e) => setAgentTask(e.target.value)}
+                  disabled={agentRunning}
+                  onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runAgent(); }}
+                />
+                <button className="agent-run-btn" disabled={agentRunning || !agentTask.trim() || !discussion} onClick={runAgent}>
+                  {agentRunning ? "■ 停止" : "⚡ 执行"}
+                </button>
+              </div>
+              {agentRunning && agentLogMerged.length === 0 && <div className="thinking"><span className="blink" /> 马仔启动中…</div>}
+              {agentLogMerged.length > 0 && (
+                <div className="agent-stream">
+                  {agentLogMerged.map((e, i) => (
+                    <div key={i} className={`agent-line agent-line-${e.type}`}>
+                      {e.type === "thinking" && <span className="agent-line-label">思考</span>}
+                      {e.type === "code" && <span className="agent-line-label code">代码</span>}
+                      {e.type === "output" && <span className="agent-line-label out">输出</span>}
+                      <span className="agent-line-text">{e.text}</span>
+                    </div>
+                  ))}
+                  {agentRunning && <div className="thinking" style={{ marginTop: 4 }}><span className="blink" /> 执行中…</div>}
+                </div>
+              )}
+              {agentHtml && (
+                <div className="agent-result">
+                  <div className="agent-result-head">
+                    HTML 成果
+                    <button className="agent-dl-btn" onClick={() => {
+                      const a = document.createElement("a");
+                      a.href = URL.createObjectURL(new Blob([agentHtml], { type: "text/html" }));
+                      a.download = "agent-output.html"; a.click();
+                    }}>下载</button>
+                  </div>
+                  <iframe
+                    className="agent-iframe"
+                    sandbox="allow-scripts"
+                    srcDoc={agentHtml}
+                    title="Agent HTML 成果"
+                  />
+                </div>
+              )}
+              {agentFiles.map((f, i) => (
+                <div key={i} className="agent-result">
+                  <div className="agent-result-head">
+                    文件成果 ({f.mimeType})
+                    <button className="agent-dl-btn" onClick={() => {
+                      const byteStr = atob(f.b64);
+                      const arr = new Uint8Array(byteStr.length);
+                      for (let j = 0; j < byteStr.length; j++) arr[j] = byteStr.charCodeAt(j);
+                      const blob = new Blob([arr], { type: f.mimeType });
+                      const ext = f.mimeType.split("/")[1] || "bin";
+                      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `agent-output.${ext}`; a.click();
+                    }}>下载</button>
+                  </div>
+                  {f.mimeType.startsWith("image/") && (
+                    <img className="agent-img" src={`data:${f.mimeType};base64,${f.b64}`} alt="agent output" />
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
             : stationEmpty("先在「陪练」出方向卡、或「议会」收敛出方案,再用左栏「送到产出」把它送过来")}
         </div>
       </div>

@@ -1475,3 +1475,97 @@ async function dedupViewpoint(discId, roundIndex, text, byoKeys) {
   if (vec) { for (const v of store.views) { const s = cosineSim(vec, v.vec); if (s != null && (dupSim == null || s > dupSim)) dupSim = s; } store.views.push({ round: roundIndex, text, vec }); }
   return { dupSim };
 }
+
+// ── 马仔 Agent:OpenAI Responses API + code_interpreter ──────────────────────
+export async function runAgentTask({ brief, task, onEvent, byoKeys, signal }) {
+  const p = OPENAI_COMPATIBLE.find((e) => e.id === "openai");
+  const apiKey = resolveKey(p, byoKeys);
+  if (!p || !apiKey) throw new Error("未配置 OpenAI API Key，马仔无法启动");
+
+  const model = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      instructions: `你是 ROAST 平台的执行助手（马仔）。项目背景已给出，根据用户指令完成任务并输出可用成果。生成 HTML 时请输出完整自包含的 HTML 文件，包含内联 CSS 和 JS，无需外部依赖（图表可用 Chart.js CDN）。\n\n## 项目背景\n${String(brief || "").slice(0, 3000)}`,
+      input: String(task),
+      tools: [
+        { type: "code_interpreter", container: { type: "auto" } },
+        { type: "web_search_preview" },
+      ],
+      stream: true,
+      max_output_tokens: 8000,
+    }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Agent 调用失败 ${res.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let lastEvType = "";
+  let textAcc = "";
+  const fileIds = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (line.startsWith("event: ")) {
+        lastEvType = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        const payload = line.slice(6).trim();
+        if (!payload || payload === "[DONE]") { lastEvType = ""; continue; }
+        let ev;
+        try { ev = JSON.parse(payload); } catch { lastEvType = ""; continue; }
+        const evType = lastEvType || ev.type || "";
+        lastEvType = "";
+
+        if (evType === "response.output_text.delta") {
+          const delta = ev.delta || "";
+          textAcc += delta;
+          onEvent("thinking", { delta });
+        } else if (evType === "code_interpreter_call.code.delta") {
+          onEvent("code", { delta: ev.delta || "" });
+        } else if (evType === "code_interpreter_call.outputs") {
+          for (const out of (ev.outputs || [])) {
+            if (out.type === "logs" && out.logs) onEvent("output", { text: out.logs });
+            else if (out.type === "files") {
+              for (const f of (out.files || [])) { if (f.file_id) fileIds.push({ fileId: f.file_id, mimeType: f.mime_type || "application/octet-stream" }); }
+            }
+          }
+        } else if (evType === "response.completed") {
+          // 从文本里提取 HTML 块
+          const htmlMatch = textAcc.match(/```html\n?([\s\S]*?)```/i);
+          const fullMatch = !htmlMatch && /<html[\s>]/i.test(textAcc) ? textAcc.match(/(<html[\s\S]*?<\/html>)/i) : null;
+          const html = htmlMatch?.[1] || fullMatch?.[1] || null;
+          if (html) onEvent("html-artifact", { html: html.trim() });
+        }
+      }
+    }
+  }
+
+  // 下载 code_interpreter 生成的文件(如 matplotlib 图)
+  for (const { fileId, mimeType } of fileIds) {
+    try {
+      const r = await fetch(`https://api.openai.com/v1/files/${fileId}/content`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (r.ok) {
+        const b64 = Buffer.from(await r.arrayBuffer()).toString("base64");
+        onEvent("file-artifact", { mimeType, b64 });
+      }
+    } catch {}
+  }
+}
