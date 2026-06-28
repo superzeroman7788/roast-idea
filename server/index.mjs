@@ -625,12 +625,35 @@ const server = http.createServer(async (req, res) => {
       if (!md.direction) missing.push("direction(方向)");
       if (target === "council" && !(md.open_questions?.length)) missing.push("open_questions(待拍板≥1)");
       if (missing.length) return json(res, 400, { ok: false, missing });
-      const card = { oneLine: md.direction, clear: [], expandedAngles: [], assumptions: [], firstNarrowing: "", decisionsForYou: md.open_questions || [], inviteYourInput: "", dontBuildYet: [] };
+      // 从全部轮次蒸出"成果":各轮署名观点 / 盲点 / 方向演进 —— 不是只带 direction 一句话
+      const rounds = d.autoRun?.rounds || [];
+      const uniq = (arr) => [...new Set(arr.filter((x) => x && String(x).trim()))];
+      const viewpoints = uniq(rounds.map((r) => r.viewpoint?.text));
+      const dissents = uniq(rounds.map((r) => r.viewpoint?.dissent));
+      const blindSpots = uniq(rounds.flatMap((r) => r.eval?.blind_spots || []));
+      const openIssues = uniq(rounds.flatMap((r) => r.eval?.open_issues || []));
+      const angles = uniq(rounds.map((r) => r.lens?.name && r.fields?.direction ? `透镜「${r.lens.name}」→ ${r.fields.direction}` : null));
+      // 厚交接文档(写进 solutionDoc:四站读的持久上游源 `ho = pendingHandoff || solutionDoc`)
+      const H = [];
+      H.push(`# 自动档粗稿 · ${(d.brief || "").split("\n")[0].slice(0, 50)}`);
+      H.push("", `> 自动档跑了 ${rounds.length} 轮(导演调度 + Claude/OpenAI/DeepSeek 三脑并行 + 反熵防复读)蒸出的结构化粗稿,请基于它继续推进,别从零开始。`, "");
+      H.push("## 一句话方向", md.direction || "(无)", "");
+      if (md.open_questions?.length) { H.push("## 待拍板(需要你/议会定的关键决策)"); md.open_questions.forEach((q) => H.push("- " + q)); H.push(""); }
+      if (md.artifacts_hint?.length) { H.push("## 建议产出物", md.artifacts_hint.join("、"), ""); }
+      if (viewpoints.length) { H.push("## 各轮署名观点(讨论出来的实质)"); viewpoints.forEach((v) => H.push("- " + v)); H.push(""); }
+      if (dissents.length) { H.push("## 分歧 / 反对意见"); dissents.forEach((v) => H.push("- " + v)); H.push(""); }
+      if (blindSpots.length || openIssues.length) { H.push("## 盲点 / 未解问题"); uniq([...blindSpots, ...openIssues]).forEach((v) => H.push("- " + v)); H.push(""); }
+      if (angles.length) { H.push("## 方向演进脉络"); angles.forEach((a) => H.push("- " + a)); H.push(""); }
+      H.push("## 原始点子", md.brief_original || d.brief || "");
+      const handoff = H.join("\n");
+      // 厚方向卡(陪练直接看到的,不再只一句话)
+      const card = { oneLine: md.direction, clear: viewpoints.slice(0, 6), expandedAngles: angles.slice(0, 6), assumptions: dissents.slice(0, 6), firstNarrowing: md.artifacts_hint?.length ? "建议先产出:" + md.artifacts_hint.join("、") : "", decisionsForYou: md.open_questions || [], inviteYourInput: "", dontBuildYet: uniq([...blindSpots, ...openIssues]).slice(0, 6) };
       const relay = { card, hops: [{ order: 1, seat: "自动档", role: "auto", lens: null, added: [], framing: null, failed: false, latencyMs: 0 }], auto: true, artifactsHint: md.artifacts_hint || [] };
       try {
-        const state = { ...d.autoRun, injectBackup: { relay: d.relay || null, at: new Date().toISOString(), target, roundIndex: d.autoRun?.rounds?.length || 0 } };
+        const state = { ...d.autoRun, injectBackup: { relay: d.relay || null, solutionDoc: d.solutionDoc || null, at: new Date().toISOString(), target, roundIndex: rounds.length } };
         await setAutoRun(d.id, state); // 先快照(快照失败下面 catch,绝不裸覆写)
-        await saveRelay(d.id, relay);  // 再覆写
+        await setSolutionDoc(d.id, handoff); // 厚成果写进持久上游源 → 议会/产出/陪练都读得到
+        await saveRelay(d.id, relay);  // 方向卡覆写
         return json(res, 200, { ok: true, target, card, hasBackup: true });
       } catch (e) {
         return json(res, 500, { ok: false, error: "注入失败: " + String(e?.message || e).slice(0, 120) });
@@ -645,6 +668,7 @@ const server = http.createServer(async (req, res) => {
       const bk = d.autoRun?.injectBackup;
       if (!bk) return json(res, 400, { ok: false, error: "没有可还原的快照" });
       await saveRelay(d.id, bk.relay || null);
+      await setSolutionDoc(d.id, bk.solutionDoc || null);
       const state = { ...d.autoRun }; delete state.injectBackup;
       await setAutoRun(d.id, state);
       return json(res, 200, { ok: true });
