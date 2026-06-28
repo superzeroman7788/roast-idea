@@ -337,7 +337,11 @@ async function fetchRetry(url, makeOpts, tries = 2) {
 }
 
 // 统一聊天调用:Anthropic vs OpenAI 兼容;jsonMode 控制是否强制 JSON(finalize 出 markdown 不用)。
-async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2, timeoutMs = 60000, maxTokens = 4000 } = {}) {
+// 超时信号 + 外部中止信号合一:对冲落败方一旦分出胜负即被 abort,不再空跑占连接/额度
+function abortSig(timeoutMs, ext) {
+  return ext ? AbortSignal.any([AbortSignal.timeout(timeoutMs), ext]) : AbortSignal.timeout(timeoutMs);
+}
+async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2, timeoutMs = 60000, maxTokens = 4000, signal } = {}) {
   const model = process.env[provider.modelEnv] || provider.defaultModel;
   if (provider.id === "claude") {
     const [system, user] = messages;
@@ -351,7 +355,7 @@ async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2,
         system: system.content,
         messages: [{ role: "user", content: user.content }],
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: abortSig(timeoutMs, signal),
     }), tries);
     if (!res.ok) throw new Error(`Claude ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
     const json = await res.json();
@@ -363,7 +367,7 @@ async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2,
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: abortSig(timeoutMs, signal),
   }), tries);
   if (!res.ok) throw new Error(`${provider.label} ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
   const json = await res.json();
@@ -861,12 +865,15 @@ export async function runRelay({ mode, brief, evidence, byoKeys, runConfig }, on
 function staggeredRace(cands, runOne, delayMs) {
   return new Promise((resolve) => {
     let i = 0, settled = 0, done = false;
-    const win = (v) => { if (v && !done) { done = true; resolve(v); } };
-    const allDone = () => { if (!done && settled >= cands.length) { done = true; resolve(null); } };
+    const ctrls = [];
+    const finish = (v) => { if (!done) { done = true; ctrls.forEach((c) => { try { c.abort(); } catch {} }); resolve(v); } };
+    const win = (v) => { if (v) finish(v); };
+    const allDone = () => { if (settled >= cands.length) finish(null); };
     const launch = () => {
       if (done || i >= cands.length) return;
       const c = cands[i++];
-      Promise.resolve(runOne(c)).then(win).catch(() => {}).finally(() => { settled++; allDone(); });
+      const ctrl = new AbortController(); ctrls.push(ctrl);
+      Promise.resolve(runOne(c, ctrl.signal)).then(win).catch(() => {}).finally(() => { settled++; allDone(); });
       if (i < cands.length) setTimeout(launch, delayMs);
     };
     launch();
@@ -880,13 +887,17 @@ async function hedgedChatJSON(prompt, byoKeys, { graceMs = 6000, timeoutMs = 300
   if (!configured.length) return { out: null, seat: null, err: "没有可用模型" };
   const byId = new Map(configured.map((e) => [e.provider.id, e]));
   const errs = [];
-  const attempt = async (cand) => {
+  const attempt = async (cand, signal) => {
     const ts = Date.now();
     try {
-      const out = await chatJSON(cand.provider, cand.apiKey, prompt, { tries: 1, timeoutMs, maxTokens });
+      const out = await chatJSON(cand.provider, cand.apiKey, prompt, { tries: 1, timeoutMs, maxTokens, signal });
       console.log(`[${label}] ${cand.provider.label} ok ${Date.now() - ts}ms`);
       return { out, seat: cand.provider.label };
-    } catch (e) { const m = compact(e?.message || String(e)); errs.push(m); console.log(`[${label}] ${cand.provider.label} fail ${Date.now() - ts}ms: ${m.slice(0, 60)}`); return null; }
+    } catch (e) {
+      // 对冲落败被 abort:不是真失败,静默(否则日志全是误导性的 fail/aborted)
+      if (signal?.aborted || e?.name === "AbortError") { console.log(`[${label}] ${cand.provider.label} 让位 ${Date.now() - ts}ms(已有更快的赢家,中止省额度)`); return null; }
+      const m = compact(e?.message || String(e)); errs.push(m); console.log(`[${label}] ${cand.provider.label} fail ${Date.now() - ts}ms: ${m.slice(0, 60)}`); return null;
+    }
   };
   const claude = byId.get("claude"), openai = byId.get("openai");
   const primary = [claude, openai].filter(Boolean);
@@ -1302,7 +1313,7 @@ export async function runAutoRound({ discId, brief, roundIndex, prevState, human
   // 反熵 A(应急):第 2 轮起(冷启动第 1 轮禁 A)用盲点/未解问题把证据按相关度重排喂证据 agent;无证据则空,绝不编造
   const evForAgents = roundIndex >= 2 ? await retrieveForBlindSpots(discId, evidence, [...openIssues, ...blindSpots].join(" "), byoKeys) : evidence.slice(0, 6);
 
-  const dir = await hedgedChatJSON(buildAutoDirectorPrompt({ brief, roundIndex, prevFields, openIssues, blindSpots, lens, humanNote }), byoKeys, { label: "auto-director", maxTokens: 1500 });
+  const dir = await hedgedChatJSON(buildAutoDirectorPrompt({ brief, roundIndex, prevFields, openIssues, blindSpots, lens, humanNote }), byoKeys, { label: "auto-director", maxTokens: 1500, graceMs: 0 });
   const taskOrder = dir.out || { read: "", focus: "(导演评估失败,本轮自由发挥)", tasks: {} };
   await emit("task-order", { roundIndex, lens: { id: lens.id, name: lens.name, hint: lens.hint }, taskOrder, by: dir.seat, humanNote: humanNote || null });
 
@@ -1343,7 +1354,7 @@ export async function runAutoRound({ discId, brief, roundIndex, prevState, human
   await emit("convergence", convergence);
 
   const notes = agents.filter((a) => a.out).map((a) => `${a.role}@${a.model}: ${String(a.out.note || a.out.dissent || a.out.text || "").slice(0, 80)}`);
-  const ev = await hedgedChatJSON(buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes: notes }), byoKeys, { label: "auto-eval", maxTokens: 1200 });
+  const ev = await hedgedChatJSON(buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes: notes }), byoKeys, { label: "auto-eval", maxTokens: 1200, graceMs: 0 });
   const evalOut = ev.out || { spec_satisfaction: 3, open_issues: [], blind_spots: [], stop_recommendation: false, reason: "评估失败,默认继续" };
   await emit("eval", evalOut);
 
