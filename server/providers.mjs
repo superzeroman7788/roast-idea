@@ -109,6 +109,9 @@ const ANTHROPIC = {
 
 const ALL = [...OPENAI_COMPATIBLE, ANTHROPIC];
 
+// 新模型不收自定义 temperature(GPT-5 系 / 推理系 o1·o3 / Claude Opus 4.8):带上会 400,省掉用默认。
+const rejectsTemp = (model) => /^(gpt-5|o1|o3)/i.test(model || "") || /opus-4-8/i.test(model || "");
+
 function firstEnv(keys) {
   for (const key of keys) {
     const value = process.env[key]?.trim();
@@ -196,7 +199,7 @@ async function runOpenAICompatible(provider, { mode, brief, angle, apiKey, evide
     body: JSON.stringify({
       model,
       messages,
-      temperature: provider.id === "deepseek" ? 0.7 : 0.55,
+      ...(rejectsTemp(model) ? {} : { temperature: provider.id === "deepseek" ? 0.7 : 0.55 }),
       response_format: { type: "json_object" },
     }),
     signal: AbortSignal.timeout(45000),
@@ -232,7 +235,7 @@ async function runAnthropic(provider, { mode, brief, angle, apiKey, evidence }) 
     body: JSON.stringify({
       model,
       max_tokens: 4000,
-      temperature: 0.55,
+      ...(rejectsTemp(model) ? {} : { temperature: 0.55 }),
       system: system.content,
       messages: [{ role: "user", content: user.content }],
     }),
@@ -362,7 +365,7 @@ async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2,
       body: JSON.stringify({
         model,
         max_tokens: maxTokens,
-        temperature: 0.6,
+        ...(rejectsTemp(model) ? {} : { temperature: 0.6 }),
         system: system.content,
         messages: [{ role: "user", content: user.content }],
       }),
@@ -372,7 +375,7 @@ async function chatRaw(provider, apiKey, messages, { jsonMode = true, tries = 2,
     const json = await res.json();
     return json.content?.map((p) => p.text || "").join("\n") || "";
   }
-  const body = { model, messages, temperature: 0.6 };
+  const body = { model, messages, ...(rejectsTemp(model) ? {} : { temperature: 0.6 }) };
   if (jsonMode && !provider.noResponseFormat) body.response_format = { type: "json_object" };
   const res = await fetchRetry(`${provider.baseURL}/chat/completions`, () => ({
     method: "POST",
