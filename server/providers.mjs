@@ -330,7 +330,8 @@ async function fetchRetry(url, makeOpts, tries = 2) {
       if (res.ok || !RETRYABLE_STATUS.has(res.status) || i >= tries - 1) return res;
       await res.text().catch(() => ""); // 释放连接再退避
     } catch (e) {
-      if (i >= tries - 1) throw e; // 网络错误/超时:重试用尽才抛
+      // 超时/中止 → 立即抛,绝不重试(否则把慢调用翻倍 = 假死);仅网络瞬断才重试
+      if (e?.name === "TimeoutError" || e?.name === "AbortError" || i >= tries - 1) throw e;
     }
     await new Promise((r) => setTimeout(r, 700 * (i + 1))); // 0.7s → 1.4s 退避
   }
@@ -395,6 +396,23 @@ function parseTurnJson(rawText) {
   return { body, citations, askUser: clean(parsed.askUser) };
 }
 
+// 宽松兜底:Claude 写长中文偶尔吐非法 JSON(正文里未转义的英文引号 / 裸换行 → JSON.parse 挂)。
+// 与其因一次 JSON 抖动就把本脑(尤其主脑 Claude)的回答丢掉、甩给更弱的兜底脑(用户嫌"答非所问"),
+// 不如从准 JSON 里直接抠出 body(+ 尽力 askUser)。citations 在宽松路径可能丢(陪练本就少),body 才是关键。
+function lenientTurnParse(rawText) {
+  const s = String(rawText || "");
+  // "body": "……" 直到下一个顶层键(citations/askUser)或对象收尾;懒惰匹配让正文里的内部引号不被当作结束
+  let m = s.match(/"body"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"(?:citations|askUser|dissent|stance)"|\}\s*$)/);
+  if (!m) m = s.match(/"body"\s*:\s*"([\s\S]*)$/); // 再宽:body 到末尾
+  let body = m ? m[1] : "";
+  body = body.replace(/",?\s*"(?:citations|askUser|dissent|stance)"[\s\S]*$/, ""); // 切掉误粘的尾部键
+  body = body.replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\t/g, "  ").trim();
+  const am = s.match(/"askUser"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
+  const askUser = am ? am[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").trim() : "";
+  if (!body) throw new Error("unparseable turn (lenient: no body)");
+  return { body, citations: [], askUser };
+}
+
 // 跑一轮讨论:每个 seat(角色)并行发一条,完成即 onTurn 回调(真实顺序);失败进降级不伪造。
 export async function runDiscussionRound(
   { mode, brief, evidence, transcript, userTurn, seats, byoKeys, round, fallback = [] },
@@ -414,10 +432,12 @@ export async function runDiscussionRound(
         if (!provider || !apiKey) continue;
         try {
           const messages = buildTurnPrompt({ mode, provider: cand.label, role: seat.role, brief, evidence, transcript, userTurn });
-          // 有兜底链(陪练)→ 单次尝试 + 45s 上限:某脑慢/写长文档卡住就立刻换更快的脑,不再 2 次重试 × 多脑各 60s 叠成数分钟假死。
-          // 无兜底(议会)→ 保留 2 次重试兜稳。真要厚文档走右侧「出方案文档」(8000 token / 150s 专用通道,不在对话里硬挤)。
-          const rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true, tries: hasFallback ? 1 : 2, timeoutMs: hasFallback ? 45000 : 60000 });
-          const parsed = parseTurnJson(rawText);
+          // 陪练(有兜底链)45s 上限,真卡了换脑;议会 60s。tries:2 让瞬时 529 重试(fetchRetry 已不对超时重试,不会假死)。
+          const tmo = hasFallback ? 45000 : 60000;
+          let rawText = await chatRaw(provider, apiKey, messages, { jsonMode: true, tries: 2, timeoutMs: tmo });
+          let parsed;
+          try { parsed = parseTurnJson(rawText); }
+          catch { parsed = lenientTurnParse(rawText); } // 严格 JSON 没成 → 宽松抠出 body,保住本脑回答;连 body 都抠不出才抛 → 外层换脑
           const turn = {
             ok: true,
             speaker: cand.label,
@@ -433,7 +453,7 @@ export async function runDiscussionRound(
           results.push(turn);
           if (onTurn) await onTurn(turn);
           return;
-        } catch (e) { lastErr = compact(e?.message || String(e)); }
+        } catch (e) { lastErr = compact(e?.message || String(e)); console.log(`[turn] ${cand.label} fail: ${lastErr.slice(0, 160)}`); }
       }
       if (onTurn) await onTurn({ failed: true, speaker: seat.label, role: seat.role, round, error: lastErr });
     }),
