@@ -611,15 +611,15 @@ const server = http.createServer(async (req, res) => {
         const round = await runAutoRound({ discId: d.id, brief: d.brief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
         const rounds = [...(prevState.rounds || []), round];
         const md = { brief_original: d.brief, ...round.fields };
-        let best = 0, bestSat = -1;
-        rounds.forEach((r, i) => { const s = r.eval?.spec_satisfaction || 0; if (s > bestSat) { bestSat = s; best = i; } });
+        let best = 0, bestScore = -1;
+        rounds.forEach((r, i) => { const s = Object.values(r.eval?.schema_completeness || {}).filter(Boolean).length; if (s >= bestScore) { bestScore = s; best = i; } }); // 强字段最齐者(平手取最新)
         const fourFilled = !!(round.fields.direction && round.fields.open_questions?.length && round.fields.artifacts_hint?.length);
         await setAutoRun(d.id, { rounds, md, bestRoundIndex: best, status: "paused", updatedAt: new Date().toISOString() });
         sseSend(res, "round-done", {
           roundIndex, fields: round.fields, convergence: round.convergence, eval: round.eval,
           canStop: fourFilled,                                              // 规则层:四强字段全非空,可注入
           stopRecommended: fourFilled && !!round.eval?.stop_recommendation, // LLM 层:导演也建议停
-          repeatFlagged: !!round.convergence?.repeat,                       // 反熵:疑似复读 → 提示人插话(不自动停)
+          repeatFlagged: !!round.convergence?.consecutive,                  // 反熵:连续 2 轮复读才提示插话(不自动停)
           maxRounds: MAX_ROUNDS,
         });
       } catch (e) { sseSend(res, "error", { error: String(e?.message || e).slice(0, 200) }); }

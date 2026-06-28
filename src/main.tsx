@@ -2675,13 +2675,15 @@ function App() {
     const t = ++token.current;
     setAutoBusy(true); setRunError("");
     const roundIndex = (autoRun?.rounds?.length || 0) + 1;
-    setAutoLive({ roundIndex, taskOrder: null, lens: null, agents: [], fields: null, viewpoint: null, convergence: null, eval: null, done: false, humanNote: humanNote || null });
+    setAutoLive({ roundIndex, lineup: null, lens: null, challenger: null, compliance: null, agents: [], fields: null, viewpoint: null, convergence: null, eval: null, done: false, humanNote: humanNote || null });
     let doneData: any = null, capped = false;
     try {
       await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
-          if (ev === "task-order") setAutoLive((p: any) => ({ ...p, taskOrder: d.taskOrder, lens: d.lens, by: d.by }));
+          if (ev === "lineup") setAutoLive((p: any) => ({ ...p, roundIndex: d.roundIndex ?? p?.roundIndex, lineup: d.lineup, lens: d.lens, by: d.lineup?.director }));
+          else if (ev === "challenger") setAutoLive((p: any) => ({ ...p, challenger: d }));
+          else if (ev === "compliance") setAutoLive((p: any) => ({ ...p, compliance: d }));
           else if (ev === "agent") setAutoLive((p: any) => ({ ...p, agents: [...(p?.agents || []), d] }));
           else if (ev === "fields") setAutoLive((p: any) => ({ ...p, fields: d.fields, viewpoint: d.viewpoint }));
           else if (ev === "convergence") setAutoLive((p: any) => ({ ...p, convergence: d }));
@@ -2734,16 +2736,17 @@ function App() {
   const autoSpark = (rounds: AutoRound[]) => {
     const w = 224, h = 46, pad = 7;
     const xs = rounds.map((_, i) => pad + (rounds.length === 1 ? (w - 2 * pad) / 2 : i * (w - 2 * pad) / (rounds.length - 1)));
-    const ys = rounds.map((r) => h - pad - ((Math.max(1, Math.min(5, r.eval?.spec_satisfaction || 1)) - 1) / 4) * (h - 2 * pad));
+    const ys = rounds.map((r) => h - pad - (scOf(r) / 4) * (h - 2 * pad));
     const pts = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(" ");
     return (
       <svg width={w} height={h} style={{ display: "block" }}>
         {rounds.length > 1 && <polyline points={pts} fill="none" stroke="var(--cyan)" strokeWidth="1.6" />}
-        {xs.map((x, i) => <circle key={i} cx={x} cy={ys[i]} r={rounds[i].convergence?.repeat ? 3.6 : 2.6} fill={rounds[i].convergence?.repeat ? "var(--red)" : "var(--cyan)"} />)}
+        {xs.map((x, i) => <circle key={i} cx={x} cy={ys[i]} r={rounds[i].convergence?.consecutive ? 3.6 : 2.6} fill={rounds[i].convergence?.consecutive ? "var(--red)" : "var(--cyan)"} />)}
       </svg>
     );
   };
-  const ROLE_CN: Record<string, string> = { direction: "方向", questions: "待拍板", evidence: "证据/分歧" };
+  // 强字段齐全度(0-4):替代旧 spec_satisfaction,作进度/趋势/历史的统一刻度
+  const scOf = (r: any) => Object.values(r?.eval?.schema_completeness || {}).filter(Boolean).length;
   const acBody = () => {
     const rounds = autoRun?.rounds || [];
     const md = autoRun?.md;
@@ -2757,7 +2760,7 @@ function App() {
           <div style={{ flex: 1, overflow: "auto", padding: "14px 15px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             <div style={{ display: "flex", gap: 10 }}>
               <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 8px", textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 800, color: "var(--cyan)", fontFamily: "var(--mono)" }}>{rounds.length}</div><div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>已跑轮</div></div>
-              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 8px", textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 800, color: "var(--green)", fontFamily: "var(--mono)" }}>{rounds.length ? (rounds[rounds.length - 1].eval?.spec_satisfaction ?? "–") : "–"}<span style={{ fontSize: 11, color: "var(--faint)" }}>/5</span></div><div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>成稿度</div></div>
+              <div style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 8px", textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 800, color: "var(--green)", fontFamily: "var(--mono)" }}>{rounds.length ? scOf(rounds[rounds.length - 1]) : "–"}<span style={{ fontSize: 11, color: "var(--faint)" }}>/4</span></div><div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>强字段齐</div></div>
             </div>
             {rounds.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -2790,50 +2793,71 @@ function App() {
             )}
             {stage && (
               <>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 13, fontWeight: 700, color: "var(--cyan)" }}>ROUND {stage.roundIndex}</span>
                   {stage.lens && <span className="agent-pill" style={{ color: "#C9A6FF" }}><span className="d" style={{ background: "#C9A6FF" }} />透镜 · {stage.lens.name}</span>}
                   {stage.humanNote && <span className="mono" style={{ fontSize: 10, color: "#F2BF52" }}>↳ 你插了一句</span>}
                   {!stage.done && <span className="breath" style={{ marginLeft: "auto" }} />}
                 </div>
-                {stage.taskOrder ? <div style={{ border: "1px solid rgba(232,151,92,.3)", borderLeft: "2px solid var(--c-claude)", borderRadius: 9, background: "rgba(232,151,92,.05)", padding: "11px 13px" }}>
-                  <div className="mono" style={{ fontSize: 9, color: "var(--c-claude)", marginBottom: 5 }}>导演 · 任务单{stage.by ? " · " + stage.by : ""}</div>
-                  {stage.taskOrder.read && <div style={{ fontSize: 12.5, color: "#EEE3D2", lineHeight: 1.55, marginBottom: 6 }}>{stage.taskOrder.read}</div>}
-                  {stage.taskOrder.focus && <div style={{ fontSize: 11.5, color: "var(--cyan)", lineHeight: 1.5 }}>▸ 本轮重点:{stage.taskOrder.focus}</div>}
-                </div> : !stage.done && <div className="gen" style={{ height: 44, borderRadius: 9 }} />}
+                {stage.lineup && <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)", display: "flex", gap: 11, flexWrap: "wrap" }}>
+                  {([["导演", stage.lineup.director], ["提问", stage.lineup.challenger], ["主答", stage.lineup.a], ["副A", stage.lineup.b], ["副B", stage.lineup.c]] as const).map(([k, v]) => <span key={k}>{k}·<span style={{ color: "var(--cyan)" }}>{v}</span></span>)}
+                </div>}
+                {/* ② 提问 agent 抛盲点问题 */}
+                {stage.challenger ? <div style={{ border: "1px solid rgba(72,220,255,.25)", borderLeft: "2px solid var(--cyan)", borderRadius: 9, background: "rgba(72,220,255,.04)", padding: "10px 13px" }}>
+                  <div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 5 }}>提问 Agent · {stage.lineup?.challenger || "Claude"} 抛盲点问题</div>
+                  <div style={{ fontSize: 12.5, color: "#E6EDF3", lineHeight: 1.55 }}>{stage.challenger.question}</div>
+                  {stage.challenger.why && <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--faint)" }}>· {stage.challenger.why}</div>}
+                </div> : !stage.done && <div className="gen" style={{ height: 40, borderRadius: 9 }} />}
+                {/* ③ 导演合规校验:偏航→琥珀三段纠正卡;合规→一行零噪音 */}
+                {stage.compliance && (stage.compliance.compliant
+                  ? <div className="mono" style={{ fontSize: 10, color: "var(--green)" }}>✓ 导演校验合规 · 原样广播给产出 agent</div>
+                  : <details open style={{ border: "1px solid rgba(242,191,82,.45)", borderLeft: "2px solid #F2BF52", borderRadius: 9, background: "rgba(242,191,82,.06)", padding: "9px 13px" }}>
+                      <summary style={{ cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: "#F2BF52", listStyle: "none" }}>⚠️ 提问纠正 · 导演改写了 1 处偏航</summary>
+                      <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.6, color: "#C2CCD6" }}>
+                        <div><span style={{ color: "var(--faint)" }}>原始问题:</span>「{stage.compliance.original}」</div>
+                        <div style={{ marginTop: 4 }}><span style={{ color: "var(--faint)" }}>偏航原因:</span>{stage.compliance.reason}</div>
+                        <div style={{ marginTop: 4, color: "#E6EDF3" }}><span style={{ color: "var(--faint)" }}>纠正后问题:</span>「{stage.compliance.final}」</div>
+                      </div>
+                    </details>)}
+                {/* ④ 3 builder 卡 */}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 11 }}>
-                  {["direction", "questions", "evidence"].map((role) => {
-                    const a: any = (stage.agents || []).find((x: any) => x.role === role);
-                    const col = a ? agentColor(agentKey(a.model)) : "var(--faint)";
+                  {(["a", "b", "c"] as const).map((slot) => {
+                    const a: any = (stage.agents || []).find((x: any) => x.slot === slot);
+                    const col = a?.model ? agentColor(agentKey(a.model)) : "var(--faint)";
+                    const cn: Record<string, string> = { a: "主回答 · 填 schema", b: "副A · 本土+证据", c: "副B · 分歧+替代" };
                     return (
-                      <div key={role} style={{ border: "1px solid var(--line)", borderTop: "2px solid " + col, borderRadius: 9, padding: "10px 11px", minHeight: 84, background: "rgba(255,255,255,.012)" }}>
+                      <div key={slot} style={{ border: "1px solid var(--line)", borderTop: "2px solid " + col, borderRadius: 9, padding: "10px 11px", minHeight: 84, background: "rgba(255,255,255,.012)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                           <span style={{ width: 6, height: 6, borderRadius: 2, background: col }} />
-                          <span style={{ fontSize: 11.5, fontWeight: 700, color: "#D6DEE7" }}>{ROLE_CN[role]}</span>
-                          {role === "evidence" && stage.viewpoint?.dup && <span className="mono" title={"与历史观点近似(余弦 " + (stage.viewpoint.dupSim?.toFixed?.(2) ?? "") + ")—— 反熵 C 去重提示"} style={{ fontSize: 8.5, color: "var(--red)", border: "1px solid rgba(255,93,110,.4)", borderRadius: 4, padding: "1px 4px" }}>近似已说</span>}
-                          {a && <span className="mono" style={{ marginLeft: "auto", fontSize: 9, color: col }}>{a.model}</span>}
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#D6DEE7" }}>{cn[slot]}</span>
+                          {slot === "b" && stage.viewpoint?.dup && <span className="mono" title={"与历史观点近似(余弦 " + (stage.viewpoint.dupSim?.toFixed?.(2) ?? "") + ")—— 反熵 C 去重提示"} style={{ fontSize: 8.5, color: "var(--red)", border: "1px solid rgba(255,93,110,.4)", borderRadius: 4, padding: "1px 4px" }}>近似已说</span>}
+                          {a?.model && <span className="mono" style={{ marginLeft: "auto", fontSize: 9, color: col }}>{a.model}</span>}
                         </div>
                         {!a ? <div className="gen" style={{ height: 32, borderRadius: 6 }} />
                           : a.failed ? <div style={{ fontSize: 10.5, color: "var(--red)" }}>挂了:{(a.error || "").slice(0, 40)}</div>
                             : <div style={{ fontSize: 11, color: "#C2CCD6", lineHeight: 1.5 }}>
-                                {role === "direction" && <span>{a.out?.direction}</span>}
-                                {role === "questions" && <ul style={{ margin: 0, paddingLeft: 14 }}>{((a.out?.open_questions as string[]) || []).slice(0, 5).map((q, i) => <li key={i} style={{ marginBottom: 2 }}>{q}</li>)}</ul>}
-                                {role === "evidence" && <span><b style={{ color: col }}>{a.out?.stance}</b> · {a.out?.text}</span>}
+                                {slot === "a" && <span>{a.out?.direction}</span>}
+                                {slot === "b" && <span>{a.out?.viewpoint}{(a.out?.evidence_refs as string[])?.length ? <span style={{ color: "var(--faint)" }}> · {(a.out.evidence_refs as string[]).join(" ")}</span> : null}</span>}
+                                {slot === "c" && <span><b style={{ color: col }}>{a.out?.stance}</b> · {a.out?.dissent}{a.out?.alternative ? <span style={{ color: "var(--cyan)" }}> → 替代:{a.out.alternative}</span> : null}</span>}
                               </div>}
                       </div>
                     );
                   })}
                 </div>
+                {/* ⑤ 导演轮末结构化报告 + 收敛 */}
                 {stage.eval && <div style={{ display: "flex", gap: 11, flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: 200, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 12px" }}>
-                    <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginBottom: 5 }}>导演评估 · 成稿度 {stage.eval.spec_satisfaction}/5</div>
-                    <div style={{ fontSize: 11.5, color: "#C2CCD6", lineHeight: 1.5 }}>{stage.eval.reason}</div>
-                    {(stage.eval.blind_spots || []).length > 0 && <div style={{ marginTop: 7, fontSize: 10.5, color: "#F2BF52", lineHeight: 1.5 }}>盲点(下轮专攻):{(stage.eval.blind_spots || []).join("、")}</div>}
+                  <div style={{ flex: 1, minWidth: 220, border: "1px solid var(--line)", borderRadius: 9, padding: "10px 12px" }}>
+                    <div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginBottom: 6 }}>导演轮末报告 · 强字段</div>
+                    <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 7 }}>
+                      {([["方向", "direction"], ["待拍板", "open_questions"], ["产出", "artifacts_hint"]] as const).map(([cn, k]) => { const ok = (stage.eval.schema_completeness as any)?.[k]; return <span key={k} className="mono" style={{ fontSize: 9.5, color: ok ? "var(--green)" : "var(--faint)" }}>{ok ? "✓" : "○"} {cn}</span>; })}
+                    </div>
+                    {stage.eval.round_summary && <div style={{ fontSize: 11, color: "#C2CCD6", lineHeight: 1.5 }}>{stage.eval.round_summary}</div>}
+                    {(stage.eval.open_issues || []).length > 0 && <div style={{ marginTop: 6, fontSize: 10.5, color: "#F2BF52", lineHeight: 1.5 }}>未解(下轮追问):{(stage.eval.open_issues || []).slice(0, 3).join("、")}</div>}
                   </div>
-                  {stage.convergence && <div style={{ flex: 1, minWidth: 200, border: "1px solid " + (stage.convergence.repeat ? "rgba(255,93,110,.4)" : "var(--line)"), borderRadius: 9, padding: "10px 12px", background: stage.convergence.repeat ? "rgba(255,93,110,.06)" : "transparent" }}>
-                    <div className="mono" style={{ fontSize: 9, color: stage.convergence.repeat ? "var(--red)" : "var(--faint)", marginBottom: 5 }}>收敛判定 · L{stage.convergence.layer}{stage.convergence.sim != null ? " · 余弦 " + stage.convergence.sim.toFixed(3) : ""}</div>
-                    <div style={{ fontSize: 11.5, color: stage.convergence.repeat ? "#ff8a93" : "#C2CCD6", lineHeight: 1.5 }}>{stage.convergence.reason}</div>
-                    {stage.convergence.repeat && <div style={{ marginTop: 6, fontSize: 10.5, color: "#F2BF52" }}>⚠ 疑似复读 —— 建议插一句新角度,或「够了收草稿」</div>}
+                  {stage.convergence && <div style={{ flex: 1, minWidth: 200, border: "1px solid " + (stage.convergence.consecutive ? "rgba(255,93,110,.4)" : "var(--line)"), borderRadius: 9, padding: "10px 12px", background: stage.convergence.consecutive ? "rgba(255,93,110,.06)" : "transparent" }}>
+                    <div className="mono" style={{ fontSize: 9, color: stage.convergence.consecutive ? "var(--red)" : "var(--faint)", marginBottom: 5 }}>收敛 · L{stage.convergence.layer}{stage.eval.convergence_score != null ? " · 余弦 " + stage.eval.convergence_score : ""}</div>
+                    <div style={{ fontSize: 11.5, color: stage.convergence.consecutive ? "#ff8a93" : "#C2CCD6", lineHeight: 1.5 }}>{stage.convergence.reason}</div>
+                    {stage.convergence.consecutive && <div style={{ marginTop: 6, fontSize: 10.5, color: "#F2BF52" }}>⚠ 连续 2 轮复读 —— 建议插一句新角度,或「够了收草稿」</div>}
                   </div>}
                 </div>}
               </>
@@ -2841,7 +2865,7 @@ function App() {
             {rounds.length > 1 && <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <span className="label">历史轮</span>
               {rounds.slice(0, -1).map((r) => <div key={r.index} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "var(--muted)", border: "1px solid var(--line)", borderRadius: 7, padding: "6px 9px" }}>
-                <span className="mono" style={{ color: "var(--faint)" }}>R{r.index}</span><span style={{ color: "#C9A6FF" }}>{r.lens?.name}</span><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.fields?.direction}</span><span className="mono" style={{ color: r.convergence?.repeat ? "var(--red)" : "var(--faint)" }}>{r.eval?.spec_satisfaction}/5</span>
+                <span className="mono" style={{ color: "var(--faint)" }}>R{r.index}</span><span style={{ color: "#C9A6FF" }}>{r.lens?.name}</span><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.fields?.direction}</span><span className="mono" style={{ color: r.convergence?.consecutive ? "var(--red)" : "var(--faint)" }}>{scOf(r)}/4</span>
               </div>)}
             </div>}
           </div>

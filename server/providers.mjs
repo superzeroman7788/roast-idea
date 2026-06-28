@@ -25,8 +25,9 @@ import {
   PERSONAS,
   DEFAULT_RUN_CONFIG,
   AUTO_LENSES,
-  buildAutoDirectorPrompt,
-  buildAutoProducePrompt,
+  buildAutoChallengerPrompt,
+  buildAutoCompliancePrompt,
+  buildAutoBuilderPrompt,
   buildAutoEvalPrompt,
 } from "./prompts.mjs";
 
@@ -62,6 +63,15 @@ const OPENAI_COMPATIBLE = [
     baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     modelEnv: "QWEN_MODEL",
     defaultModel: "qwen-turbo",
+  },
+  {
+    id: "zhipu",
+    label: "智谱",
+    env: ["ZHIPU_API_KEY", "GLM_API_KEY"],
+    baseURL: "https://open.bigmodel.cn/api/paas/v4",
+    modelEnv: "ZHIPU_MODEL",
+    defaultModel: "glm-4-flash",
+    noResponseFormat: true, // glm-4-flash 不稳定支持 response_format:json_object → 关掉,靠 prompt + extractJson 兜底
   },
   // 从 agent-group 迁入(room.json 的两个"免费模型反方"):OpenAI 兼容协议。
   // noResponseFormat:这两家(尤其免费/聚合模型)未必支持 response_format:json_object,
@@ -1322,66 +1332,119 @@ async function computeConvergence(cur, prev, byoKeys) {
   return { repeat, reason: repeat ? `方向语义几乎没变(余弦 ${sim.toFixed(3)} ≥ ${AUTO_CONV_SIM})→ 判复读` : `方向语义有变(余弦 ${sim.toFixed(3)} < ${AUTO_CONV_SIM})→ 有进展`, layer: 2, sim, threshold: AUTO_CONV_SIM };
 }
 
-// 跑一轮:导演任务单 → 3 产出 agent 并行(allSettled,单挂不雪崩)→ 合并强字段 → 收敛判定 → 导演评估。
-// onEvent(ev,data):'task-order'|'agent'|'fields'|'convergence'|'eval'。角色↔模型每轮轮换(跨厂商出多样性)。
+// 固定槽 agent 调用:按 [首选,兜底...] 顺序找已配置的 provider,chatJSON 失败就退下一个(对冲=兜底链,不裸并行racing省成本)。
+async function callSlot(configured, order, prompt, opts = {}) {
+  const byId = new Map(configured.map((e) => [e.provider.id, e]));
+  const ids = order.filter((id, i, a) => a.indexOf(id) === i);
+  let lastErr = "无可用 provider";
+  for (const id of ids) {
+    const e = byId.get(id);
+    if (!e) continue;
+    try {
+      const out = await chatJSON(e.provider, e.apiKey, prompt, { tries: 1, timeoutMs: 45000, maxTokens: 1200, ...opts });
+      return { out, by: e.provider.label, id: e.provider.id };
+    } catch (err) { lastErr = compact(err?.message || String(err)); }
+  }
+  return { out: null, by: null, id: null, err: lastErr };
+}
+const uniqStr = (arr) => [...new Set((arr || []).map((x) => String(x || "").trim()).filter(Boolean))];
+
+// 跑一轮(v2 五固定槽):challenger 提盲点问题 → 导演合规校验(偏航改写)→ 3 builder 并行 allSettled → 合字段 → 收敛 → 导演 eval(出 round_summary)。
+// 固定槽:director=OpenAI / challenger=Claude / builder a=DeepSeek b=Qwen c=智谱,各带兜底链(失败才退)。
+// onEvent:'lineup'|'challenger'|'compliance'|'agent'|'fields'|'convergence'|'eval'。
 export async function runAutoRound({ discId, brief, roundIndex, prevState, humanNote, evidence = [], byoKeys }, onEvent) {
   const emit = async (ev, data) => { if (onEvent) await onEvent(ev, data); };
-  const seats = assignDiscussionSeats(byoKeys);
-  if (!seats.length) throw new Error("没有可用模型(去 .env.local 配 key)");
+  const configured = getConfiguredProviders(byoKeys);
+  if (!configured.length) throw new Error("没有可用模型(去 .env.local 配 key)");
   const lens = AUTO_LENSES[(roundIndex - 1) % AUTO_LENSES.length];
   const prevRound = prevState?.rounds?.[prevState.rounds.length - 1] || null;
   const prevFields = prevRound?.fields || null;
   const openIssues = prevRound?.eval?.open_issues || [];
   const blindSpots = prevRound?.eval?.blind_spots || [];
-  // 反熵 A(应急):第 2 轮起(冷启动第 1 轮禁 A)用盲点/未解问题把证据按相关度重排喂证据 agent;无证据则空,绝不编造
+  const prevSummary = prevRound?.eval?.round_summary || "";
+  // 反熵 A(应急):第 2 轮起用盲点/未解问题把证据按相关度重排喂 builder;无证据则空,绝不编造
   const evForAgents = roundIndex >= 2 ? await retrieveForBlindSpots(discId, evidence, [...openIssues, ...blindSpots].join(" "), byoKeys) : evidence.slice(0, 6);
 
-  const dir = await hedgedChatJSON(buildAutoDirectorPrompt({ brief, roundIndex, prevFields, openIssues, blindSpots, lens, humanNote }), byoKeys, { label: "auto-director", maxTokens: 1500, graceMs: 0 });
-  const taskOrder = dir.out || { read: "", focus: "(导演评估失败,本轮自由发挥)", tasks: {} };
-  await emit("task-order", { roundIndex, lens: { id: lens.id, name: lens.name, hint: lens.hint }, taskOrder, by: dir.seat, humanNote: humanNote || null });
+  // 五固定槽 + 兜底链(配置缺某家就退兜底,保证每槽有人)
+  const SLOT = {
+    director:   ["openai", "claude", "deepseek"],
+    challenger: ["claude", "openai", "deepseek"],
+    a:          ["deepseek", "openai", "qwen"],
+    b:          ["qwen", "zhipu", "deepseek"],
+    c:          ["zhipu", "qwen", "deepseek"],
+  };
+  const slotLabel = (order) => { const e = order.map((id) => configured.find((c) => c.provider.id === id)).find(Boolean); return e ? e.provider.label : "—"; };
+  const lineup = { director: slotLabel(SLOT.director), challenger: slotLabel(SLOT.challenger), a: slotLabel(SLOT.a), b: slotLabel(SLOT.b), c: slotLabel(SLOT.c) };
+  await emit("lineup", { roundIndex, lens: { id: lens.id, name: lens.name, hint: lens.hint }, lineup, humanNote: humanNote || null });
 
-  // 三产出 agent 固定用强模型跨厂商阵容(Claude/OpenAI/DeepSeek 前三名),每轮只轮换"角色↔模型"映射出多样性 ——
-  // 不随轮次漂到弱模型(Kimi/OpenRouter 等),免得后面几轮质量掉 + 撞 429。配置不足 3 家时池缩小(角色复用同模型)。
-  const AGENT_RANK = { claude: 0, openai: 1, deepseek: 2, qwen: 3, openrouter: 4, agnes: 5, kimi: 6 };
-  const pool = [...seats].sort((a, b) => (AGENT_RANK[a.id] ?? 9) - (AGENT_RANK[b.id] ?? 9)).slice(0, 3);
-  const roles = ["direction", "questions", "evidence"];
-  const assign = roles.map((role, i) => ({ role, seat: pool[(roundIndex - 1 + i) % pool.length] }));
-  const settled = await Promise.allSettled(assign.map(async ({ role, seat }) => {
-    const provider = ALL.find((p) => p.id === seat.id);
-    const apiKey = resolveKey(provider, byoKeys);
-    const out = await chatJSON(provider, apiKey, buildAutoProducePrompt({ role, brief, roundIndex, taskOrder, lens, prevFields, evidence: evForAgents }), { tries: 1, timeoutMs: 40000, maxTokens: 1800 });
-    return { role, model: seat.label, out };
-  }));
+  // ② challenger:提盲点问题
+  const ch = await callSlot(configured, SLOT.challenger, buildAutoChallengerPrompt({ brief, roundIndex, openIssues, blindSpots, prevSummary, lens, humanNote }), { maxTokens: 700 });
+  const question0 = (ch.out?.question || `围绕「${(brief || "").split("\n")[0].slice(0, 20)}」,本轮最该拍板的是什么?`).trim();
+  await emit("challenger", { question: question0, why: ch.out?.why || "", by: ch.by });
+
+  // ③ 导演合规校验:偏航就改写,emit 纠正卡数据(合规则 compliant:true、零噪音)
+  const cp = await callSlot(configured, SLOT.director, buildAutoCompliancePrompt({ brief, question: question0, openIssues, prevFields }), { maxTokens: 700 });
+  const compliant = cp.out ? cp.out.compliant !== false : true;
+  const questionFinal = (cp.out?.question_final || question0).trim() || question0;
+  const compliance = { compliant, reason: cp.out?.reason || "", original: question0, final: questionFinal, by: cp.by };
+  await emit("compliance", compliance);
+
+  // ④ 3 builder 并行(allSettled,单挂不雪崩),都喂"合规后的最终问题"
+  const builders = ["a", "b", "c"];
+  const settled = await Promise.allSettled(builders.map((slot) =>
+    callSlot(configured, SLOT[slot], buildAutoBuilderPrompt({ slot, brief, roundIndex, question: questionFinal, lens, prevFields, evidence: evForAgents }), { maxTokens: 1500 })
+      .then((r) => ({ slot, by: r.by, out: r.out }))
+  ));
   const agents = [];
   for (let i = 0; i < settled.length; i++) {
-    const r = settled[i], role = roles[i], model = assign[i].seat.label;
-    const a = r.status === "fulfilled" && r.value.out ? { role, model, out: r.value.out, failed: false } : { role, model, out: null, failed: true, error: compact(r.reason?.message || String(r.reason || "失败")) };
+    const slot = builders[i], r = settled[i];
+    const a = r.status === "fulfilled" && r.value.out ? { slot, model: r.value.by, out: r.value.out, failed: false } : { slot, model: lineup[slot], out: null, failed: true, error: compact(r.reason?.message || String(r.reason || "失败")) };
     agents.push(a); await emit("agent", a);
   }
 
-  const dirA = agents.find((a) => a.role === "direction")?.out || {};
-  const qA = agents.find((a) => a.role === "questions")?.out || {};
-  const evA = agents.find((a) => a.role === "evidence")?.out || {};
+  const A = agents.find((a) => a.slot === "a")?.out || {};
+  const B = agents.find((a) => a.slot === "b")?.out || {};
+  const C = agents.find((a) => a.slot === "c")?.out || {};
+  // 合并强字段:a 是主 schema 源;b 的 extra_questions 并进 open_questions
+  const mergedQ = uniqStr([...(Array.isArray(A.open_questions) ? A.open_questions : []), ...(Array.isArray(B.extra_questions) ? B.extra_questions : [])]).slice(0, 8);
   const fields = {
-    direction: dirA.direction || prevFields?.direction || "",
-    artifacts_hint: Array.isArray(dirA.artifacts_hint) ? dirA.artifacts_hint.slice(0, 3) : (prevFields?.artifacts_hint || []),
-    open_questions: Array.isArray(qA.open_questions) ? qA.open_questions.slice(0, 8) : (prevFields?.open_questions || []),
+    direction: A.direction || prevFields?.direction || "",
+    artifacts_hint: Array.isArray(A.artifacts_hint) ? A.artifacts_hint.slice(0, 3) : (prevFields?.artifacts_hint || []),
+    open_questions: mergedQ.length ? mergedQ : (prevFields?.open_questions || []),
   };
-  const viewpoint = evA.text ? { stance: evA.stance || "Fix", text: evA.text, evidence_refs: evA.evidence_refs || [], dissent: evA.dissent || "", model: agents.find((a) => a.role === "evidence")?.model } : null;
-  // 反熵 C(去重):viewpoint embedding 比对历史账本,太像则标"近似已说"(白箱提示,不强制重生)
+  // 署名观点 = b 本土视角卡(挂 c 的分歧/替代);b 没出就退用 c
+  const vpModel = (slot) => agents.find((a) => a.slot === slot)?.model;
+  const viewpoint = B.viewpoint
+    ? { stance: "Fix", text: B.viewpoint, evidence_refs: B.evidence_refs || [], dissent: C.dissent || "", alternative: C.alternative || "", model: vpModel("b") }
+    : (C.dissent ? { stance: C.stance || "Fix", text: C.dissent, evidence_refs: [], dissent: C.dissent, alternative: C.alternative || "", model: vpModel("c") } : null);
+  // 反熵 C(去重):viewpoint embedding 比历史账本,太像标"近似已说"(白箱提示)
   if (viewpoint) { const dd = await dedupViewpoint(discId, roundIndex, viewpoint.text, byoKeys); viewpoint.dupSim = dd.dupSim; viewpoint.dup = dd.dupSim != null && dd.dupSim >= AUTO_CONV_SIM; }
   await emit("fields", { fields, viewpoint });
 
+  // 收敛(L1 结构 / L2 余弦);连续 2 轮 repeat 才算真收敛
   const convergence = await computeConvergence(fields, prevFields, byoKeys);
-  console.log(`[auto-conv] r${roundIndex} layer${convergence.layer} repeat=${convergence.repeat} sim=${convergence.sim ?? "-"}`);
+  convergence.consecutive = !!(convergence.repeat && prevRound?.convergence?.repeat);
+  console.log(`[auto-conv] r${roundIndex} layer${convergence.layer} repeat=${convergence.repeat} consec=${convergence.consecutive} sim=${convergence.sim ?? "-"}`);
   await emit("convergence", convergence);
 
-  const notes = agents.filter((a) => a.out).map((a) => `${a.role}@${a.model}: ${String(a.out.note || a.out.dissent || a.out.text || "").slice(0, 80)}`);
-  const ev = await hedgedChatJSON(buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes: notes }), byoKeys, { label: "auto-eval", maxTokens: 1200, graceMs: 0 });
-  const evalOut = ev.out || { spec_satisfaction: 3, open_issues: [], blind_spots: [], stop_recommendation: false, reason: "评估失败,默认继续" };
+  // ⑤ 导演 eval:出 open_issues + 停不停 + round_summary;schema_completeness / convergence_score 由代码算后并入
+  const notes = agents.filter((a) => a.out).map((a) => `${a.slot}@${a.model}: ${String(a.out.note || a.out.dissent || a.out.viewpoint || "").slice(0, 80)}`);
+  const ev = await callSlot(configured, SLOT.director, buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes: notes }), { maxTokens: 1000 });
+  const evalLLM = ev.out || { open_issues: [], stop_recommendation: false, reason: "评估失败,默认继续", round_summary: prevSummary || "" };
+  const schema_completeness = { brief: !!brief, direction: !!fields.direction, open_questions: (fields.open_questions || []).length > 0, artifacts_hint: (fields.artifacts_hint || []).length > 0 };
+  const evalOut = {
+    open_issues: Array.isArray(evalLLM.open_issues) ? evalLLM.open_issues : [],
+    blind_spots: Array.isArray(evalLLM.blind_spots) ? evalLLM.blind_spots : [],
+    stop_recommendation: !!evalLLM.stop_recommendation,
+    reason: evalLLM.reason || "",
+    round_summary: String(evalLLM.round_summary || "").slice(0, 400),
+    schema_completeness,
+    convergence_score: convergence.sim != null ? Number(convergence.sim.toFixed(3)) : null,
+    convergence_method: "direction 字段 embedding 余弦 + open_questions 条目变化数",
+  };
   await emit("eval", evalOut);
 
-  return { index: roundIndex, lens: { id: lens.id, name: lens.name }, humanNote: humanNote || null, taskOrder, agents: agents.map((a) => ({ role: a.role, model: a.model, failed: a.failed, error: a.error, out: a.out })), fields, viewpoint, convergence, eval: evalOut };
+  return { index: roundIndex, lens: { id: lens.id, name: lens.name }, humanNote: humanNote || null, lineup, challenger: { question: question0, why: ch.out?.why || "" }, compliance, agents: agents.map((a) => ({ slot: a.slot, model: a.model, failed: a.failed, error: a.error, out: a.out })), fields, viewpoint, convergence, eval: evalOut };
 }
 
 // 自动档反熵 A/C 的 per-discussion 内存 embedding 账本(进程内,重启即丢——MVP,验证有效再上向量库)。

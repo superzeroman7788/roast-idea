@@ -329,10 +329,13 @@ export const TAB_SUB: Record<Tab, string> = { auto: "⚡ 第零站·加速器", 
 
 // 自动档 Auto-Pilot 类型
 export interface AutoFields { direction: string; artifacts_hint: string[]; open_questions: string[]; }
-export interface AutoConvergence { repeat: boolean; reason: string; layer: number; sim: number | null; threshold: number; }
-export interface AutoEval { spec_satisfaction: number; open_issues: string[]; blind_spots: string[]; stop_recommendation: boolean; reason: string; }
-export interface AutoAgent { role: "direction" | "questions" | "evidence"; model: string; failed: boolean; error?: string; out: Record<string, unknown> | null; }
-export interface AutoRound { index: number; lens: { id: string; name: string }; humanNote: string | null; taskOrder: { read?: string; focus?: string; tasks?: Record<string, string> }; agents: AutoAgent[]; fields: AutoFields; viewpoint: { stance: string; text: string; dissent: string; model?: string } | null; convergence: AutoConvergence; eval: AutoEval; }
+export interface AutoConvergence { repeat: boolean; reason: string; layer: number; sim: number | null; threshold: number; consecutive?: boolean; }
+export interface AutoSchemaCompleteness { brief: boolean; direction: boolean; open_questions: boolean; artifacts_hint: boolean; }
+export interface AutoEval { open_issues: string[]; blind_spots?: string[]; stop_recommendation: boolean; reason: string; round_summary: string; schema_completeness: AutoSchemaCompleteness; convergence_score: number | null; convergence_method: string; }
+export interface AutoAgent { slot: "a" | "b" | "c"; model: string | null; failed: boolean; error?: string; out: Record<string, unknown> | null; }
+export interface AutoCompliance { compliant: boolean; reason: string; original: string; final: string; by?: string | null; }
+export interface AutoViewpoint { stance: string; text: string; dissent: string; alternative?: string; evidence_refs?: string[]; model?: string; dup?: boolean; dupSim?: number | null; }
+export interface AutoRound { index: number; lens: { id: string; name: string }; humanNote: string | null; lineup: Record<string, string>; challenger: { question: string; why: string }; compliance: AutoCompliance; agents: AutoAgent[]; fields: AutoFields; viewpoint: AutoViewpoint | null; convergence: AutoConvergence; eval: AutoEval; }
 export interface AutoRun { rounds: AutoRound[]; md: (AutoFields & { brief_original?: string }) | null; bestRoundIndex?: number; status?: string; injectBackup?: { target: string; at: string } | null; }
 
 // 议会内部强度:温和(council)⇄ 拷问(roast)
