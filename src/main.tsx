@@ -110,14 +110,19 @@ async function streamSSE(
   onEvent: (event: string, data: any) => void,
   isCancelled: () => boolean,
 ) {
+  // AbortController:既能被取消(isCancelled)即时掐断,也能被卡死看门狗掐断 —— 否则后端卡住时 reader.read() 永久阻塞,只能退出重进
+  const ctrl = new AbortController();
+  const STALL_MS = 100000; // 100s 内没有任何新字节 = 后端真卡死(单脑一轮最长 ~60s,留足余量)→ 主动断开,可重发
   let res: Response;
   try {
     res = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(body),
+      signal: ctrl.signal,
     });
   } catch {
+    if (isCancelled()) return;
     // fetch 直接 reject(Failed to fetch)= 连接层失败:服务器重启/冷启动/断网
     throw new Error("连不上服务器 —— 可能正在重启或冷启动(免费层闲置会休眠),等几秒再发一次。");
   }
@@ -132,25 +137,39 @@ async function streamSSE(
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (isCancelled()) { try { await reader.cancel(); } catch {} return; }
-    buf += dec.decode(value, { stream: true });
-    let i: number;
-    while ((i = buf.indexOf("\n\n")) >= 0) {
-      const raw = buf.slice(0, i);
-      buf = buf.slice(i + 2);
-      let event = "message";
-      const data: string[] = [];
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data.push(line.slice(5).trim());
-      }
-      if (data.length) {
-        try { onEvent(event, JSON.parse(data.join("\n"))); } catch {}
+  let lastData = Date.now();
+  // 看门狗:被取消 → 立即断;100s 无新字节 → 判后端卡死,主动断
+  const watch = setInterval(() => {
+    if (isCancelled() || Date.now() - lastData > STALL_MS) { try { ctrl.abort(); } catch {} }
+  }, 1000);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (isCancelled()) { try { await reader.cancel(); } catch {} return; }
+      lastData = Date.now();
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const raw = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        let event = "message";
+        const data: string[] = [];
+        for (const line of raw.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data.push(line.slice(5).trim());
+        }
+        if (data.length) {
+          try { onEvent(event, JSON.parse(data.join("\n"))); } catch {}
+        }
       }
     }
+  } catch (e) {
+    if (isCancelled()) return; // 用户主动取消 → 静默
+    if (ctrl.signal.aborted) throw new Error("响应卡住了(后端 100 秒没动静),已自动断开 —— 重发一次试试。");
+    throw e;
+  } finally {
+    clearInterval(watch);
   }
 }
 
@@ -803,6 +822,14 @@ function App() {
     if (t === "auto") return autoBusy && tab === "auto" ? "run" : (autoRun?.rounds?.length ? "done" : "idle");
     if (t === "produce") return artifacts.length > 0 ? "done" : "idle";
     return artifacts.length > 0 ? "done" : "idle";
+  }
+  // 取消正在跑的请求(挽救卡死):bump token → streamSSE 看门狗 1s 内 abort fetch;复位所有忙态,无需退出重进
+  function cancelRun() {
+    token.current++; // 让所有在飞 streamSSE 的 isCancelled() 即刻为真 → 看门狗断开连接
+    autoLoopRef.current = false;
+    setBusy(false); setDeliberating(false); setMakingSolDoc(false); setProducing(false); setAutoBusy(false); setAutoLooping(false); setReconActive(false);
+    setPhase((p) => (p === "drafting" ? "drafting" : "awaiting-user"));
+    setRunError("已停止当前请求 —— 可以重发了。");
   }
   // 纯切站(浏览):清旧站报错 + 收下拉(run 函数会另行清,无冲突)
   function switchTab(tk: Tab) { setTab(tk); setSendMenuFor(null); setRunError(""); }
@@ -1635,9 +1662,11 @@ function App() {
           <input ref={fileRef} type="file" multiple accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.yml,.yaml" style={{ display: "none" }} onChange={(e) => { addAttachFiles(e.target.files); e.currentTarget.value = ""; }} />
           <button className="ghost-chip" disabled={busy} title="添加图片 / 文本文件(喂给搭子参考)" onClick={() => fileRef.current?.click()} style={{ padding: "7px 11px", fontSize: 14 }}>📎</button>
           {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
-          <button className="amber-btn send-icon" disabled={busy || deliberating || !canSend} onClick={send}>{busy ? "·" : "↑"}</button>
+          {busy || deliberating
+            ? <button className="ghost-chip" title="停止当前请求(卡住时点这里,不用退出重进)" onClick={cancelRun} style={{ padding: "7px 13px", fontSize: 12.5, color: "var(--red)", borderColor: "var(--red)" }}>■ 停止</button>
+            : <button className="amber-btn send-icon" disabled={!canSend} onClick={send}>↑</button>}
         </div>
-        <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>📎 加图片/文件给搭子参考 · 点左栏记录看详情 · ⌘/Ctrl+Enter 提交</div>
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>📎 加图片/文件给搭子参考 · 点左栏记录看详情 · ⌘/Ctrl+Enter 提交{(busy || deliberating) && " · 卡住了?点「■ 停止」即可恢复"}</div>
       </div>
     );
   };
@@ -2310,7 +2339,9 @@ function App() {
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (model && !producing && (discussion || userInput.trim() || attachments.length)) { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); } } }} />
               <input ref={fileRef} type="file" multiple accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.yml,.yaml" style={{ display: "none" }} onChange={(e) => { addAttachFiles(e.target.files); e.currentTarget.value = ""; }} />
               <button className="ghost-chip" disabled={producing} title="附素材给 AI 参考(图片仿样 / 文档改写)" onClick={() => fileRef.current?.click()} style={{ padding: "7px 11px", fontSize: 14 }}>📎</button>
-              <button className="amber-btn send-icon" disabled={producing || !model || (!discussion && !userInput.trim() && !attachments.length)} onClick={() => { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); }}>{producing ? "·" : "↑"}</button>
+              {producing
+                ? <button className="ghost-chip" title="停止当前生成(卡住时点这里,不用退出重进)" onClick={cancelRun} style={{ padding: "7px 13px", fontSize: 12.5, color: "var(--red)", borderColor: "var(--red)" }}>■ 停止</button>
+                : <button className="amber-btn send-icon" disabled={!model || (!discussion && !userInput.trim() && !attachments.length)} onClick={() => { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); }}>↑</button>}
             </div>
             <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>📎 附素材直接产出(无需先走前几站) · 选格式+模型生成 · 卡片上点「改稿」 · ⌘/Ctrl+Enter</div>
           </div>
@@ -2548,7 +2579,9 @@ function App() {
                 onChange={(e) => setUserInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (discussion && !deliberating) { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); } } }} />
               {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
-              <button className="amber-btn send-icon" disabled={!discussion || deliberating || busy} onClick={() => { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); }}>{deliberating ? "·" : "↑"}</button>
+              {deliberating || busy
+                ? <button className="ghost-chip" title="停止当前审议(卡住时点这里,不用退出重进)" onClick={cancelRun} style={{ padding: "7px 13px", fontSize: 12.5, color: "var(--red)", borderColor: "var(--red)" }}>■ 停止</button>
+                : <button className="amber-btn send-icon" disabled={!discussion} onClick={() => { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); }}>↑</button>}
             </div>
             <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>温和=多视角综述;拷问=强制开火 + R3 交叉 · 点左栏议题可聚焦 · ⌘/Ctrl+Enter 提交</div>
           </div>
