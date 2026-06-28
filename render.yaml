@@ -27,6 +27,9 @@ services:
       # ↓↓ 密钥/密码:绝不进 git。部署后在 Render Dashboard → Environment 手填(值从 .env.local 拷)
       - key: ROAST_ACCESS_PASSWORD
         sync: false
+      # 登录密码(白名单邮箱之外再加一道):不设则默认 123456。要正经密码就在 Dashboard 填一个。
+      - key: ROAST_LOGIN_PASSWORD
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY

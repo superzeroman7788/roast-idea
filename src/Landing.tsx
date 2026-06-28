@@ -3,6 +3,7 @@ import React, { useState } from "react";
 // 启动页:全屏嵌入 JARVIS 发布动画(public/launch/)+ 邮箱魔法链接登录门(邀请制,无密码)。
 export function Landing() {
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<null | "email" | "log">(null);
   const [err, setErr] = useState("");
@@ -11,11 +12,12 @@ export function Landing() {
     const e = email.trim();
     if (busy) return;
     if (!e.includes("@")) { setErr("请填写有效邮箱"); return; }
+    if (!password) { setErr("请输入密码"); return; }
     setBusy(true); setErr("");
     try {
       const res = await fetch("/api/auth/request", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: e }),
+        body: JSON.stringify({ email: e, password }),
       });
       const d = await res.json();
       if (d.ok && d.via === "direct") { window.location.href = "/?welcome=1"; return; } // 直登:名单内 → 直接进台
@@ -46,7 +48,10 @@ export function Landing() {
             <input type="email" value={email} placeholder="你的邮箱(受邀)" autoFocus inputMode="email" autoComplete="email"
               onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
-            <button onClick={send} disabled={busy || !email.trim()}>{busy ? "…" : "登录 →"}</button>
+            <input type="password" value={password} placeholder="密码(初期默认 123456)" autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
+            <button onClick={send} disabled={busy || !email.trim() || !password}>{busy ? "…" : "登录 →"}</button>
           </div>
         )}
         {(err || expired) && <div className="land-err">{err || "链接已过期,重新获取一个"}</div>}

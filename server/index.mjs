@@ -103,6 +103,14 @@ function isInvited(email) {
   if (e === OWNER_EMAIL) return true;
   return (process.env.ROAST_ALLOWED_EMAILS || "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean).includes(e);
 }
+// 登录密码:白名单邮箱之外再加一道密码(初期全员默认 123456,线上可设 ROAST_LOGIN_PASSWORD 覆盖)。
+// 后续要"每人独立密码"再扩成 users 表存哈希,这里先用共享密码满足"也需要录入密码"。
+const LOGIN_PASSWORD = process.env.ROAST_LOGIN_PASSWORD || "123456";
+function passwordOk(input) {
+  const a = Buffer.from(String(input ?? ""), "utf8");
+  const b = Buffer.from(LOGIN_PASSWORD, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b); // 等长才比,常量时间
+}
 const tokenHashOf = (t) => createHash("sha256").update(t).digest("hex");
 // 发魔法链接:配了 RESEND_API_KEY 就发真邮件;否则打到日志(站长手动转发,邀请制够用)
 async function sendMagicLink(email, link) {
@@ -146,6 +154,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, via: "log" }); // 魔法模式:不透露是否在名单(防探测)
       }
       if (directLogin) {
+        // 白名单之外再验密码(初期默认 123456)。先查名单(上面已查)再查密码。
+        if (!passwordOk(body.password)) return json(res, 403, { ok: false, error: "密码错误", needPassword: true });
         const user = await upsertUser(email);
         setSessionCookie(res, signSession(user));
         return json(res, 200, { ok: true, via: "direct", user: { email: user.email } });
