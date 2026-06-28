@@ -123,9 +123,11 @@ async function streamSSE(
   }
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => "");
+    // 网关错误(502/503/504)或返回 HTML 错误页 = 服务在重启/部署/冷启动中,别把整页 HTML 甩给用户
+    if ([502, 503, 504].includes(res.status) || /^\s*<(!doctype|html)/i.test(txt)) throw new Error("服务正在重启或部署中(刚推过新版本 / 免费层冷启动)—— 等十几秒再发一次就好。");
     // 讨论在服务器上找不到(免费层无持久盘,重启/冷启动会清空 DB)→ 友好提示而非甩生 JSON
     if (res.status === 404 || /not found/i.test(txt)) throw new Error("这场讨论在服务器上失效了(免费层重启会清空历史)—— 点左下「新讨论」重开即可。");
-    throw new Error(txt || "stream failed");
+    throw new Error(txt.slice(0, 200) || "stream failed");
   }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
