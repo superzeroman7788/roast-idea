@@ -201,6 +201,9 @@ function App() {
   const [userInput, setUserInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [runError, setRunError] = useState("");
+  const [flashMsg, setFlashMsg] = useState(""); // 轻提示(复制成功/已导出…),~1.6s 自动消失
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [confirmBox, setConfirmBox] = useState<{ title: string; body?: string; yesLabel?: string; danger?: boolean; onYes: () => void } | null>(null); // App 内嵌确认框,替原生 window.confirm
   const [conn, setConn] = useState<{ ok: boolean; text: string }>({ ok: false, text: "检测中" });
   const [retrieve, setRetrieve] = useState(true);
   const [solo, setSolo] = useState(true); // 只和主大脑讨论;需要时再引入辩论者
@@ -453,11 +456,16 @@ function App() {
     }
   }
 
-  async function removeDiscussion(id: string) {
-    if (!window.confirm("删除这场讨论?本地记录将不可恢复。")) return;
-    try { await fetch(`/api/discussion/${id}`, { method: "DELETE" }); } catch {}
-    setHistory((prev) => prev.filter((h) => h.id !== id));
-    if (discussion?.id === id) reset();
+  function removeDiscussion(id: string) {
+    confirmAsk({
+      title: "删除这场讨论?", body: "记录将不可恢复。", yesLabel: "删除", danger: true,
+      onYes: async () => {
+        try { await fetch(`/api/discussion/${id}`, { method: "DELETE" }); } catch {}
+        setHistory((prev) => prev.filter((h) => h.id !== id));
+        if (discussion?.id === id) reset();
+        flash("✓ 已删除");
+      },
+    });
   }
 
   // ---- 产出层(交付物)----
@@ -524,6 +532,7 @@ function App() {
     l.href = `/api/artifact/${a.id}/image`;
     l.download = `roast-配图-${(a.id || "img").slice(0, 8)}.png`;
     document.body.appendChild(l); l.click(); l.remove();
+    flash("✓ 已下载配图");
   }
   // HTML 原型:剥掉模型可能加的 ```html 围栏 → 拿到纯 HTML
   function htmlOf(content?: string | null): string {
@@ -552,6 +561,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const l = document.createElement("a"); l.href = url; l.download = `roast-原型-${(a.id || "p").slice(0, 8)}.html`;
     document.body.appendChild(l); l.click(); l.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+    flash("✓ 已下载 HTML");
   }
   // 放大预览:走沙箱 iframe overlay,不能用 window.open(blob) —— blob 文档继承 app origin、无沙箱,
   // 模型生成的 HTML(可被 brief/附件/证据 prompt 注入)就能同源 fetch 已鉴权的 /api 偷数据。
@@ -774,7 +784,7 @@ function App() {
     setMakingSolDoc(true); setRunError("");
     try {
       const r = await fetch(`/api/discussion/${discussion.id}/solution-doc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }).then((x) => x.json());
-      if (r.ok && r.md) setSolutionDoc(r.md);
+      if (r.ok && r.md) { setSolutionDoc(r.md); flash("✓ 已更新方案文档"); }
       else setRunError(r.error || "方案文档生成失败");
     } catch (e) { setRunError((e as Error).message); }
     finally { setMakingSolDoc(false); }
@@ -783,26 +793,34 @@ function App() {
   // 议会站:温和/拷问审议。clarification=底部补的一句背景(折进 brief)。
   // 重跑议会会清空旧观点 + 你的策展 → 有策展时先确认(避免静默丢失)
   const hasCuration = () => Object.values(curation).some((c) => c.status !== "none" || c.replies.length > 0);
-  const confirmRerun = (why: string) => !(viewpoints.length > 0 && hasCuration()) || window.confirm(`${why}会重跑议会、清空当前观点和你的认领/否决/搁置策展。继续?`);
+  // 重跑守卫:仅当有策展会丢时弹 App 内嵌确认(不再用原生 window.confirm);否则直接 proceed
+  function guardRerun(why: string, proceed: () => void) {
+    if (viewpoints.length > 0 && hasCuration())
+      confirmAsk({ title: `${why}会清空你的策展`, body: "会重跑议会、清空当前观点和你的认领 / 否决 / 搁置。继续?", yesLabel: "继续重跑", danger: true, onYes: proceed });
+    else proceed();
+  }
 
-  async function runCouncil(intensity: CouncilIntensity = councilIntensity, clarification?: string) {
-    if (!confirmRerun("再审一轮")) return;
-    setTab("council"); setSendMenuFor(null);
-    setCouncilIntensity(intensity);
-    setRunConfig((rc) => (rc ? { ...rc, posture: intensity } : rc));
-    const ho = pendingHandoff.current || solutionDoc || ""; pendingHandoff.current = ""; // 没显式交接也用方案文档当源
-    const id = await ensureDiscussion();
-    if (id) deliberate(intensity, clarification, id, ho || undefined);
+  function runCouncil(intensity: CouncilIntensity = councilIntensity, clarification?: string) {
+    guardRerun("再审一轮", async () => {
+      setTab("council"); setSendMenuFor(null);
+      setCouncilIntensity(intensity);
+      setRunConfig((rc) => (rc ? { ...rc, posture: intensity } : rc));
+      const ho = pendingHandoff.current || solutionDoc || ""; pendingHandoff.current = ""; // 没显式交接也用方案文档当源
+      const id = await ensureDiscussion();
+      if (id) deliberate(intensity, clarification, id, ho || undefined);
+    });
   }
 
   // 议会内部:温和⇄拷问(已有观点则按新强度重跑;有策展先确认)
   function setIntensity(ci: CouncilIntensity) {
     if (ci === councilIntensity) return;
     const willRerun = !!(discussion && (viewpoints.length > 0 || deliberating) && !busy);
-    if (willRerun && !confirmRerun("切换审议强度")) return;
-    setCouncilIntensity(ci);
-    setRunConfig((rc) => (rc ? { ...rc, posture: ci } : rc));
-    if (willRerun) deliberate(ci, undefined, discussion!.id);
+    const apply = () => {
+      setCouncilIntensity(ci);
+      setRunConfig((rc) => (rc ? { ...rc, posture: ci } : rc));
+      if (willRerun) deliberate(ci, undefined, discussion!.id);
+    };
+    if (willRerun) guardRerun("切换审议强度", apply); else apply();
   }
 
   // 每站产出的规范 MD(= 工作台文档 + 交接载荷)
@@ -831,6 +849,19 @@ function App() {
     setPhase((p) => (p === "drafting" ? "drafting" : "awaiting-user"));
     setRunError("已停止当前请求 —— 可以重发了。");
   }
+  // 轻提示:右下角浮一条 ~1.6s 自动消失(成功反馈统一走这里,而非静默)
+  function flash(msg: string) {
+    setFlashMsg(msg);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlashMsg(""), 1600);
+  }
+  // 复制 + 反馈:成功浮「✓ 已复制」,失败给可操作提示(不再静默)
+  async function copy(text: string, label = "已复制") {
+    try { await navigator.clipboard.writeText(text || ""); flash("✓ " + label); }
+    catch { flash("复制失败 —— 请手动选中复制"); }
+  }
+  // App 内嵌确认(替原生 window.confirm 的丑弹窗)
+  function confirmAsk(opts: { title: string; body?: string; yesLabel?: string; danger?: boolean; onYes: () => void }) { setConfirmBox(opts); }
   // 纯切站(浏览):清旧站报错 + 收下拉(run 函数会另行清,无冲突)
   function switchTab(tk: Tab) { setTab(tk); setSendMenuFor(null); setRunError(""); }
 
@@ -1816,7 +1847,7 @@ function App() {
         <div style={{ flex: "0 0 auto", padding: "14px 30px", borderTop: "1px solid var(--line)", display: "flex", justifyContent: "center" }}>
           <div style={{ width: "100%", maxWidth: 720, display: "flex", gap: 10, alignItems: "center" }}>
             <button className="amber-btn" style={{ padding: "11px 20px", fontSize: 13, fontFamily: "var(--mono)" }} onClick={() => { setUserInput((u) => (u ? u + "\n\n" : "") + `> ${(t.body || "").replace(/\n+/g, " ").slice(0, 80)}…\n`); setDetailId(null); }}>↳ 追问此条</button>
-            <span className="ghost-chip" style={{ padding: "11px 16px" }} onClick={() => navigator.clipboard?.writeText(t.body || "")}>⧉ 复制内容</span>
+            <span className="ghost-chip" style={{ padding: "11px 16px" }} onClick={() => copy(t.body || "", "已复制内容")}>⧉ 复制内容</span>
             <span className="clk mono" onClick={() => setDetailId(null)} style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--faint)" }}>← 跳转自左栏「对话时间线」</span>
           </div>
         </div>
@@ -1853,7 +1884,7 @@ function App() {
       <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
           <span className="label">方向卡 · DIRECTION</span>
-          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(cardToMd(c))}>⧉ 复制</span>}
+          {c && <span className="ghost-chip" style={{ marginLeft: "auto", padding: "5px 9px", fontSize: 10 }} onClick={() => copy(cardToMd(c), "已复制方向卡")}>⧉ 复制</span>}
         </div>
         <div style={{ flex: 1, minHeight: 0, padding: "16px 15px", overflow: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
           {/* ① 一句话内核 —— 置顶 */}
@@ -1952,8 +1983,8 @@ function App() {
               <>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span className="mono" style={{ fontSize: 10.5, color: "var(--green)" }}>✓ 方案文档已出 · 主脑收口</span>
-                  <span className="ghost-chip" style={{ marginLeft: "auto", padding: "4px 8px", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(solutionDoc)}>⧉ 复制</span>
-                  <span className="ghost-chip" style={{ padding: "4px 8px", fontSize: 10 }} onClick={makeSolutionDoc} title="重新收口一版(读最新对话)">↻ 重出</span>
+                  <span className="ghost-chip" style={{ marginLeft: "auto", padding: "4px 8px", fontSize: 10 }} onClick={() => copy(solutionDoc || "", "已复制方案文档")}>⧉ 复制</span>
+                  <span className="ghost-chip" style={{ padding: "4px 8px", fontSize: 10, ...(makingSolDoc ? { opacity: 0.55, pointerEvents: "none" } : {}) }} onClick={makeSolutionDoc} title="重新收口一版(读最新对话)">{makingSolDoc ? "↻ 重出中…" : "↻ 重出"}</span>
                 </div>
                 <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>这份厚方案 = 交下游精修的真正方案(比方向卡厚):</div>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -2169,8 +2200,8 @@ function App() {
   const ccProvColor = (label: string) => agentColor(agentKey(label));
   const ccAvail = (type: ArtifactType) => (type === "image" ? produceProviders.filter((p) => p.image) : produceProviders);
   const ccExportArt = (a: Artifact) => {
-    if (a.type === "ppt") exportPptx({ title: `${discussion?.title || "Roast"} · PPT`, conclusion: a.content, evidence: [] });
-    else exportMarkdown({ title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] });
+    if (a.type === "ppt") { exportPptx({ title: `${discussion?.title || "Roast"} · PPT`, conclusion: a.content, evidence: [] }); flash("✓ 已导出 PPTX"); }
+    else { exportMarkdown({ title: `${discussion?.title || "Roast"} · ${ARTIFACT_TYPE_LABEL[a.type]}`, conclusion: a.content, evidence: [] }); flash("✓ 已导出 Markdown"); }
   };
   const ccArtCard = (a: Artifact) => {
     const fm = (PRODUCE_FORMATS.find((f) => f.id === a.type) || (a.type === "code_sketch" ? { ic: "‹›", name: "代码草稿", c: "#8AA0FF" } : a.type === "critique" ? { ic: "🔍", name: "挑刺", c: "#FF8A6B" } : PRODUCE_FORMATS[1]));
@@ -2200,7 +2231,7 @@ function App() {
           {a.type !== "image" && !isCrit && <button className="mbtn" disabled={producing} title={`让 ${a.provider} 自己按你的指令改这版(不换模型)`} onClick={() => { setArtInstr(""); setArtMenu(menuOpen && artMenu?.mode === "refine" ? null : { id: a.id, mode: "refine" }); }}>✎ 改稿</button>}
           {a.type !== "image" && !isCrit && <button className="mbtn" disabled={producing} title="让另一家 AI 只挑刺、不改写 —— 读完你自己决定怎么改" onClick={() => setArtMenu(menuOpen && artMenu?.mode === "critique" ? null : { id: a.id, mode: "critique" })}>🔍 让另一家挑刺</button>}
           {!isCrit && <button className="mbtn" disabled={producing} title="换一家从头另出一版,并排比较(不在原稿上改)" onClick={() => setArtMenu(menuOpen && artMenu?.mode === "regen" ? null : { id: a.id, mode: "regen" })}>⤺ 换模型重生</button>}
-          {a.type !== "image" && <button className="mbtn" onClick={() => navigator.clipboard?.writeText(a.type === "html_proto" ? htmlOf(a.content) : (a.content || ""))}>⧉ 复制</button>}
+          {a.type !== "image" && <button className="mbtn" onClick={() => copy(a.type === "html_proto" ? htmlOf(a.content) : (a.content || ""), "已复制")}>⧉ 复制</button>}
           {a.type === "html_proto" && <button className="mbtn" onClick={() => openHtmlPreview(a)}>⛶ 放大预览</button>}
           {a.type === "html_proto" && <button className="mbtn" onClick={() => downloadHtml(a)}>↓ 下载 HTML</button>}
           {a.type !== "image" && a.type !== "html_proto" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
@@ -2251,7 +2282,7 @@ function App() {
               <div style={{ border: "1px solid rgba(63,221,138,.3)", borderTop: "2px solid var(--green)", borderRadius: 10, background: "rgba(63,221,138,.04)", padding: "12px 13px", display: "flex", flexDirection: "column", gap: 7 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                   <span className="label" style={{ color: "var(--green)" }}>方案文档 · 主脑收口</span>
-                  <span className="ghost-chip" style={{ marginLeft: "auto", padding: "3px 7px", fontSize: 9 }} onClick={() => navigator.clipboard?.writeText(solutionDoc)}>⧉ 复制</span>
+                  <span className="ghost-chip" style={{ marginLeft: "auto", padding: "3px 7px", fontSize: 9 }} onClick={() => copy(solutionDoc || "", "已复制方案文档")}>⧉ 复制</span>
                 </div>
                 <div style={{ maxHeight: 340, overflow: "auto", fontSize: 11.5, lineHeight: 1.65, color: "#CCD6E0", whiteSpace: "pre-wrap", borderTop: "1px solid var(--line)", paddingTop: 8 }}>{solutionDoc}</div>
                 <div className="mono" style={{ fontSize: 9, color: "var(--faint)" }}>↓ 下面各模型会精修这份方案 → 文案 / PRD / PPT / 图</div>
@@ -2385,7 +2416,7 @@ function App() {
             <button className="amber-btn" style={{ padding: 12, fontSize: 13.5, fontFamily: "var(--mono)" }} disabled={!artifacts.length} onClick={() => exportMarkdown({ title: `${discussion?.title || "Roast"} · 立项包`, conclusion: ccPackMd(), evidence: [] })}>打包为立项包 ↓</button>
             <div style={{ display: "flex", gap: 9 }}>
               <button className="ghost-chip" style={{ flex: 1, padding: 9, justifyContent: "center" }} disabled={!artifacts.length} onClick={() => exportDocx({ title: `${discussion?.title || "Roast"} · 立项包`, conclusion: ccPackMd(), evidence: [] })}>导出 DOCX</button>
-              <button className="ghost-chip" style={{ flex: 1, padding: 9, justifyContent: "center" }} disabled={!artifacts.length} onClick={() => navigator.clipboard?.writeText(ccPackMd())}>复制全部</button>
+              <button className="ghost-chip" style={{ flex: 1, padding: 9, justifyContent: "center" }} disabled={!artifacts.length} title={artifacts.length ? "复制本场所有产物为一份 Markdown" : "还没有产物 —— 先生成一个再复制"} onClick={() => copy(ccPackMd(), "已复制全部产物")}>复制全部</button>
             </div>
           </div>
         </div>
@@ -2692,7 +2723,7 @@ function App() {
     if (!discussion) return;
     try {
       const r = await fetch(`/api/discussion/${discussion.id}/autopilot/inject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target }) }).then((x) => x.json());
-      if (r.ok) { setAutoInjected(target); await loadDiscussion(discussion.id); switchTab(target); }
+      if (r.ok) { setAutoInjected(target); await loadDiscussion(discussion.id); switchTab(target); flash("✓ 已带成果注入「" + TAB_LABEL[target as Tab] + "」"); }
       else setRunError(r.missing ? "注入缺字段:" + r.missing.join("、") : (r.error || "注入失败"));
     } catch (e) { setRunError((e as Error).message); }
   }
@@ -2833,7 +2864,7 @@ function App() {
         <div style={{ borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8 }}>
             <span className="label">MD 粗稿 · DRAFT</span>
-            {md && <span className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={() => navigator.clipboard?.writeText(autoMdText(md))}>⧉ 复制</span>}
+            {md && <span className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={() => copy(autoMdText(md), "已复制草稿")}>⧉ 复制</span>}
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "15px", display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
             {!md ? <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>跑起来后这里实时长出四个强字段:一句话方向 / 待拍板 / 建议产出 / 原始点子。攒够了注入某站继续细化。</div>
@@ -2872,6 +2903,20 @@ function App() {
           </div>}
 
       {runError && <div className="err">出错:{runError.length > 200 ? runError.slice(0, 200) + "…" : runError}</div>}
+
+      {flashMsg && <div className="flash-toast">{flashMsg}</div>}
+      {confirmBox && (
+        <div className="confirm-overlay" onClick={() => setConfirmBox(null)}>
+          <div className="confirm-box" onClick={(e) => e.stopPropagation()}>
+            <h4>{confirmBox.title}</h4>
+            {confirmBox.body && <p>{confirmBox.body}</p>}
+            <div className="row">
+              <button className="ghost-chip" style={{ padding: "8px 16px" }} onClick={() => setConfirmBox(null)}>取消</button>
+              <button className="amber-btn" style={{ padding: "8px 18px", ...(confirmBox.danger ? { background: "var(--red)", borderColor: "var(--red)", color: "#fff" } : {}) }} onClick={() => { const f = confirmBox.onYes; setConfirmBox(null); f(); }}>{confirmBox.yesLabel || "确认"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {tab !== "relay" && tab !== "search" && tab !== "produce" && tab !== "council" && tab !== "auto" && composerBar()}
       {showHistory && (
