@@ -17,6 +17,15 @@ if (DB_URL.startsWith("file:")) {
 }
 const client = createClient({ url: DB_URL, authToken: process.env.TURSO_AUTH_TOKEN });
 
+// DB 模式自检(不泄密钥):turso=云端持久 / file=本地临时盘(免费层重启会清)
+const IS_TURSO = !DB_URL.startsWith("file:");
+let dbHost = "local-file";
+try { if (IS_TURSO) dbHost = new URL(DB_URL.replace(/^libsql:/, "https:")).host; } catch {}
+export function dbInfo() {
+  return { driver: IS_TURSO ? "turso" : "file", persistent: IS_TURSO, host: dbHost, hasAuthToken: Boolean(process.env.TURSO_AUTH_TOKEN) };
+}
+console.log(`[roast-db] driver=${IS_TURSO ? "turso(持久)" : "file(临时盘)"} host=${dbHost} authToken=${process.env.TURSO_AUTH_TOKEN ? "yes" : "no"}`);
+
 // 建表 + 幂等迁移,只跑一次(并发安全:缓存同一 promise)
 let readyPromise = null;
 function ensureReady() {

@@ -58,6 +58,7 @@ import {
   createMagicToken,
   consumeMagicToken,
   assignOrphanDiscussions,
+  dbInfo,
 } from "./db.mjs";
 
 loadEnv();
@@ -127,6 +128,7 @@ const server = http.createServer(async (req, res) => {
         providers,
         runs: await safeCount(),
         authRequired: Boolean(process.env.ROAST_ACCESS_PASSWORD),
+        db: dbInfo(),
       });
     }
 
