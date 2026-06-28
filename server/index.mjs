@@ -96,12 +96,14 @@ function setSessionCookie(res, token) {
   res.setHeader("Set-Cookie", `roast_session=${token}; HttpOnly; Path=/; Max-Age=${SESSION_DAYS * 86400}; SameSite=Lax${secure}`);
 }
 const clearSessionCookie = (res) => res.setHeader("Set-Cookie", `roast_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
-// 邀请白名单:站长 + ROAST_ALLOWED_EMAILS(逗号分隔)
+// 邀请白名单:站长 + 硬编码兜底名单 ALLOWED_EXTRA + env ROAST_ALLOWED_EMAILS(逗号分隔,两者合并)
+const ALLOWED_EXTRA = ["5423696@qq.com"]; // 站长 QQ 备用邮箱
 function isInvited(email) {
   const e = String(email || "").trim().toLowerCase();
   if (!e || !e.includes("@")) return false;
   if (e === OWNER_EMAIL) return true;
-  return (process.env.ROAST_ALLOWED_EMAILS || "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean).includes(e);
+  const list = [...ALLOWED_EXTRA, ...(process.env.ROAST_ALLOWED_EMAILS || "").split(",")].map((x) => x.trim().toLowerCase()).filter(Boolean);
+  return list.includes(e);
 }
 // 登录密码:白名单邮箱之外再加一道密码(初期全员默认 123456,线上可设 ROAST_LOGIN_PASSWORD 覆盖)。
 // 后续要"每人独立密码"再扩成 users 表存哈希,这里先用共享密码满足"也需要录入密码"。
