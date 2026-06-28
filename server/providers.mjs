@@ -1598,3 +1598,48 @@ export async function runAgentTask({ brief, task, skillText, onEvent, byoKeys, s
     } catch {}
   }
 }
+
+// ---- Reflection 层:从一次讨论提取记忆 + Skill 候选 ----
+export async function runReflection({ brief, rounds, corrections, byoKeys }) {
+  const configured = getConfiguredProviders(byoKeys);
+  if (!configured.length) throw new Error("没有可用模型");
+  // 偏好便宜模型做 reflection
+  const PREF = ["deepseek", "qwen", "zhipu", "openai", "claude"];
+  const p = [...PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean),
+    ...configured][0];
+  const apiKey = resolveKey(p, byoKeys);
+
+  const summaries = (rounds || []).slice(-8).map((r, i) =>
+    `轮次${r.roundIndex || i + 1}: ${r.eval?.round_summary || r.fields?.direction || ""}`.trim()
+  ).filter(Boolean).join("\n");
+
+  const correctionText = (corrections || []).slice(-5).map((c) =>
+    `纠偏: ${c.trim()}`
+  ).filter(Boolean).join("\n");
+
+  const system = `你是 ROAST 的 Reflection 模块。用户完成了一轮 AI 辅助产品思考，你需要从中提炼可沉淀的记忆和 Skill 候选规则。
+输出严格 JSON，不要任何解释：
+{
+  "user_preferences": ["string"],
+  "product_judgments": ["string"],
+  "skill_candidates": [{"skill_name": "string(英文短横线)", "rule": "string(一条具体规则，英文)", "rationale": "string(中文解释)"}]
+}
+规则:
+- user_preferences: 用户反复表现出的偏好或价值观(不超过4条，中文)
+- product_judgments: 这次讨论形成的产品判断/洞察(不超过4条，中文)
+- skill_candidates: 只有足够具体、可复用才列入(0-2条)，rule 用英文写成 Skill 规则，skill_name 必须是现有 skill 名称之一: prd-writer, landing-page-copy, roast-critic, female-consumer-app-designer, ai-fortune-product-designer, html-prototype-builder, ai-system-prompt-builder。只追加规则到已有 skill，不创建新 skill 名。`;
+
+  const user = `项目背景: ${String(brief || "").slice(0, 500)}
+
+本轮核心进展:
+${summaries || "(无)"}
+
+${correctionText ? `用户纠偏记录:\n${correctionText}` : ""}
+
+请提炼记忆和 Skill 候选。`;
+
+  return await chatJSON(p, apiKey, [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ], { maxTokens: 1200 });
+}

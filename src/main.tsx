@@ -287,9 +287,16 @@ function App() {
   const [skillList, setSkillList] = useState<{ name: string; description: string }[]>([]);
   const [loadedSkill, setLoadedSkill] = useState<{ name: string; body: string } | null>(null);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [skillSuggest, setSkillSuggest] = useState<{ name: string; description: string } | null>(null);
   const [distillOpen, setDistillOpen] = useState(false);
   const [distillName, setDistillName] = useState("");
   const [distillDesc, setDistillDesc] = useState("");
+  // Memory + Evolution 层
+  const [memories, setMemories] = useState<{ id: string; category: string; content: string; created_at: string }[]>([]);
+  const [skillProposals, setSkillProposals] = useState<{ id: string; skill_name: string; rule: string; rationale: string; created_at: string }[]>([]);
+  const [reflectBusy, setReflectBusy] = useState(false);
+  const [reflectDone, setReflectDone] = useState<{ memories: number; proposals: number } | null>(null);
+  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const autoLoopRef = useRef(false); // 异步循环读最新值,避免闭包陈旧
   const roundOffsetRef = useRef(0); // 用户点"继续"时重置,让 cap 按本次 session 内轮数算
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
@@ -314,6 +321,8 @@ function App() {
     fetch("/api/produce-providers").then((r) => r.json()).then((d) => { if (d.ok) setProduceProviders(d.providers || []); }).catch(() => {});
     fetch("/api/personas").then((r) => r.json()).then((d) => { if (d.ok) setPersonaLib({ functional: d.functional, opinionated: d.opinionated, providers: d.providers || [] }); }).catch(() => {});
     fetch("/api/skills").then((r) => r.json()).then((d) => { if (d.ok) setSkillList(d.skills || []); }).catch(() => {});
+    fetch("/api/memories").then((r) => r.json()).then((d) => { if (d.ok) setMemories(d.memories || []); }).catch(() => {});
+    fetch("/api/skill-proposals").then((r) => r.json()).then((d) => { if (d.ok) setSkillProposals(d.proposals || []); }).catch(() => {});
     // 刷新恢复:把上次的工作台接回来(存在才载,已删则清记号),感知上不再"丢工作台"
     const last = localStorage.getItem("roast_last_did");
     if (last) fetch(`/api/discussion/${last}`).then((r) => r.json()).then((d) => { if (d.ok && d.discussion) loadDiscussion(last); else localStorage.removeItem("roast_last_did"); }).catch(() => {});
@@ -363,6 +372,18 @@ function App() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [skillPickerOpen]);
+
+  // Auto-suggest: brief 变化后 700ms 触发,有 suggest 且未加载 skill 时显示建议 chip
+  useEffect(() => {
+    if (!brief.trim() || brief.length < 10 || loadedSkill) { setSkillSuggest(null); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/skills/suggest?brief=${encodeURIComponent(brief.slice(0, 300))}`)
+        .then(r => r.json())
+        .then(d => { if (d.ok && d.suggestion) setSkillSuggest(d.suggestion); else setSkillSuggest(null); })
+        .catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
+  }, [brief, loadedSkill]);
 
   function stopTimer() { if (timer.current) clearInterval(timer.current); timer.current = null; }
   function startTimer() {
@@ -1691,13 +1712,22 @@ function App() {
                 </span>
               ) : (
                 <>
+                  {skillSuggest && !skillPickerOpen && (
+                    <span className="skill-suggest-chip" onClick={() => {
+                      fetch(`/api/skills/${skillSuggest.name}`).then(r => r.json()).then(d => {
+                        if (d.ok) { setLoadedSkill({ name: d.skill.name, body: d.skill.body }); setSkillSuggest(null); }
+                      }).catch(() => {});
+                    }}>
+                      ✦ 建议 {skillSuggest.name} ↗
+                    </span>
+                  )}
                   <button className="skill-load-btn" onClick={() => setSkillPickerOpen((o) => !o)}>加载 Skill ▾</button>
                   {skillPickerOpen && (
                     <div className="skill-dropdown" onClick={(e) => e.stopPropagation()}>
                       {skillList.map((sk) => (
                         <button key={sk.name} className="skill-dropdown-item" onClick={() => {
                           fetch(`/api/skills/${sk.name}`).then(r => r.json()).then(d => {
-                            if (d.ok) setLoadedSkill({ name: d.skill.name, body: d.skill.body });
+                            if (d.ok) { setLoadedSkill({ name: d.skill.name, body: d.skill.body }); setSkillSuggest(null); }
                           }).catch(() => {});
                           setSkillPickerOpen(false);
                         }}>
@@ -1715,7 +1745,7 @@ function App() {
           <span className="ghost-chip" onClick={() => { setShowHistory(true); refreshHistory(); }}>历史 · {history.length}</span>
           <span className="ghost-chip" title="我所有点子产出过的交付物" onClick={openLibrary}>交付物库</span>
           <span className="ghost-chip" title="登出" onClick={logout}>登出</span>
-          <span className="ws">WORKSPACE · 一条点子 · 四站流转</span>
+          <span className="ws clk" onClick={() => setShowMemoryPanel(true)} title="记忆库 + Skill 提案">WORKSPACE · 一条点子 · 四站流转{(memories.length > 0 || skillProposals.length > 0) ? <span className="mem-badge">{memories.length + skillProposals.length}</span> : null}</span>
         </div>
       </div>
     </>
@@ -3083,6 +3113,28 @@ function App() {
               <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={!md?.open_questions?.length || autoBusy} onClick={() => autoInject("council")} title="需待拍板≥1">议会</button>
               <button className="amber-btn" style={{ flex: 1.2, padding: "9px 10px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center" }} disabled={!md?.direction || autoBusy} onClick={() => autoInject("produce")}>产出 →</button>
             </div>
+            {/* 生成 Reflection 总结 */}
+            {rounds.length >= 3 && !autoBusy && !autoLooping && (
+              reflectDone ? (
+                <div className="mono" style={{ fontSize: 10, color: "var(--green)" }}>
+                  ✓ 已提炼 {reflectDone.memories} 条记忆 · {reflectDone.proposals} 条 Skill 候选 →
+                  <span className="clk" style={{ color: "var(--cyan)", marginLeft: 4 }} onClick={() => setShowMemoryPanel(true)}>查看 / 审核</span>
+                </div>
+              ) : (
+                <button className="ghost-chip" style={{ justifyContent: "center", fontSize: 10.5, color: "var(--muted)" }} disabled={reflectBusy} onClick={async () => {
+                  if (!discussion) return;
+                  setReflectBusy(true);
+                  try {
+                    const r = await fetch(`/api/discussion/${discussion.id}/reflect`, { method: "POST" }).then(x => x.json());
+                    if (r.ok) {
+                      setReflectDone({ memories: r.memories, proposals: r.proposals });
+                      fetch("/api/memories").then(x => x.json()).then(d => { if (d.ok) setMemories(d.memories || []); }).catch(() => {});
+                      fetch("/api/skill-proposals").then(x => x.json()).then(d => { if (d.ok) setSkillProposals(d.proposals || []); }).catch(() => {});
+                    }
+                  } finally { setReflectBusy(false); }
+                }}>{reflectBusy ? "提炼中…" : "📝 生成本轮总结(提炼记忆)"}</button>
+              )
+            )}
             {/* 自动提炼为 Skill */}
             {md?.direction && !autoBusy && (
               distillOpen ? (
@@ -3199,6 +3251,87 @@ function App() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+      {showMemoryPanel && (
+        <div className="hist-overlay" onClick={() => setShowMemoryPanel(false)}>
+          <div className="hist-panel" style={{ width: "min(740px, 95vw)", maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className="hist-head">
+              <span>记忆库 + Skill 提案 · MEMORY</span>
+              <button className="hist-close" onClick={() => setShowMemoryPanel(false)}>×</button>
+            </div>
+            <div className="hist-list" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 20 }}>
+              {/* 记忆库 */}
+              <div>
+                <div className="label" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                  记忆库 · {memories.length} 条
+                  <span className="mono" style={{ fontSize: 10, color: "var(--faint)", fontWeight: 400 }}>来自历次 Reflection 提炼，注入每次会话的提示词</span>
+                </div>
+                {memories.length === 0 ? (
+                  <div className="board-empty" style={{ padding: "12px 0", fontSize: 12 }}>
+                    还没有记忆 —— 在自动档跑满 3 轮后点「📝 生成本轮总结」即可提炼
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                    {["preference", "product_judgment", "pattern"].map((cat) => {
+                      const items = memories.filter(m => m.category === cat);
+                      if (!items.length) return null;
+                      const labels: Record<string, string> = { preference: "用户偏好", product_judgment: "产品判断", pattern: "规律" };
+                      return (
+                        <div key={cat}>
+                          <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)", marginBottom: 5 }}>{labels[cat] || cat}</div>
+                          {items.map((m) => (
+                            <div key={m.id} className="mem-item">
+                              <span className="mem-content">{m.content}</span>
+                              <button className="hist-del" title="删除" onClick={async () => {
+                                await fetch(`/api/memories/${m.id}`, { method: "DELETE" });
+                                setMemories(prev => prev.filter(x => x.id !== m.id));
+                              }}>×</button>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {/* Skill 提案 */}
+              <div>
+                <div className="label" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                  待审 Skill 提案 · {skillProposals.length} 条
+                  <span className="mono" style={{ fontSize: 10, color: "var(--faint)", fontWeight: 400 }}>AI 提议的规则，确认后追加到对应 Skill</span>
+                </div>
+                {skillProposals.length === 0 ? (
+                  <div className="board-empty" style={{ padding: "12px 0", fontSize: 12 }}>
+                    没有待审提案
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {skillProposals.map((p) => (
+                      <div key={p.id} className="prop-card">
+                        <div className="prop-header">
+                          <span className="agent-pill" style={{ color: "var(--cyan)" }}>{p.skill_name}</span>
+                          <span className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{p.created_at?.slice(0, 10)}</span>
+                        </div>
+                        <div style={{ fontSize: 12.5, color: "#E6EDF3", lineHeight: 1.6, margin: "6px 0 4px" }}>{p.rule}</div>
+                        {p.rationale && <div style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.5 }}>{p.rationale}</div>}
+                        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                          <button className="mbtn" style={{ flex: 1, justifyContent: "center", color: "var(--green)", borderColor: "var(--green)" }} onClick={async () => {
+                            await fetch(`/api/skill-proposals/${p.id}/approve`, { method: "POST" });
+                            setSkillProposals(prev => prev.filter(x => x.id !== p.id));
+                          }}>✓ 合并到 Skill</button>
+                          <button className="ghost-chip" style={{ flex: 1, justifyContent: "center", fontSize: 11 }} onClick={async () => {
+                            await fetch(`/api/skill-proposals/${p.id}/reject`, { method: "POST" });
+                            setSkillProposals(prev => prev.filter(x => x.id !== p.id));
+                          }}>✕ 不采纳</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

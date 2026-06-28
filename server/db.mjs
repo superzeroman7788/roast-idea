@@ -86,6 +86,22 @@ async function migrate() {
       token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at TEXT NOT NULL,
       used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_discussion_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, category);
+    CREATE TABLE IF NOT EXISTS skill_proposals (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      skill_name TEXT NOT NULL, rule TEXT NOT NULL, rationale TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      source_discussion_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_proposals_user ON skill_proposals(user_id, status);
   `);
   // 幂等迁移:给已存在的表补新列(列已存在则吞掉)
   for (const stmt of [
@@ -135,6 +151,45 @@ export async function consumeMagicToken(tokenHash) {
 export async function assignOrphanDiscussions(userId) {
   const r = await run(`UPDATE discussions SET user_id = ? WHERE user_id IS NULL`, [userId]);
   return r?.rowsAffected ?? 0;
+}
+
+// ---- Memory 层 ----
+// category: 'preference' | 'product_judgment' | 'pattern'
+export async function getMemories(userId, limit = 20) {
+  await ensureReady();
+  return (await all(`SELECT * FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`, [userId, limit]));
+}
+export async function saveMemories(userId, items, sourceDiscId) {
+  await ensureReady();
+  const now = new Date().toISOString();
+  for (const { category, content } of items) {
+    if (!content?.trim()) continue;
+    await run(`INSERT INTO memories (id, user_id, category, content, source_discussion_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), userId, category, content.trim(), sourceDiscId || null, now]);
+  }
+}
+export async function deleteMemory(id, userId) {
+  await ensureReady();
+  await run(`DELETE FROM memories WHERE id = ? AND user_id = ?`, [id, userId]);
+}
+
+// ---- Skill Proposals ----
+export async function getSkillProposals(userId, status = "pending") {
+  await ensureReady();
+  return (await all(`SELECT * FROM skill_proposals WHERE user_id = ? AND status = ? ORDER BY created_at DESC`, [userId, status]));
+}
+export async function saveSkillProposals(userId, proposals, sourceDiscId) {
+  await ensureReady();
+  const now = new Date().toISOString();
+  for (const { skill_name, rule, rationale } of proposals) {
+    if (!skill_name?.trim() || !rule?.trim()) continue;
+    await run(`INSERT INTO skill_proposals (id, user_id, skill_name, rule, rationale, status, source_discussion_id, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      [randomUUID(), userId, skill_name.trim(), rule.trim(), (rationale || "").trim(), sourceDiscId || null, now]);
+  }
+}
+export async function updateSkillProposalStatus(id, userId, status) {
+  await ensureReady();
+  await run(`UPDATE skill_proposals SET status = ? WHERE id = ? AND user_id = ?`, [status, id, userId]);
 }
 
 // 查询封装(libSQL 异步)

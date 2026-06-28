@@ -23,6 +23,7 @@ import {
   runSolutionDoc,
   runAutoRound,
   runAgentTask,
+  runReflection,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
 import {
@@ -61,6 +62,12 @@ import {
   consumeMagicToken,
   assignOrphanDiscussions,
   dbInfo,
+  getMemories,
+  saveMemories,
+  deleteMemory,
+  getSkillProposals,
+  saveSkillProposals,
+  updateSkillProposalStatus,
 } from "./db.mjs";
 
 loadEnv();
@@ -751,6 +758,84 @@ const server = http.createServer(async (req, res) => {
       if (!name || !skillBody) return json(res, 400, { ok: false, error: "name and body required" });
       const saved = saveSkill({ name, description, station, body: skillBody });
       return json(res, 200, { ok: true, skill: saved });
+    }
+    // GET /api/skills/suggest?brief=...&station=... → 自动推荐
+    if (req.method === "GET" && url.pathname === "/api/skills/suggest") {
+      const brief = url.searchParams.get("brief") || "";
+      const station = url.searchParams.get("station") || "";
+      const match = routeSkill(brief, station || undefined);
+      return json(res, 200, { ok: true, suggestion: match || null });
+    }
+
+    // ============ Memory 层 ============
+    // GET /api/memories → 当前用户的记忆列表
+    if (req.method === "GET" && url.pathname === "/api/memories") {
+      if (!userId) return json(res, 401, { ok: false, error: "未登录" });
+      const mems = await getMemories(userId, 50);
+      return json(res, 200, { ok: true, memories: mems });
+    }
+    // DELETE /api/memories/:id
+    const memDel = url.pathname.match(/^\/api\/memories\/([^/]+)$/);
+    if (req.method === "DELETE" && memDel) {
+      if (!userId) return json(res, 401, { ok: false, error: "未登录" });
+      await deleteMemory(memDel[1], userId);
+      return json(res, 200, { ok: true });
+    }
+
+    // ============ Skill Proposals ============
+    // GET /api/skill-proposals[?status=pending]
+    if (req.method === "GET" && url.pathname === "/api/skill-proposals") {
+      if (!userId) return json(res, 401, { ok: false, error: "未登录" });
+      const status = url.searchParams.get("status") || "pending";
+      const proposals = await getSkillProposals(userId, status);
+      return json(res, 200, { ok: true, proposals });
+    }
+    // POST /api/skill-proposals/:id/approve → 审核通过,追加规则到对应 skill
+    const propApprove = url.pathname.match(/^\/api\/skill-proposals\/([^/]+)\/approve$/);
+    if (req.method === "POST" && propApprove) {
+      if (!userId) return json(res, 401, { ok: false, error: "未登录" });
+      const proposals = await getSkillProposals(userId, "pending");
+      const prop = proposals.find((p) => p.id === propApprove[1]);
+      if (!prop) return json(res, 404, { ok: false, error: "proposal not found" });
+      // 追加规则到对应 skill
+      const existing = loadSkill(prop.skill_name);
+      if (existing) {
+        const appendedBody = existing.body.trimEnd() + `\n\n### Learned Rule (${new Date().toISOString().slice(0, 10)})\n${prop.rule}`;
+        saveSkill({ name: prop.skill_name, description: existing.meta?.description || "", station: existing.meta?.station || "global", body: appendedBody });
+      }
+      await updateSkillProposalStatus(prop.id, userId, "approved");
+      return json(res, 200, { ok: true });
+    }
+    // POST /api/skill-proposals/:id/reject
+    const propReject = url.pathname.match(/^\/api\/skill-proposals\/([^/]+)\/reject$/);
+    if (req.method === "POST" && propReject) {
+      if (!userId) return json(res, 401, { ok: false, error: "未登录" });
+      await updateSkillProposalStatus(propReject[1], userId, "rejected");
+      return json(res, 200, { ok: true });
+    }
+
+    // POST /api/discussion/:id/reflect → 生成 Reflection,存 memories + proposals
+    const reflectMatch = url.pathname.match(/^\/api\/discussion\/([^/]+)\/reflect$/);
+    if (req.method === "POST" && reflectMatch) {
+      if (!userId) return json(res, 401, { ok: false, error: "未登录" });
+      const d = await getDiscussion(reflectMatch[1]);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const autoRun = d.auto_run ? JSON.parse(d.auto_run) : null;
+      const corrections = await listCorrectedTurns(d.id).then((turns) => turns.map((t) => t.correction).filter(Boolean)).catch(() => []);
+      const byoKeys = parseByo(req);
+      const result = await runReflection({
+        brief: d.brief,
+        rounds: autoRun?.rounds || [],
+        corrections,
+        byoKeys,
+      });
+      const mems = [
+        ...(result.user_preferences || []).map((c) => ({ category: "preference", content: c })),
+        ...(result.product_judgments || []).map((c) => ({ category: "product_judgment", content: c })),
+      ];
+      await saveMemories(userId, mems, d.id);
+      await saveSkillProposals(userId, result.skill_candidates || [], d.id);
+      return json(res, 200, { ok: true, memories: mems.length, proposals: (result.skill_candidates || []).length, raw: result });
     }
 
     // ============ 产出层(交付物)============
