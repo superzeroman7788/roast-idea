@@ -609,11 +609,14 @@ const server = http.createServer(async (req, res) => {
       const autoSkillName = body.skillName ? String(body.skillName) : "";
       const autoSkill = autoSkillName ? loadSkill(autoSkillName) : null;
       const autoBrief = autoSkill ? `[Skill: ${autoSkill.name}]\n${autoSkill.body}\n\n---\n\n${d.brief}` : d.brief;
+      // roundOffset:用户点"继续"时传当前轮数作为本次 session 起点,让 cap 按 session 内轮数算
+      const roundOffset = typeof body.roundOffset === "number" ? Math.max(0, body.roundOffset) : 0;
       const prevState = d.autoRun || { rounds: [], md: null };
       const roundIndex = (prevState.rounds?.length || 0) + 1;
       const MAX_ROUNDS = Number(process.env.AUTO_MAX_ROUNDS || 10); // 硬截断层(轮次,先松,用户后期评估)
+      const roundsInSession = roundIndex - roundOffset;
       sseHead(res);
-      if (roundIndex > MAX_ROUNDS) { sseSend(res, "capped", { roundIndex, maxRounds: MAX_ROUNDS }); res.end(); return; }
+      if (roundsInSession > MAX_ROUNDS) { sseSend(res, "capped", { roundIndex, maxRounds: MAX_ROUNDS }); res.end(); return; }
       try {
         const evidence = d.evidencePack?.items || [];
         const round = await runAutoRound({ discId: d.id, brief: autoBrief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
@@ -703,6 +706,19 @@ const server = http.createServer(async (req, res) => {
       if (!d) return json(res, 404, { ok: false, error: "not found" });
       await setAutoRun(d.id, null);
       return json(res, 200, { ok: true });
+    }
+
+    // 撤最后一轮(回退)
+    const autoUndo = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/undo$/);
+    if (req.method === "POST" && autoUndo) {
+      const d = await getDiscussion(autoUndo[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const prev = d.autoRun;
+      if (!prev?.rounds?.length) return json(res, 400, { ok: false, error: "no rounds to undo" });
+      const rounds = prev.rounds.slice(0, -1);
+      const md = rounds.length ? { brief_original: prev.md?.brief_original || d.brief, ...rounds[rounds.length - 1].fields } : null;
+      await setAutoRun(d.id, { ...prev, rounds, md, bestRoundIndex: Math.min(prev.bestRoundIndex || 0, rounds.length - 1) });
+      return json(res, 200, { ok: true, roundsLeft: rounds.length });
     }
 
     // ============ Skill 系统 ============

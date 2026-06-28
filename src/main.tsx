@@ -291,6 +291,7 @@ function App() {
   const [distillName, setDistillName] = useState("");
   const [distillDesc, setDistillDesc] = useState("");
   const autoLoopRef = useRef(false); // 异步循环读最新值,避免闭包陈旧
+  const roundOffsetRef = useRef(0); // 用户点"继续"时重置,让 cap 按本次 session 内轮数算
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
   const [llAtBottom, setLlAtBottom] = useState(true); // 时间线是否贴底:贴底才自动跟随,滚上去看历史就不打扰
@@ -2837,7 +2838,7 @@ function App() {
     setAutoLive({ roundIndex, lineup: null, lens: null, challenger: null, compliance: null, agents: [], fields: null, viewpoint: null, convergence: null, eval: null, done: false, humanNote: humanNote || null });
     let doneData: any = null, capped = false;
     try {
-      await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined, skillName: loadedSkill?.name || undefined },
+      await streamSSE(`/api/discussion/${did}/autopilot/round`, { humanNote: humanNote || undefined, skillName: loadedSkill?.name || undefined, roundOffset: roundOffsetRef.current },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "lineup") setAutoLive((p: any) => ({ ...p, roundIndex: d.roundIndex ?? p?.roundIndex, lineup: d.lineup, lens: d.lens, by: d.lineup?.director }));
@@ -2873,6 +2874,7 @@ function App() {
     if (autoBusy || !brief.trim()) return;
     const did = await ensureDiscussion(true, brief.trim(), true); // 强制新讨论(新 idea,不读过往对话)
     if (!did) return;
+    roundOffsetRef.current = 0;
     setAutoRun(null); setAutoLive(null); setAutoInjected(null);
     setAutoLooping(true); autoLoopRef.current = true;
     loopAuto(did);
@@ -3036,7 +3038,23 @@ function App() {
                 <>
                   <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", minHeight: 44, resize: "vertical", lineHeight: 1.5 }} value={autoNote} onChange={(e) => setAutoNote(e.target.value)} placeholder="插一句:喂个新角度 / 纠正理解(人是最强反熵)—— 留空则只是继续自动" disabled={autoBusy} />
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={autoBusy} onClick={() => { const n = autoNote.trim(); if (discussion) { setAutoLooping(true); autoLoopRef.current = true; loopAuto(discussion.id, n || undefined); } }}>{autoBusy ? "跑这一轮中…" : autoNote.trim() ? "↳ 带这句续跑(恢复自动)" : "▶ 继续自动"}</button>
+                    <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={autoBusy} onClick={() => {
+                      const n = autoNote.trim();
+                      if (discussion) {
+                        // 重置 session offset → 继续后最多再跑 MAX_ROUNDS 轮
+                        roundOffsetRef.current = autoRun?.rounds?.length || 0;
+                        setRunError("");
+                        setAutoLooping(true); autoLoopRef.current = true;
+                        loopAuto(discussion.id, n || undefined);
+                      }
+                    }}>{autoBusy ? "跑这一轮中…" : autoNote.trim() ? "↳ 带这句续跑(恢复自动)" : "▶ 继续自动"}</button>
+                    {(autoRun?.rounds?.length || 0) > 0 && !autoBusy && (
+                      <button className="mbtn" style={{ flex: "0 0 auto", padding: "8px 12px", fontSize: 11, color: "var(--muted)" }} title="撤销最后一轮" onClick={async () => {
+                        if (!discussion) return;
+                        const r = await fetch(`/api/discussion/${discussion.id}/autopilot/undo`, { method: "POST" }).then(x => x.json());
+                        if (r.ok) { await loadDiscussion(discussion.id); setRunError(""); }
+                      }}>↺ 撤最后一轮</button>
+                    )}
                   </div>
                 </>
               )}

@@ -1372,10 +1372,18 @@ export async function runAutoRound({ discId, brief, roundIndex, prevState, human
   const SLOT = {
     director:   ["openai", "claude", "deepseek"],
     challenger: ["claude", "openai", "deepseek"],
-    a:          ["deepseek", "openai", "qwen"],
-    b:          ["qwen", "zhipu", "deepseek"],
-    c:          ["zhipu", "qwen", "deepseek"],
   };
+  // Builder 三槽动态分配:按偏好顺序尽量各用不同模型,避免 b/c 同时退到同一家
+  const BUILDER_PREF = ["deepseek", "qwen", "zhipu", "openai", "claude"];
+  const builderPool = [...BUILDER_PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean),
+    ...configured.filter((c) => !BUILDER_PREF.includes(c.provider.id))];
+  const pickBuilder = (excluded) => builderPool.find((c) => !excluded.has(c.provider.id)) || builderPool[0];
+  const ba = pickBuilder(new Set());
+  const bb = pickBuilder(new Set([ba?.provider.id]));
+  const bc = pickBuilder(new Set([ba?.provider.id, bb?.provider.id]));
+  SLOT.a = ba ? [ba.provider.id] : ["deepseek", "openai", "qwen"];
+  SLOT.b = bb ? [bb.provider.id] : ["qwen", "zhipu", "deepseek"];
+  SLOT.c = bc ? [bc.provider.id] : ["zhipu", "qwen", "deepseek"];
   const slotLabel = (order) => { const e = order.map((id) => configured.find((c) => c.provider.id === id)).find(Boolean); return e ? e.provider.label : "—"; };
   const lineup = { director: slotLabel(SLOT.director), challenger: slotLabel(SLOT.challenger), a: slotLabel(SLOT.a), b: slotLabel(SLOT.b), c: slotLabel(SLOT.c) };
   await emit("lineup", { roundIndex, lens: { id: lens.id, name: lens.name, hint: lens.hint }, lineup, humanNote: humanNote || null });
