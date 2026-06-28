@@ -2865,7 +2865,7 @@ function App() {
   async function loopAuto(did: string, note?: string) {
     const done = await runAutoPilotRound(note, did);
     if (!done || !autoLoopRef.current) { setAutoLooping(false); autoLoopRef.current = false; return; }
-    const pause = done.capped || done.repeatFlagged || done.stopRecommended || (done.roundIndex >= done.maxRounds);
+    const pause = done.capped || done.repeatFlagged || done.stopRecommended || ((done.roundIndex - roundOffsetRef.current) >= done.maxRounds);
     if (pause) { setAutoLooping(false); autoLoopRef.current = false; return; }
     await new Promise((r) => setTimeout(r, 1600));
     if (autoLoopRef.current) loopAuto(did);
