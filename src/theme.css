@@ -872,3 +872,21 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .agent-dl-btn:hover{background:rgba(72,220,255,.08)}
 .agent-iframe{width:100%;height:400px;border:none;background:#fff;display:block}
 .agent-img{max-width:100%;display:block;border:none}
+
+/* Skill 系统 */
+.skill-picker-wrap{position:relative;display:flex;align-items:center}
+.skill-load-btn{font-family:var(--mono);font-size:10px;letter-spacing:.07em;color:var(--cyan);background:transparent;border:1px solid rgba(72,220,255,.28);border-radius:5px;padding:2px 8px;cursor:pointer;white-space:nowrap;transition:.13s}
+.skill-load-btn:hover{background:rgba(72,220,255,.08);border-color:rgba(72,220,255,.5)}
+.skill-badge{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;color:var(--green);border:1px solid rgba(63,227,160,.35);border-radius:5px;padding:2px 6px 2px 8px;background:rgba(63,227,160,.07)}
+.skill-badge-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;line-height:1;padding:0 1px;margin-left:1px}
+.skill-badge-x:hover{color:var(--red)}
+.skill-dropdown{position:absolute;top:calc(100% + 5px);right:0;z-index:200;background:#0c1a2b;border:1px solid #1d3a5a;border-radius:8px;padding:5px;display:flex;flex-direction:column;gap:3px;min-width:240px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.skill-dropdown-item{display:flex;flex-direction:column;gap:2px;background:none;border:none;border-radius:5px;padding:7px 9px;cursor:pointer;text-align:left;transition:.12s}
+.skill-dropdown-item:hover{background:rgba(72,220,255,.08)}
+.skill-item-name{font-family:var(--mono);font-size:11px;color:var(--cyan);letter-spacing:.06em}
+.skill-item-desc{font-size:10px;color:var(--tx3);line-height:1.4;white-space:normal}
+/* 自动提炼 Skill 表单 */
+.distill-form{border:1px solid rgba(72,220,255,.2);border-radius:8px;padding:10px 12px;background:rgba(72,220,255,.03);display:flex;flex-direction:column;gap:7px}
+.distill-form-title{font-family:var(--mono);font-size:11px;color:var(--cyan);letter-spacing:.07em}
+.distill-input{background:#060f1c;border:1px solid #1d3350;border-radius:6px;padding:6px 9px;color:var(--tx);font-family:var(--sans);font-size:12px;outline:none;resize:vertical}
+.distill-input:focus{border-color:rgba(72,220,255,.4)}

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID, randomBytes, createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { loadEnv } from "./env.mjs";
+import { listSkills, loadSkill, loadSkillRef, routeSkill, saveSkill } from "./skills.mjs";
 import {
   getProviderStatus,
   runDiscussionRound,
@@ -699,6 +700,38 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    // ============ Skill 系统 ============
+    // GET /api/skills[?station=produce] → L1 索引
+    if (req.method === "GET" && url.pathname === "/api/skills") {
+      const station = url.searchParams.get("station") || "";
+      return json(res, 200, { ok: true, skills: listSkills(station) });
+    }
+    // GET /api/skills/:name → L2 正文 + refs 列表
+    const skillLoad = url.pathname.match(/^\/api\/skills\/([^/]+)$/);
+    if (req.method === "GET" && skillLoad) {
+      const sk = loadSkill(skillLoad[1]);
+      if (!sk) return json(res, 404, { ok: false, error: "skill not found" });
+      return json(res, 200, { ok: true, skill: sk });
+    }
+    // GET /api/skills/:name/ref/:file → L3 参考文件
+    const skillRef = url.pathname.match(/^\/api\/skills\/([^/]+)\/ref\/(.+)$/);
+    if (req.method === "GET" && skillRef) {
+      const content = loadSkillRef(skillRef[1], skillRef[2]);
+      if (!content) return json(res, 404, { ok: false, error: "ref not found" });
+      return json(res, 200, { ok: true, content });
+    }
+    // POST /api/skills → 保存(自动提炼)
+    if (req.method === "POST" && url.pathname === "/api/skills") {
+      const body = await readJson(req);
+      const name = String(body.name || "").trim().replace(/[^a-z0-9-]/g, "-").slice(0, 64);
+      const description = String(body.description || "").trim().slice(0, 500);
+      const station = String(body.station || "produce");
+      const skillBody = String(body.body || "").trim().slice(0, 20000);
+      if (!name || !skillBody) return json(res, 400, { ok: false, error: "name and body required" });
+      const saved = saveSkill({ name, description, station, body: skillBody });
+      return json(res, 200, { ok: true, skill: saved });
+    }
+
     // ============ 产出层(交付物)============
     // 可用产出厂商(含是否支持生图),供前端「换一家/改稿」下拉
     if (req.method === "GET" && url.pathname === "/api/produce-providers") {
@@ -732,7 +765,12 @@ const server = http.createServer(async (req, res) => {
       const type = String(body.type || "");
       const providerId = String(body.provider || "");
       const fromArtifactId = body.fromArtifactId ? String(body.fromArtifactId) : null;
-      const instruction = body.instruction ? String(body.instruction).slice(0, 2000) : "";
+      const rawInstruction = body.instruction ? String(body.instruction).slice(0, 2000) : "";
+      const skillName = body.skillName ? String(body.skillName) : "";
+      const loadedSkill = skillName ? loadSkill(skillName) : null;
+      const instruction = loadedSkill
+        ? `[Skill: ${loadedSkill.name}]\n${loadedSkill.body}\n\n---\n\n${rawInstruction}`
+        : rawInstruction;
       // 交接来的方案文档(MD,如 方向卡/收敛方案 → 产出):优先作为产出的"方案源"
       const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
       const validTypes = ["copy", "prd", "design_doc", "code_sketch", "image", "ppt", "html_proto", "critique"];
@@ -807,6 +845,9 @@ const server = http.createServer(async (req, res) => {
       const task = String(body.task || "").trim().slice(0, 2000);
       if (!task) return json(res, 400, { ok: false, error: "task required" });
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
+      const agentSkillName = body.skillName ? String(body.skillName) : "";
+      const agentLoadedSkill = agentSkillName ? loadSkill(agentSkillName) : null;
+      const agentSkillText = agentLoadedSkill ? agentLoadedSkill.body : "";
 
       sseHead(res);
       const ctrl = new AbortController();
@@ -819,6 +860,7 @@ const server = http.createServer(async (req, res) => {
         await runAgentTask({
           brief,
           task,
+          skillText: agentSkillText,
           byoKeys,
           signal: ctrl.signal,
           onEvent: (type, data) => sseSend(res, `agent-${type}`, data),

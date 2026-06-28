@@ -283,6 +283,13 @@ function App() {
   const [agentLog, setAgentLog] = useState<{ type: string; text: string }[]>([]);
   const [agentHtml, setAgentHtml] = useState("");
   const [agentFiles, setAgentFiles] = useState<{ mimeType: string; b64: string }[]>([]);
+  // Skill 系统
+  const [skillList, setSkillList] = useState<{ name: string; description: string }[]>([]);
+  const [loadedSkill, setLoadedSkill] = useState<{ name: string; body: string } | null>(null);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [distillOpen, setDistillOpen] = useState(false);
+  const [distillName, setDistillName] = useState("");
+  const [distillDesc, setDistillDesc] = useState("");
   const autoLoopRef = useRef(false); // 异步循环读最新值,避免闭包陈旧
   const [artMenu, setArtMenu] = useState<{ id: string; mode: "refine" | "regen" | "critique" } | null>(null); // 产物卡内联菜单:改稿(同模型+指令)/ 换模型重生 / 让另一家挑刺
   const llScrollRef = useRef<HTMLDivElement>(null); // 陪练时间线滚动容器(自动滚到最新)
@@ -305,6 +312,7 @@ function App() {
     refreshHistory();
     fetch("/api/produce-providers").then((r) => r.json()).then((d) => { if (d.ok) setProduceProviders(d.providers || []); }).catch(() => {});
     fetch("/api/personas").then((r) => r.json()).then((d) => { if (d.ok) setPersonaLib({ functional: d.functional, opinionated: d.opinionated, providers: d.providers || [] }); }).catch(() => {});
+    fetch("/api/skills?station=produce").then((r) => r.json()).then((d) => { if (d.ok) setSkillList(d.skills || []); }).catch(() => {});
     // 刷新恢复:把上次的工作台接回来(存在才载,已删则清记号),感知上不再"丢工作台"
     const last = localStorage.getItem("roast_last_did");
     if (last) fetch(`/api/discussion/${last}`).then((r) => r.json()).then((d) => { if (d.ok && d.discussion) loadDiscussion(last); else localStorage.removeItem("roast_last_did"); }).catch(() => {});
@@ -507,7 +515,7 @@ function App() {
     try {
       await streamSSE(
         `/api/discussion/${did}/produce`,
-        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined, attachments: produceAtts.length ? produceAtts : undefined, realImg: type === "html_proto" ? protoRealImg : undefined },
+        { type, provider: providerId, fromArtifactId, instruction, handoff: ho || undefined, skillName: loadedSkill?.name || undefined, attachments: produceAtts.length ? produceAtts : undefined, realImg: type === "html_proto" ? protoRealImg : undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
@@ -527,7 +535,7 @@ function App() {
     try {
       await streamSSE(
         `/api/discussion/${discussion.id}/agent`,
-        { task },
+        { task, skillName: loadedSkill?.name || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "agent-thinking") setAgentLog((p) => [...p, { type: "thinking", text: d.delta || "" }]);
@@ -1465,7 +1473,38 @@ function App() {
             {deliverBlock()}
             {/* ── 马仔 Agent 执行区 ── */}
             <div className="agent-box">
-              <div className="agent-box-head">⚡ 马仔执行 <span className="agent-box-sub">gpt-4o-mini · code_interpreter · web_search</span></div>
+              <div className="agent-box-head">
+                <span>⚡ 马仔执行</span>
+                <span className="agent-box-sub">gpt-4o-mini · code_interpreter · web_search</span>
+                {/* Skill 选择器 */}
+                <div className="skill-picker-wrap" style={{ marginLeft: "auto", position: "relative" }}>
+                  {loadedSkill ? (
+                    <span className="skill-badge">
+                      Skill: {loadedSkill.name}
+                      <button className="skill-badge-x" onClick={() => setLoadedSkill(null)}>×</button>
+                    </span>
+                  ) : skillList.length > 0 ? (
+                    <>
+                      <button className="skill-load-btn" onClick={() => setSkillPickerOpen((o) => !o)}>加载 Skill ▾</button>
+                      {skillPickerOpen && (
+                        <div className="skill-dropdown" onClick={(e) => e.stopPropagation()}>
+                          {skillList.map((sk) => (
+                            <button key={sk.name} className="skill-dropdown-item" onClick={() => {
+                              fetch(`/api/skills/${sk.name}`).then(r => r.json()).then(d => {
+                                if (d.ok) setLoadedSkill({ name: d.skill.name, body: d.skill.body });
+                              }).catch(() => {});
+                              setSkillPickerOpen(false);
+                            }}>
+                              <span className="skill-item-name">{sk.name}</span>
+                              <span className="skill-item-desc">{sk.description.slice(0, 60)}…</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+                </div>
+              </div>
               <div className="agent-input-row">
                 <textarea
                   className="agent-input"
@@ -3016,6 +3055,29 @@ function App() {
               <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={!md?.open_questions?.length || autoBusy} onClick={() => autoInject("council")} title="需待拍板≥1">议会</button>
               <button className="amber-btn" style={{ flex: 1.2, padding: "9px 10px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center" }} disabled={!md?.direction || autoBusy} onClick={() => autoInject("produce")}>产出 →</button>
             </div>
+            {/* 自动提炼为 Skill */}
+            {md?.direction && !autoBusy && (
+              distillOpen ? (
+                <div className="distill-form">
+                  <div className="distill-form-title">💾 提炼为 Skill</div>
+                  <input className="distill-input" placeholder="skill 名称（英文短横线）" value={distillName} onChange={(e) => setDistillName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))} />
+                  <textarea className="distill-input" rows={2} placeholder="一句话描述（触发条件）" value={distillDesc} onChange={(e) => setDistillDesc(e.target.value)} />
+                  <div style={{ display: "flex", gap: 7 }}>
+                    <button className="ghost-chip" style={{ flex: 1, justifyContent: "center", fontSize: 11 }} onClick={() => setDistillOpen(false)}>取消</button>
+                    <button className="amber-btn" style={{ flex: 2, justifyContent: "center", fontSize: 11 }} disabled={!distillName.trim() || !distillDesc.trim()} onClick={async () => {
+                      const body = autoMdText(md);
+                      const r = await fetch("/api/skills", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: distillName, description: distillDesc, station: "auto", body }) }).then(x => x.json());
+                      if (r.ok) {
+                        setSkillList((prev) => [...prev.filter(s => s.name !== r.skill.name), { name: r.skill.name, description: r.skill.meta?.description || distillDesc }]);
+                        setDistillOpen(false); setDistillName(""); setDistillDesc("");
+                      }
+                    }}>保存 Skill</button>
+                  </div>
+                </div>
+              ) : (
+                <button className="ghost-chip" style={{ justifyContent: "center", fontSize: 10.5, color: "var(--faint)" }} onClick={() => { setDistillOpen(true); setDistillName(autoRun?.rounds?.[0]?.fields?.direction ? autoRun.rounds[0].fields.direction.slice(0, 20).toLowerCase().replace(/[^a-z0-9]/g, "-") : ""); }}>💾 提炼为 Skill</button>
+              )
+            )}
           </div>
         </div>
       </div>
