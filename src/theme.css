@@ -858,6 +858,19 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .mz-run:hover:not(:disabled){background:rgba(95,208,196,.18);box-shadow:0 0 10px rgba(95,208,196,.2)}
 .mz-run:disabled{opacity:.4;cursor:not-allowed}
 .tool-chip{font-family:var(--mono);font-size:10px;letter-spacing:.05em;color:var(--tx3);border:1px solid rgba(255,255,255,.12);border-radius:4px;padding:1px 6px}
+
+/* 记忆注入白箱(本次参考了 N 条记忆) */
+.mem-chip-wrap{align-self:flex-start;max-width:100%}
+.mem-chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:#9fb6c9;border:1px solid rgba(72,220,255,.28);border-radius:999px;padding:3px 11px;background:rgba(72,220,255,.06)}
+.mem-chip:hover{border-color:rgba(72,220,255,.5);color:#c4d6e4}
+.mem-chip-pop{margin-top:7px;border:1px solid var(--line2);border-radius:9px;background:#070f1e;padding:9px 11px;display:flex;flex-direction:column;gap:7px;max-width:560px}
+.mem-chip-row{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.5}
+.mem-cat{flex:0 0 auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;padding:1px 6px;border-radius:4px;margin-top:1px;border:1px solid currentColor;opacity:.9}
+.mem-cat-preference{color:#5FD0C4}
+.mem-cat-pattern{color:var(--amber)}
+.mem-cat-product_judgment{color:#A89BFF}
+.mem-chip-txt{color:#cdd9e4}
+.mem-chip-foot{font-family:var(--mono);font-size:10px;color:var(--faint);border-top:1px solid var(--line);padding-top:6px;line-height:1.5}
 /* 马仔 Agent 执行区(旧 legacy,保留流/结果样式) */
 .agent-box{margin-top:16px;border:1px solid #1d3a5a;border-radius:10px;padding:13px 14px;background:linear-gradient(180deg,#070f1e,#050b16)}
 .agent-box-head{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--cyan);margin-bottom:10px;display:flex;align-items:center;gap:10px;text-shadow:0 0 10px #48dcff44}

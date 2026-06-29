@@ -26,6 +26,7 @@ import {
   runReflection,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
+import { buildMemoryInjection } from "./memory.mjs";
 import {
   countRunRecords,
   createDiscussion,
@@ -380,7 +381,11 @@ const server = http.createServer(async (req, res) => {
         }
         const priorTurns = userTurn || attachCtx ? [...d.turns, { speaker: "you", role: "user", body: effUserTurn }] : d.turns;
         const transcript = buildTranscript(priorTurns);
-        const roundBrief = clarify ? d.brief + await pinnedBlock(d.id) + await correctionBlock(d.id) : d.brief; // 点赞(优先照顾)+ 纠偏(别再跑偏)都广播给本轮每个脑
+        let roundBrief = clarify ? d.brief + await pinnedBlock(d.id) + await correctionBlock(d.id) : d.brief; // 点赞(优先照顾)+ 纠偏(别再跑偏)都广播给本轮每个脑
+        // 记忆注入(skill 之前):陪练软引导可顺;议会注偏好/模式当"待压测的靶子"(对抗措辞,★ 不注 product_judgment)
+        const memStation = clarify ? "clarify" : "council";
+        const { block: memBlock, injected: memInjected } = await buildMemoryInjection(getMemories, req.userId, { discussionId: d.id, brief: d.brief, station: memStation, disabled: body.memory === false });
+        if (memBlock) { roundBrief = memBlock + roundBrief; sseSend(res, "memories", { station: memStation, injected: memInjected }); }
         await runDiscussionRound(
           { mode: d.mode, brief: roundBrief, evidence: d.evidencePack?.items || [], transcript, userTurn: effUserTurn, seats, byoKeys, round, fallback },
           (turn) => emitTurn(res, d.id, turn, d.evidencePack),
@@ -473,6 +478,10 @@ const server = http.createServer(async (req, res) => {
         effBrief += await pinnedBlock(d.id); // 用户点赞的点 → 方案优先纳入
         effBrief += await correctionBlock(d.id); // 用户纠偏的方向 → 方向卡当"已排除方向",不再 building
         if (handoffDoc) effBrief += `\n\n上一站交接来的方案文档(请基于它推进):\n${handoffDoc}`;
+        // 记忆注入(skill 之前):议会用对抗措辞(靶子,不让步,★ 不注 product_judgment);想清楚软引导
+        const memStation = posture === "clarify" ? "clarify" : "council";
+        const { block: memBlock, injected: memInjected } = await buildMemoryInjection(getMemories, req.userId, { discussionId: d.id, brief: d.brief, station: memStation, disabled: body.memory === false });
+        if (memBlock) { effBrief = memBlock + effBrief; sseSend(res, "memories", { station: memStation, injected: memInjected }); }
         if (posture === "clarify") {
           // 想清楚:单脑收口(Claude → OpenAI 兜底)读整段对话 → 方向卡。不召反方/不裁决。
           // (原 6 棒跨模型接力太慢/太费,2026-06 用户改回单脑收口;runRelay 仍保留备用。)
@@ -625,8 +634,12 @@ const server = http.createServer(async (req, res) => {
       sseHead(res);
       if (roundsInSession > MAX_ROUNDS) { sseSend(res, "capped", { roundIndex, maxRounds: MAX_ROUNDS }); res.end(); return; }
       try {
+        // 记忆注入(skill 之前):同陪练(建设型)—— 帮搭结构化简报
+        const { block: memBlock, injected: memInjected } = await buildMemoryInjection(getMemories, req.userId, { discussionId: d.id, brief: d.brief, station: "auto", disabled: body.memory === false });
+        const effAutoBrief = memBlock ? memBlock + autoBrief : autoBrief;
+        if (memBlock) sseSend(res, "memories", { station: "auto", injected: memInjected });
         const evidence = d.evidencePack?.items || [];
-        const round = await runAutoRound({ discId: d.id, brief: autoBrief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
+        const round = await runAutoRound({ discId: d.id, brief: effAutoBrief, roundIndex, prevState, humanNote, evidence, byoKeys }, (ev, data) => sseSend(res, ev, data));
         const rounds = [...(prevState.rounds || []), round];
         const md = { brief_original: d.brief, ...round.fields };
         let best = 0, bestScore = -1;
@@ -897,7 +910,10 @@ const server = http.createServer(async (req, res) => {
         const convoCtx = buildTranscript(d.turns || [], 30);
         // 产出附件:用户在产出站直接附的图片/文档(让产出能当独立功能用 —— 仿参考图、改写素材)
         const attachCtx = await buildAttachmentContext(body.attachments, byoKeys);
-        const baseBrief = convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief;
+        let baseBrief = convoCtx ? `${d.brief}\n\n想清楚阶段对话(理解项目的根基):\n${convoCtx}` : d.brief;
+        // 记忆注入(skill 之前):让产物匹配用户风格/格式偏好 + 本项目相关判断
+        const { block: memBlock, injected: memInjected } = await buildMemoryInjection(getMemories, req.userId, { discussionId: d.id, brief: d.brief, station: "produce", disabled: body.memory === false });
+        if (memBlock) { baseBrief = memBlock + baseBrief; sseSend(res, "memories", { station: "produce", injected: memInjected }); }
         // HTML 原型「配真图」开关(默认开):关掉则不生图,保留模型出的 picsum 占位(省额度/更快)
         const wantRealImg = body.realImg !== false;
         // 真图落成磁盘文件并以 URL 引用(不内联 base64 —— 否则 artifact content 几 MB,拖垮 getDiscussion)
@@ -963,8 +979,12 @@ const server = http.createServer(async (req, res) => {
         const brief = d.conclusion
           ? `${d.brief}\n\n## 方案结论\n${d.conclusion}`
           : convoCtx ? `${d.brief}\n\n## 讨论摘要\n${convoCtx}` : d.brief;
+        // 记忆注入(轻注):偏好(输出格式)+ 相关判断,影响产物形态
+        const { block: memBlock, injected: memInjected } = await buildMemoryInjection(getMemories, req.userId, { discussionId: d.id, brief: d.brief, station: "agent", disabled: body.memory === false });
+        const effBrief = memBlock ? memBlock + brief : brief;
+        if (memBlock) sseSend(res, "memories", { station: "agent", injected: memInjected });
         await runAgentTask({
-          brief,
+          brief: effBrief,
           task,
           skillText: agentSkillText,
           byoKeys,

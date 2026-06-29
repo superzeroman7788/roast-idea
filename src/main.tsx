@@ -295,6 +295,9 @@ function App() {
   const [distillDesc, setDistillDesc] = useState("");
   // Memory + Evolution 层
   const [memories, setMemories] = useState<{ id: string; category: string; content: string; created_at: string }[]>([]);
+  // 注入侧白箱:本次运行参考了哪些记忆(各站 SSE "memories" 事件回填)
+  const [memInjected, setMemInjected] = useState<{ station: string; items: { id: string; category: string; content: string }[] } | null>(null);
+  const [memInjOpen, setMemInjOpen] = useState(false);
   const [skillProposals, setSkillProposals] = useState<{ id: string; skill_name: string; rule: string; rationale: string; created_at: string }[]>([]);
   const [reflectBusy, setReflectBusy] = useState(false);
   const [reflectDone, setReflectDone] = useState<{ memories: number; proposals: number } | null>(null);
@@ -550,6 +553,7 @@ function App() {
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
+          else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
           else if (ev === "error") setRunError(d.error);
         },
         () => cancelled(t),
@@ -574,6 +578,7 @@ function App() {
           else if (ev === "agent-output") setAgentLog((p) => [...p, { type: "output", text: d.text || "" }]);
           else if (ev === "agent-html-artifact") setAgentHtml(d.html || "");
           else if (ev === "agent-file-artifact") setAgentFiles((p) => [...p, { mimeType: d.mimeType, b64: d.b64 }]);
+          else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
           else if (ev === "error") setRunError(d.error || "agent failed");
         },
         () => cancelled(t),
@@ -666,6 +671,7 @@ function App() {
           else if (ev === "clarify") setClarify(d as ClarifyOutput);
           else if (ev === "relay-hop") setRelayHops((p) => [...p, d as RelayHop]);
           else if (ev === "relay-card") setRelayCard(d as DirectionCard);
+          else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
           else if (ev === "seat-failed") setDelibFails((prev) => [...prev, { seat: d.seat, roleAngle: d.roleAngle, error: d.error || "" }]);
           else if (ev === "error") setRunError(d.error);
         },
@@ -799,6 +805,7 @@ function App() {
           });
         }
         else if (ev === "round-done") setPhase("awaiting-user");
+        else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
         else if (ev === "error") setRunError(d.error);
       }, () => cancelled(tk));
     } catch (e) { if (!cancelled(tk)) { setRunError((e as Error).message); setPhase("awaiting-user"); } }
@@ -2001,6 +2008,7 @@ function App() {
           </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 18, minHeight: 0 }}>
+          {memChipFor("clarify")}
           {deliberating && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid rgba(232,151,92,.4)", borderRadius: 10, padding: "11px 14px", background: "rgba(232,151,92,.08)" }}>
               <span className="breath" style={{ background: "var(--c-claude)", boxShadow: "0 0 8px var(--c-claude)" }} />
@@ -2229,6 +2237,32 @@ function App() {
                 <button className="amber-btn" style={{ padding: "11px 12px", fontFamily: "var(--mono)", fontSize: 13, justifyContent: "center" }} disabled={makingSolDoc || busy || deliberating} onClick={makeSolutionDoc}>{makingSolDoc ? "主脑收口中…(读整段对话写方案)" : "📄 出方案文档"}</button>
               </>
             )}
+          </div>
+        )}
+      </div>
+    );
+  };
+  // 注入侧白箱(§5):本次运行参考了哪条记忆。议会措辞强调"靶子非结论",其余软引导;可点开看 + 去 WORKSPACE 删。
+  const MEM_CAT_CN: Record<string, string> = { preference: "偏好", pattern: "模式", product_judgment: "判断" };
+  const memChipFor = (...stations: string[]) => {
+    if (!memInjected || !stations.includes(memInjected.station) || !memInjected.items.length) return null;
+    const isCouncil = memInjected.station === "council";
+    return (
+      <div className="mem-chip-wrap">
+        <span className="mem-chip clk" onClick={() => setMemInjOpen((o) => !o)} title="本次运行参考了你的记忆(白箱 · 可在 WORKSPACE 删除)">
+          🧠 本次参考了 {memInjected.items.length} 条记忆{isCouncil ? "（压测靶子）" : ""} {memInjOpen ? "▴" : "▾"}
+        </span>
+        {memInjOpen && (
+          <div className="mem-chip-pop">
+            {memInjected.items.map((m) => (
+              <div key={m.id} className="mem-chip-row">
+                <span className={"mem-cat mem-cat-" + m.category}>{MEM_CAT_CN[m.category] || m.category}</span>
+                <span className="mem-chip-txt">{m.content}</span>
+              </div>
+            ))}
+            <div className="mem-chip-foot">
+              {isCouncil ? "议会把这些当成被精准压测的倾向，不是免检结论。" : "软引导，可被当前上下文/证据覆盖。"} <span className="clk" style={{ color: "var(--cyan)" }} onClick={() => setShowMemoryPanel(true)}>WORKSPACE 管理/删除 →</span>
+            </div>
           </div>
         )}
       </div>
@@ -2586,6 +2620,7 @@ function App() {
               </div>
             )}
             {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "选格式 + 模型,在下方写要求或 📎 附素材,直接生成 —— 产出也能当独立工具用。"}</div>}
+            {memChipFor("produce", "agent")}
             {[...artifacts].reverse().map((a) => ccArtCard(a))}
           </div>
           {/* ── 马仔 MzDock ── */}
@@ -2900,6 +2935,7 @@ function App() {
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             {ycProgress()}
+            {memChipFor("council", "clarify")}
             {verdicts.length === 0
               ? (deliberating
                 ? <div className="board-empty" style={{ margin: "8px auto 0", textAlign: "center", color: "var(--faint)" }}>观点陆续就位中…</div>
@@ -2988,6 +3024,7 @@ function App() {
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "lineup") setAutoLive((p: any) => ({ ...p, roundIndex: d.roundIndex ?? p?.roundIndex, lineup: d.lineup, lens: d.lens, by: d.lineup?.director }));
+          else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
           else if (ev === "challenger") setAutoLive((p: any) => ({ ...p, challenger: d }));
           else if (ev === "compliance") setAutoLive((p: any) => ({ ...p, compliance: d }));
           else if (ev === "agent") setAutoLive((p: any) => ({ ...p, agents: [...(p?.agents || []), d] }));
