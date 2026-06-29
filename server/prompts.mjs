@@ -292,6 +292,29 @@ export const PRODUCE_TYPES = {
 
 只输出 HTML 本身,**从 \`<!DOCTYPE html>\` 到 \`</html>\`**;不要任何解释,不要 Markdown 代码围栏。`,
   },
+  build_package: {
+    label: "施工包",
+    system: `你是把「已拍板方向」翻译成「可交给 codegen(Code/Codex/马仔)的施工图纸」的技术负责人。上游交接来的是一张**已冻结的方向闸门卡**(含一句话方向、目标用户、已拍板决策、核心假设)。
+
+★ 三条铁律(违反则这份施工包是错的):
+1. **不重新发散**:只围绕闸门卡里**已拍板的方向和决策**施工细化,严禁引入闸门卡之外的新方向、新功能、新决策。若发现闸门卡内部**自相矛盾**或缺了施工必需的关键决策 → 在「## ⚠ 回流给人(合同问题)」里**显式列出**,**不要自己拍板补上**或绕过。
+2. **狠砍 P0**:P0 只做**能证明这个点子的那一条核心流程**(进入→关键操作→看到结果)。其余功能、页面、集成一律标到 P1/范围外,用 stub/假数据顶住。过度范围 = 头号死法。**宁可薄,不可宽。**
+3. **右尺寸 + 可溯源**:该定死的定死(给具体结构/字段/契约),该留的诚实标「需人定/待验证」,别用看似完整的细节掩盖未决问题。关键条目尽量注明它对应闸门卡里的哪个**方向/决策/假设**(可溯源),让人能核对没跑偏。
+
+用 Markdown 输出,**严格按以下小标题**:
+## 一句话方向(照抄闸门卡,不改写)
+## P0 核心流程(单一可走骨架 —— 一句话描述这条要证明点子的主线)
+## 技术选型(栈 + 一句取舍理由;别堆叠)
+## 文件结构(树状;只列 P0 必需文件,标注哪些是 stub)
+## 数据模型(P0 必需的实体/字段;够用即可)
+## 接口契约(P0 主线用到的接口:方法 路径 入参 出参;其余标"暂不实现")
+## 验收用例(3-6 条可勾验的"做到 X 就算通过";对应 P0 主线)
+## 禁止事项 / 范围外(明确这次**不做**什么 —— 防 codegen 自动扩张)
+## 给 codegen 的实现 Prompt(一段可直接整段复制粘贴给 Code/Codex 的中文实现指令,自带上面的约束与 P0 边界)
+## ⚠ 回流给人(合同问题)(闸门卡里自相矛盾/缺失/需人拍板的点;没有则写"无")
+
+务实、有取舍、敢留白;不灌水、不空泛、不越界。`,
+  },
 };
 
 // 方案文档:主脑(Claude)把陪练整段讨论 + 方向卡 + 赞/纠偏信号,收口成一份厚的、固定分节的「方案文档」,
@@ -843,5 +866,67 @@ export function buildAutoEvalPrompt({ brief, roundIndex, fields, agentNotes = []
   return [
     { role: "system", content: `你是「导演」,做本轮自动档轮末总结。判断离"一份可带进站打磨的粗稿"还差多少,并写一段供下一轮导演读的极简摘要。\n${OUTPUT_LANG}\n${AUTO_JSON}\nJSON:{ "open_issues": ["仍未解决的关键分歧,供下一轮 challenger 追问"], "stop_recommendation": true 或 false, "reason": "一句话:为何建议停/继续", "round_summary": "本轮发生了什么的极简摘要,≤200字,供下一轮导演读" }` },
     { role: "user", content: `第 ${roundIndex} 轮产物:\n点子:${brief}\n方向:${fields?.direction || "(无)"}\n待拍板:\n- ${(fields?.open_questions || []).join("\n- ") || "(无)"}\n建议产出:${(fields?.artifacts_hint || []).join("、") || "(无)"}\n各 agent 视角:\n${agentNotes.map((n) => "· " + n).join("\n") || "(无)"}` },
+  ];
+}
+
+// ⑥ 浅档收口 → 方向闸门卡(5 分钟读完的人类校准检查点)。单收口,不跳议会。
+// ★ 命门:3 个分叉必须是「承重决策」(影响存亡/方向),不是执行细节浅叉;UI 强制逐叉拍板才能开深档。
+// ★ 护栏(加法不减法):assumptions + recommendation 由模型独立判断,不被「用户已采纳」的口味过滤;
+//   采纳点是要纳入 direction/targetUser/分叉候选的素材,不是用来消音风险的。
+export function buildGateCardPrompt({ brief, rounds = [], adopted = [] }) {
+  const uniq = (arr) => [...new Set((arr || []).filter((x) => x && String(x).trim()))];
+  const directions = uniq(rounds.map((r) => r.fields?.direction));
+  const openQs = uniq(rounds.flatMap((r) => r.fields?.open_questions || []));
+  const viewpoints = uniq(rounds.map((r) => r.viewpoint?.text));
+  const dissents = uniq(rounds.map((r) => r.viewpoint?.dissent));
+  const blind = uniq(rounds.flatMap((r) => [...(r.eval?.blind_spots || []), ...(r.eval?.open_issues || [])]));
+  const adoptedTxt = uniq((adopted || []).map((a) => (typeof a === "string" ? a : a?.text)));
+  const digest = [
+    `点子:${brief}`,
+    directions.length ? `方向演进:\n- ${directions.join("\n- ")}` : "",
+    openQs.length ? `各轮待拍板:\n- ${openQs.join("\n- ")}` : "",
+    viewpoints.length ? `各轮署名观点:\n- ${viewpoints.join("\n- ")}` : "",
+    dissents.length ? `分歧/反方:\n- ${dissents.join("\n- ")}` : "",
+    blind.length ? `盲点/未解:\n- ${blind.join("\n- ")}` : "",
+  ].filter(Boolean).join("\n\n");
+  const adoptedBlock = adoptedTxt.length
+    ? `\n\n【用户已采纳(★ 强约束 —— 必须纳入 direction / targetUser / 分叉候选,不得遗漏)】\n- ${adoptedTxt.join("\n- ")}`
+    : "";
+  return [
+    {
+      role: "system",
+      content: `你是自动档「浅档」的收口人。把多轮自动思考蒸成一张「方向闸门卡」—— 创始人 5 分钟读完、就能校准方向、当场拍板的检查点。这是开深档前唯一的人类质量闸门。
+${OUTPUT_LANG}
+${AUTO_JSON}
+
+硬性要求:
+- forks 恰好 3 个,且必须是「承重决策」:拍了它整个方向/范围会变的存亡级岔路(如核心循环靠留存还是交易、单边还是双边、谁先付费)。★ 严禁出执行细节浅叉(如"先做 iOS 还是 Android""用什么色")。每个分叉给 2-4 个候选,每候选配一句「权衡」(选它的代价/前提)。
+- assumptions 恰好 3 条「必须为真的前提」,★ 必须包含此刻最危险/最可能被证伪的那条 —— 这一栏由你独立判断,即使用户没采纳、即使不中听也要冒出来。
+- ★ 用户已采纳点是要被纳入 direction/targetUser/分叉候选的素材,但它不能让你删掉或软化 assumptions 与 recommendation 里的风险。加法,不减法。
+- targetUser 要具体、可触达(不是"所有人/年轻人")。
+- recommendation.goDeep:方向锐利 + 3 假设清晰 + 3 承重分叉成型 ⇒ true(建议开深档);仍模糊/分叉拍不下去 ⇒ false,并在 reason 里说清还要先想清楚什么。
+JSON:{ "direction": "一句话方向(锐利具体可执行)", "targetUser": "目标用户(具体、可触达、够痛)", "assumptions": ["必须为真的前提1(含最危险那条)","前提2","前提3"], "forks": [{ "question": "承重决策(一句)", "why": "为何是承重的(一句,40字内)", "candidates": [{ "option": "候选","tradeoff": "选它的代价/前提(一句)" }] }], "recommendation": { "goDeep": true 或 false, "reason": "够清晰=建议进深档;太模糊=回浅档再想什么(一句)" } }`,
+    },
+    { role: "user", content: `${digest}${adoptedBlock}\n\n请收口成方向闸门卡。` },
+  ];
+}
+
+// 深档命门:可溯源校验(独立 pass,不靠施工包自报)。审「施工包有没有越界/指不回冻结闸门卡」。
+// ★ 不发散的真正强制:LLM 拿到合同+包,默认会偷偷把范围铺大;这一道独立审 = 把越界/指不回的项揪出来标红回流。
+export function buildScopeAuditPrompt({ handoff, buildPackage }) {
+  return [
+    {
+      role: "system",
+      content: `你是「范围审计员」。给你两份东西:① 已冻结的方向闸门卡(强约束合同);② 据它生成的施工包。你的唯一职责是查施工包**有没有偏离合同**,而不是评价好坏。
+${OUTPUT_LANG}
+${AUTO_JSON}
+判定标准:
+- out_of_scope:施工包里出现了合同**没拍板**的新功能/新方向/新决策(深档不该重新发散)。
+- untraceable:施工包里的关键条目**回指不到**合同里的任何方向/决策/假设(来路不明)。
+- contradictions:施工包与合同**直接冲突**,或合同本身自相矛盾却被施工包蒙混带过。
+- 没问题就给空数组。宁可多报疑似,也别放过越界 —— 这是防深档偷偷扩张的最后一道闸。
+JSON:{ "out_of_scope": ["越界项:具体说哪条、为何超出合同"], "untraceable": ["来路不明项:哪条回指不到合同"], "contradictions": ["与合同冲突/合同自相矛盾的点"], "verdict": "clean 或 needs_review", "summary": "一句话总评(40字内)" }`,
+    },
+    { role: "user", content: `【已冻结闸门卡(合同)】\n${String(handoff || "").slice(0, 4000)}\n\n【据它生成的施工包】\n${String(buildPackage || "").slice(0, 6000)}\n\n请审范围是否越界/可溯源。` },
   ];
 }

@@ -46,6 +46,7 @@ import {
   AutoRun,
   AutoRound,
   AutoFields,
+  GateCard,
 } from "./discussion";
 import { Landing } from "./Landing";
 import { exportMarkdown, exportPng, exportDocx, exportPptx } from "./exportDoc";
@@ -277,6 +278,12 @@ function App() {
   const [autoNote, setAutoNote] = useState(""); // 轮间插话
   const [autoInjected, setAutoInjected] = useState<string | null>(null); // 已注入到哪个站
   const [autoLooping, setAutoLooping] = useState(false); // 自动连跑中(不打断就一直跑)
+  // 浅档:历史轮展开 + 点赞采纳 + 闸门卡收口 + 逐叉拍板
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
+  const [gateBusy, setGateBusy] = useState(false);
+  const [forkChoice, setForkChoice] = useState<Record<number, number>>({}); // fork idx → 选中候选 idx
+  // 深档:施工包可溯源审计旗标(artifactId → audit)
+  const [buildAudits, setBuildAudits] = useState<Record<string, { out_of_scope: string[]; untraceable: string[]; contradictions: string[]; verdict: string; summary: string }>>({});
   // 马仔 Agent
   const [agentTask, setAgentTask] = useState("");
   const [agentRunning, setAgentRunning] = useState(false);
@@ -462,6 +469,7 @@ function App() {
     setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]);
     setSolutionDoc(null); setMakingSolDoc(false);
     setAutoRun(null); setAutoLive(null); setAutoBusy(false); setAutoNote(""); setAutoInjected(null);
+    setForkChoice({}); setExpandedRounds(new Set()); setBuildAudits({}); // 切讨论清浅档/深档临时态,别串台
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
@@ -494,9 +502,10 @@ function App() {
       setConclusion(dis.conclusion || "");
       setConverged(dis.converged || null);
       setArtifacts(dis.artifacts || []); setRefineFor(null); setRefineText("");
+      setBuildAudits(Object.fromEntries((dis.artifacts || []).filter((a: Artifact) => a.audit).map((a: Artifact) => [a.id, a.audit]))); // 施工包溯源旗标:刷新后从持久 audit 回填
       setViewpoints(dis.viewpoints || []); setDeliberation(dis.deliberation || null); setClarify(dis.clarify || null); setDelibFails([]);
       setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null); setSolutionDoc(dis.solutionDoc || null);
-      setAutoRun(dis.autoRun || null); setAutoLive(null);
+      setAutoRun(dis.autoRun || null); setAutoLive(null); setForkChoice({}); setExpandedRounds(new Set()); // buildAudits 上面已从持久 audit 回填,别清
       setCuration(deriveCuration(dis.humanSignals || [])); setReplyOpen(null); setReplyText("");
       setPhase(dis.status === "finalized" ? "finalized" : "awaiting-user");
       // 按恢复内容选落点 tab + 清挂起交接/下拉 + 复位议会强度
@@ -554,6 +563,7 @@ function App() {
           if (cancelled(t)) return;
           if (ev === "artifact") setArtifacts((prev) => [...prev, d as Artifact]);
           else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
+          else if (ev === "build-audit") setBuildAudits((p) => ({ ...p, [d.artifactId]: d.audit }));
           else if (ev === "error") setRunError(d.error);
         },
         () => cancelled(t),
@@ -2485,6 +2495,25 @@ function App() {
           {!isCrit && <button className="mbtn" style={{ marginLeft: "auto", padding: "4px 10px", ...(a.status === "chosen" ? { borderColor: "var(--green)", color: "var(--green)", background: "rgba(63,227,160,.12)" } : {}) }} onClick={() => chooseArt(a.id, a.type)} title={a.status === "chosen" ? "已采用 —— 立项包用这版" : "采用这版 —— 立项包只收已采用的,同类其余转候选"}>{a.status === "chosen" ? "✓ 已采用" : "采用"}</button>}
           <span className="clk" onClick={() => removeArt(a.id)} title="删除" style={{ color: "var(--faint)", fontSize: 14, marginLeft: isCrit ? "auto" : 0 }}>×</span>
         </div>
+        {/* 深档命门:施工包可溯源审计旗标(越界/指不回冻结闸门卡 → 回流给人) */}
+        {a.type === "build_package" && buildAudits[a.id] && (() => {
+          const au = buildAudits[a.id]; const v = au.verdict;
+          const clean = v === "clean"; const neutral = v === "no_contract" || v === "unavailable";
+          const col = clean ? "var(--green)" : neutral ? "var(--faint)" : "var(--amber)";
+          const head = clean ? "✓ 溯源审计:贴合冻结闸门卡,未发现发散" : v === "no_contract" ? "○ 未走开深档冻结闸门卡 —— 未做溯源审计" : v === "unavailable" ? "○ 溯源审计未运行(无模型/失败)—— 请人工核对" : "⚠ 溯源审计:发现疑似越界 —— 请核对后回流修正";
+          const items = [...au.contradictions.map((t) => ["合同冲突", t]), ...au.out_of_scope.map((t) => ["越界(发散)", t]), ...au.untraceable.map((t) => ["指不回合同", t])] as [string, string][];
+          return (
+            <div style={{ border: "1px solid " + (clean ? "rgba(63,227,160,.35)" : neutral ? "var(--line2)" : "rgba(255,177,88,.45)"), borderRadius: 8, padding: "9px 11px", background: clean ? "rgba(63,227,160,.06)" : neutral ? "rgba(255,255,255,.02)" : "rgba(255,177,88,.07)" }}>
+              <div className="mono" style={{ fontSize: 10.5, color: col, marginBottom: items.length ? 6 : 0 }}>{head} · {au.summary}</div>
+              {items.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>{items.map(([k, t], i) => (
+                <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 11.5, lineHeight: 1.45 }}>
+                  <span className="mono" style={{ flex: "0 0 auto", fontSize: 8.5, padding: "1px 5px", borderRadius: 4, color: "var(--amber)", border: "1px solid var(--amber-dim)", marginTop: 1 }}>{k}</span>
+                  <span style={{ color: "var(--muted)" }}>{t}</span>
+                </div>
+              ))}</div>}
+            </div>
+          );
+        })()}
         {a.type === "image" && a.imagePath
           ? <img src={`/api/artifact/${a.id}/image`} alt="配图" style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, border: "1px solid var(--line)" }} />
           : a.type === "html_proto"
@@ -3077,6 +3106,61 @@ function App() {
     if (discussion) { try { await fetch(`/api/discussion/${discussion.id}/autopilot/reset`, { method: "POST" }); } catch {} }
     setAutoRun(null); setAutoLive(null); setAutoInjected(null); setAutoNote("");
   }
+  // 历史轮点赞:把一个实质点采纳/取消进方案(存文本,反熵刀下救回好点子)
+  const isAdopted = (text: string) => (autoRun?.adopted || []).some((a) => a.text === text);
+  async function toggleAdopt(text: string, kind: string, round: number | null) {
+    if (!discussion || !autoRun) return;
+    const on = !isAdopted(text);
+    // 乐观更新
+    setAutoRun((p) => p ? { ...p, adopted: on ? [...(p.adopted || []), { text, kind, round }] : (p.adopted || []).filter((a) => a.text !== text) } : p);
+    try {
+      const r = await fetch(`/api/discussion/${discussion.id}/autopilot/adopt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, kind, round, on }) }).then((x) => x.json());
+      if (r.ok) setAutoRun((p) => p ? { ...p, adopted: r.adopted } : p);
+    } catch (e) { setRunError((e as Error).message); }
+  }
+  // 浅档收口:多轮 + 已采纳点 → 方向闸门卡
+  async function runGateCardNow() {
+    if (!discussion || gateBusy) return;
+    setGateBusy(true); setRunError("");
+    try {
+      const r = await fetch(`/api/discussion/${discussion.id}/autopilot/gatecard`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then((x) => x.json());
+      if (r.ok) { setAutoRun((p) => p ? { ...p, gateCard: r.gateCard } : p); setForkChoice({}); flash("✓ 已收口方向闸门卡 —— 逐叉拍板后即可开深档"); }
+      else setRunError(r.error || "闸门卡收口失败");
+    } catch (e) { setRunError((e as Error).message); }
+    finally { setGateBusy(false); }
+  }
+  // 开深档:闸门卡 + 逐叉拍板 → 冻结成强约束 handoff,注入产出站生成施工包(深档不重新发散)
+  async function openDeep() {
+    const gate = autoRun?.gateCard;
+    if (!gate || !discussion) return;
+    // ★ 命门 + 护栏硬校验:闸门卡必须成型(≥3 承重分叉 + 方向 + ≥1 假设)才能开深档,否则是弱化卡绕过人类闸门
+    if (gate.forks.length < 3 || !gate.direction?.trim() || gate.assumptions.length < 1) {
+      setRunError("闸门卡未成型(需 ≥3 承重分叉 + 方向 + 核心假设)—— 点「↻ 重收口」再拍板。"); return;
+    }
+    const allChosen = gate.forks.every((_, i) => forkChoice[i] != null);
+    if (!allChosen) { setRunError(`先把 ${gate.forks.length} 个决策分叉都拍板,才能开深档。`); return; }
+    // go/no-go 摩擦:模型判方向仍模糊时不静默放行,要二次确认
+    if (!gate.recommendation.goDeep && !window.confirm(`模型判断方向仍可能模糊:${gate.recommendation.reason || ""}\n\n仍要强行开深档吗?(建议先回浅档再想清楚)`)) return;
+    const decided = gate.forks.map((f, i) => `- ${f.question} → 选定:${f.candidates[forkChoice[i]]?.option || "?"}（${f.candidates[forkChoice[i]]?.tradeoff || ""}）`);
+    const adoptedTxt = (autoRun?.adopted || []).map((a) => "- " + a.text);
+    const ho = [
+      "# 方向闸门卡(已冻结 · 深档强约束 —— 不得推翻或重新发散)",
+      "", "## 一句话方向", gate.direction,
+      "", "## 目标用户", gate.targetUser,
+      "", "## 已拍板决策(冻结合同,照此施工)", ...decided,
+      "", "## 核心假设(已接受前提;质疑留给实物回流议会,不在深档推翻)", ...gate.assumptions.map((a) => "- " + a),
+      adoptedTxt.length ? "\n## 用户已采纳要点(必须纳入)\n" + adoptedTxt.join("\n") : "",
+      "", "## 原始点子", brief || "",
+      "", "> 深档任务:只围绕以上已拍板方向产出可交 codegen 的施工包,P0 砍到能证明点子的单一核心流程;不重新发散;若发现合同自相矛盾,显式标出回流给人,不要自行改方向。",
+    ].filter(Boolean).join("\n");
+    pendingHandoff.current = ho;
+    setProduceType("build_package");
+    switchTab("produce");
+    const pm = produceModel || produceProviders.find((p) => !p.image)?.id || produceProviders[0]?.id || "";
+    if (!pm) { flash("✓ 闸门卡已冻结注入产出站 —— 选个模型点生成施工包"); return; }
+    flash("✓ 闸门卡已冻结注入产出站 —— 正在生成施工包");
+    await produce("build_package", pm);
+  }
   const autoSpark = (rounds: AutoRound[]) => {
     const w = 224, h = 46, pad = 7;
     const xs = rounds.map((_, i) => pad + (rounds.length === 1 ? (w - 2 * pad) / 2 : i * (w - 2 * pad) / (rounds.length - 1)));
@@ -3091,6 +3175,20 @@ function App() {
   };
   // 强字段齐全度(0-4):替代旧 spec_satisfaction,作进度/趋势/历史的统一刻度
   const scOf = (r: any) => Object.values(r?.eval?.schema_completeness || {}).filter(Boolean).length;
+  // 一轮里可点赞的实质点(★ 不含 direction —— 它是收口物不是素材)
+  const roundPoints = (r: AutoRound) => {
+    const out: { kind: string; text: string }[] = [];
+    (r.fields?.open_questions || []).forEach((t) => out.push({ kind: "待拍板", text: t }));
+    if (r.viewpoint?.text) out.push({ kind: "观点", text: r.viewpoint.text });
+    if (r.viewpoint?.dissent) out.push({ kind: "分歧", text: r.viewpoint.dissent });
+    if (r.viewpoint?.alternative) out.push({ kind: "替代", text: r.viewpoint.alternative });
+    (r.eval?.blind_spots || []).forEach((t) => out.push({ kind: "盲点", text: t }));
+    (r.eval?.open_issues || []).forEach((t) => out.push({ kind: "未解", text: t }));
+    if (r.challenger?.question) out.push({ kind: "追问", text: r.challenger.question });
+    const seen = new Set<string>();
+    return out.filter((p) => p.text && p.text.trim() && !seen.has(p.text) && seen.add(p.text));
+  };
+  const MEM_KIND_C: Record<string, string> = { 待拍板: "var(--cyan)", 观点: "#C9A6FF", 分歧: "var(--red)", 替代: "#C9A6FF", 盲点: "var(--amber)", 未解: "var(--amber)", 追问: "var(--green)" };
   const acBody = () => {
     const rounds = autoRun?.rounds || [];
     const md = autoRun?.md;
@@ -3206,11 +3304,34 @@ function App() {
                 </div>}
               </>
             )}
-            {rounds.length > 1 && <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <span className="label">历史轮</span>
-              {rounds.slice(0, -1).map((r) => <div key={r.index} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "var(--muted)", border: "1px solid var(--line)", borderRadius: 7, padding: "6px 9px" }}>
-                <span className="mono" style={{ color: "var(--faint)" }}>R{r.index}</span><span style={{ color: "#C9A6FF" }}>{r.lens?.name}</span><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.fields?.direction}</span><span className="mono" style={{ color: r.convergence?.consecutive ? "var(--red)" : "var(--faint)" }}>{scOf(r)}/4</span>
-              </div>)}
+            {rounds.length >= 1 && <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span className="label">各轮可点开 · 👍 把有用的点收进方案</span>
+              {rounds.map((r) => {
+                const open = expandedRounds.has(r.index);
+                const pts = roundPoints(r);
+                return (
+                  <div key={r.index} style={{ border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
+                    <div onClick={() => setExpandedRounds((s) => { const n = new Set(s); n.has(r.index) ? n.delete(r.index) : n.add(r.index); return n; })}
+                      style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "var(--muted)", padding: "6px 9px", cursor: "pointer", background: open ? "rgba(255,255,255,.02)" : "transparent" }}>
+                      <span className="mono" style={{ color: "var(--faint)" }}>{open ? "▾" : "▸"} R{r.index}</span>
+                      <span style={{ color: "#C9A6FF" }}>{r.lens?.name}</span>
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.fields?.direction}</span>
+                      <span className="mono" style={{ color: r.convergence?.consecutive ? "var(--red)" : "var(--faint)" }}>{scOf(r)}/4</span>
+                    </div>
+                    {open && <div style={{ padding: "4px 9px 9px", display: "flex", flexDirection: "column", gap: 5, borderTop: "1px solid var(--line)" }}>
+                      {pts.length === 0 && <div className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>这轮没有可采纳的实质点</div>}
+                      {pts.map((p, i) => { const on = isAdopted(p.text); return (
+                        <div key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11.5, lineHeight: 1.45 }}>
+                          <span className="clk" onClick={() => toggleAdopt(p.text, p.kind, r.index)} title={on ? "已采纳,点击移出方案" : "采纳进方案"}
+                            style={{ flex: "0 0 auto", marginTop: 1, fontSize: 12, opacity: on ? 1 : 0.4, filter: on ? "none" : "grayscale(1)" }}>👍</span>
+                          <span className="mono" style={{ flex: "0 0 auto", fontSize: 8.5, padding: "1px 5px", borderRadius: 4, color: MEM_KIND_C[p.kind] || "var(--faint)", border: "1px solid currentColor", marginTop: 1 }}>{p.kind}</span>
+                          <span style={{ color: on ? "#E6EEF6" : "var(--muted)" }}>{p.text}</span>
+                        </div>
+                      ); })}
+                    </div>}
+                  </div>
+                );
+              })}
             </div>}
           </div>
           {rounds.length > 0 && (
@@ -3251,6 +3372,66 @@ function App() {
             {md && <span className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10 }} onClick={() => copy(autoMdText(md), "已复制草稿")}>⧉ 复制</span>}
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "15px", display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
+            {/* 已采纳托盘:历史轮点赞进方案的点(白箱,看着方案长起来) */}
+            {(autoRun?.adopted?.length || 0) > 0 && (
+              <div style={{ border: "1px solid rgba(95,208,196,.3)", borderRadius: 9, padding: "10px 12px", background: "rgba(95,208,196,.05)" }}>
+                <div className="mono" style={{ fontSize: 9, color: "var(--mz)", marginBottom: 6 }}>本方案已采纳 · {autoRun!.adopted!.length} 点(收口闸门卡时强约束纳入)</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {autoRun!.adopted!.map((a, i) => (
+                    <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 11.5, lineHeight: 1.4 }}>
+                      <span className="clk" onClick={() => toggleAdopt(a.text, a.kind || "point", a.round ?? null)} title="移出方案" style={{ flex: "0 0 auto", color: "var(--faint)", fontSize: 12 }}>×</span>
+                      <span style={{ color: "#D6E6E2" }}>{a.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* 浅档收口:方向闸门卡(5 分钟读完的人类校准检查点) */}
+            {rounds.length >= 1 && (() => {
+              const gate = autoRun?.gateCard;
+              const formed = !!gate && gate.forks.length >= 3 && !!gate.direction?.trim() && gate.assumptions.length >= 1; // 闸门卡成型(命门:够 3 承重分叉才算)
+              const allChosen = formed && gate!.forks.every((_, i) => forkChoice[i] != null);
+              return (
+                <div style={{ border: "1px solid var(--amber-dim)", borderRadius: 10, padding: "12px 13px", background: "rgba(255,177,88,.04)", display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="label" style={{ color: "var(--amber)" }}>⛩ 方向闸门卡</span>
+                    <span className="mono" style={{ fontSize: 9, color: "var(--faint)" }}>开深档前的人类检查点</span>
+                    <button className="ghost-chip" style={{ marginLeft: "auto", fontSize: 10, padding: "4px 9px" }} disabled={gateBusy || autoBusy} onClick={runGateCardNow}>{gateBusy ? "收口中…" : gate ? "↻ 重收口" : "收口闸门卡"}</button>
+                  </div>
+                  {!gate ? <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", lineHeight: 1.6 }}>跑够轮次后点「收口闸门卡」—— 蒸成一句话方向 + 目标用户 + 3 核心假设 + 3 个必须拍板的承重决策,5 分钟读完、拍板就能开深档。</div>
+                    : <>
+                      <div><div className="mono" style={{ fontSize: 9, color: "var(--amber)", marginBottom: 3 }}>一句话方向</div><div style={{ fontSize: 13, color: "#F0E6D6", lineHeight: 1.5, fontWeight: 600 }}>{gate.direction}</div></div>
+                      {gate.targetUser && <div><div className="mono" style={{ fontSize: 9, color: "var(--faint)", marginBottom: 3 }}>目标用户</div><div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{gate.targetUser}</div></div>}
+                      {gate.assumptions.length > 0 && <div><div className="mono" style={{ fontSize: 9, color: "var(--red)", marginBottom: 4 }}>核心假设(必须为真;含最危险那条)· 机器独立给</div><ul style={{ margin: 0, paddingLeft: 15, display: "flex", flexDirection: "column", gap: 3 }}>{gate.assumptions.map((a, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.45 }}>{a}</li>)}</ul></div>}
+                      <div className="mono" style={{ fontSize: 9, color: "var(--cyan)" }}>必须拍板的决策(逐叉选定才能开深档)· {gate.forks.filter((_, i) => forkChoice[i] != null).length}/{gate.forks.length}</div>
+                      {gate.forks.map((f, fi) => (
+                        <div key={fi} style={{ border: "1px solid var(--line2)", borderRadius: 8, padding: "9px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+                          <div style={{ fontSize: 12, color: "#E6EEF6", fontWeight: 600, lineHeight: 1.4 }}>{fi + 1}. {f.question}</div>
+                          {f.why && <div className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>{f.why}</div>}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                            {f.candidates.map((c, ci) => { const sel = forkChoice[fi] === ci; return (
+                              <div key={ci} className="clk" onClick={() => setForkChoice((p) => ({ ...p, [fi]: ci }))}
+                                style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "6px 8px", borderRadius: 6, border: "1px solid " + (sel ? "var(--cyan)" : "var(--line)"), background: sel ? "var(--cyan2)" : "transparent" }}>
+                                <span style={{ flex: "0 0 auto", width: 13, height: 13, borderRadius: "50%", border: "1px solid " + (sel ? "var(--cyan)" : "var(--line2)"), marginTop: 1, display: "grid", placeItems: "center" }}>{sel && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--cyan)" }} />}</span>
+                                <span style={{ minWidth: 0 }}><span style={{ fontSize: 12, color: sel ? "#E6EEF6" : "var(--muted)" }}>{c.option}</span>{c.tradeoff && <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--faint)", marginTop: 2 }}>权衡:{c.tradeoff}</span>}</span>
+                              </div>
+                            ); })}
+                          </div>
+                        </div>
+                      ))}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, borderTop: "1px solid var(--line)", paddingTop: 9 }}>
+                        <span className="mono" style={{ fontSize: 10, color: gate.recommendation.goDeep ? "var(--green)" : "var(--amber)" }}>{gate.recommendation.goDeep ? "✓ 建议进深档" : "⚠ 建议再想清楚"}{gate.recommendation.reason ? " · " + gate.recommendation.reason : ""}</span>
+                      </div>
+                      {!formed
+                        ? <div className="mono" style={{ fontSize: 10.5, color: "var(--amber)", lineHeight: 1.6 }}>闸门卡未成型(承重分叉不足 3 个 / 缺方向或假设)—— 点上方「↻ 重收口」再跑,够清晰才放行开深档。</div>
+                        : <button className="amber-btn" style={{ padding: "10px 12px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center", opacity: allChosen ? 1 : 0.45 }} disabled={!allChosen || autoBusy || producing}
+                            title={allChosen ? "冻结闸门卡 → 产出站生成施工包" : "先把每个决策分叉都选定一个候选"} onClick={openDeep}>
+                            {allChosen ? "🔒 开深档 · 冻结方向 → 出施工包 →" : `还需拍板 ${gate.forks.length - gate.forks.filter((_, i) => forkChoice[i] != null).length} 个分叉`}
+                          </button>}
+                    </>}
+                </div>
+              );
+            })()}
             {!md ? <div style={{ fontSize: 11.5, color: "var(--faint)", lineHeight: 1.6 }}>跑起来后这里实时长出四个强字段:一句话方向 / 待拍板 / 建议产出 / 原始点子。攒够了注入某站继续细化。</div>
               : <>
                 <div style={{ border: "1px solid rgba(72,220,255,.3)", borderTop: "2px solid var(--cyan)", borderRadius: 9, padding: "11px 13px", background: "rgba(72,220,255,.05)" }}><div className="mono" style={{ fontSize: 9, color: "var(--cyan)", marginBottom: 4 }}>一句话方向</div><div style={{ fontSize: 13, color: "#E6EEF6", lineHeight: 1.5, fontWeight: 600 }}>{md.direction || "(待生成)"}</div></div>

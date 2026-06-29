@@ -263,7 +263,7 @@ export const ANGLE_LABEL: Record<string, string> = {
 };
 
 // 产出层(交付物):把方案变成文案/PRD/设计文档/代码草稿/配图
-export type ArtifactType = "copy" | "prd" | "design_doc" | "code_sketch" | "image" | "ppt" | "html_proto" | "critique";
+export type ArtifactType = "copy" | "prd" | "design_doc" | "code_sketch" | "image" | "ppt" | "html_proto" | "critique" | "build_package";
 
 export type Artifact = {
   id: string;
@@ -278,7 +278,9 @@ export type Artifact = {
   status: "candidate" | "chosen";
   createdAt: string;
   latencyMs?: number;
+  audit?: ScopeAudit | null; // 施工包溯源审计(越界/指不回冻结闸门卡)
 };
+export type ScopeAudit = { out_of_scope: string[]; untraceable: string[]; contradictions: string[]; verdict: string; summary: string };
 
 export const ARTIFACT_TYPE_LABEL: Record<ArtifactType, string> = {
   copy: "文案",
@@ -289,6 +291,7 @@ export const ARTIFACT_TYPE_LABEL: Record<ArtifactType, string> = {
   ppt: "PPT",
   html_proto: "HTML 原型",
   critique: "挑刺",
+  build_package: "施工包",
 };
 
 // 产出站格式格(中栏五宫格):id 对应 ArtifactType
@@ -300,6 +303,7 @@ export const PRODUCE_FORMATS: ProduceFormat[] = [
   { id: "image", ic: "◍", name: "配图", en: "IMAGE", c: "#7C8DFF", sub: "封面 / 示意图" },
   { id: "ppt", ic: "▦", name: "PPT", en: "DECK", c: "#F2BF52", sub: "路演 / 介绍" },
   { id: "html_proto", ic: "▢", name: "HTML 原型", en: "PROTOTYPE", c: "#FF8AC2", sub: "可点透的 MVP" },
+  { id: "build_package", ic: "🔧", name: "施工包", en: "BUILD-SPEC", c: "#5FD0C4", sub: "交 codegen 的图纸" },
 ];
 
 export const ROLE_LABEL: Record<string, string> = {
@@ -336,7 +340,12 @@ export interface AutoAgent { slot: "a" | "b" | "c"; model: string | null; failed
 export interface AutoCompliance { compliant: boolean; reason: string; original: string; final: string; by?: string | null; }
 export interface AutoViewpoint { stance: string; text: string; dissent: string; alternative?: string; evidence_refs?: string[]; model?: string; dup?: boolean; dupSim?: number | null; }
 export interface AutoRound { index: number; lens: { id: string; name: string }; humanNote: string | null; lineup: Record<string, string>; challenger: { question: string; why: string }; compliance: AutoCompliance; agents: AutoAgent[]; fields: AutoFields; viewpoint: AutoViewpoint | null; convergence: AutoConvergence; eval: AutoEval; }
-export interface AutoRun { rounds: AutoRound[]; md: (AutoFields & { brief_original?: string }) | null; bestRoundIndex?: number; status?: string; injectBackup?: { target: string; at: string } | null; }
+// 浅档点赞:把历史轮里有用的实质点采纳进方案(存文本,反熵刀下救回)
+export interface AdoptedPoint { text: string; kind?: string; round?: number | null; at?: string; }
+// 方向闸门卡:浅档收口的人类校准检查点(深档冻结在它的 3 个分叉上)
+export interface GateFork { question: string; why: string; candidates: { option: string; tradeoff: string }[]; }
+export interface GateCard { direction: string; targetUser: string; assumptions: string[]; forks: GateFork[]; recommendation: { goDeep: boolean; reason: string }; provider?: string; at?: string; }
+export interface AutoRun { rounds: AutoRound[]; md: (AutoFields & { brief_original?: string }) | null; bestRoundIndex?: number; status?: string; injectBackup?: { target: string; at: string } | null; adopted?: AdoptedPoint[]; gateCard?: GateCard | null; }
 
 // 议会内部强度:温和(council)⇄ 拷问(roast)
 export type CouncilIntensity = "council" | "roast";

@@ -115,6 +115,7 @@ async function migrate() {
     `ALTER TABLE discussions ADD COLUMN user_id TEXT`, // 用户体系:讨论归属(NULL=历史遗留,启动时迁给站长)
     `ALTER TABLE discussions ADD COLUMN solution_doc TEXT`, // 方案文档:主脑收口的厚方案,交下游精修
     `ALTER TABLE discussions ADD COLUMN auto_run TEXT`,     // 自动档 Auto-Pilot:整条 run 状态(rounds/md/收敛史)
+    `ALTER TABLE artifacts ADD COLUMN audit TEXT`,          // 深档施工包:溯源审计结果(越界/指不回冻结闸门卡),刷新后仍可见
   ]) {
     try { await client.execute(stmt); } catch {}
   }
@@ -470,7 +471,12 @@ function rowToArtifact(row) {
     id: row.id, discussionId: row.discussion_id, type: row.type, provider: row.provider,
     content: row.content || "", imagePath: row.image_path || null, parentId: row.parent_id || null,
     mode: row.mode, instruction: row.instruction || "", status: row.status, createdAt: row.created_at,
+    audit: row.audit ? JSON.parse(row.audit) : null,
   };
+}
+// 深档:把施工包的溯源审计结果落到产物上(刷新后旗标仍在,白箱不丢)
+export async function setArtifactAudit(id, audit) {
+  await run(`UPDATE artifacts SET audit = ? WHERE id = ?`, [audit ? JSON.stringify(audit) : null, id]);
 }
 export async function saveArtifact({ discussionId, type, provider, content, imagePath, parentId, mode, instruction }) {
   const exists = await get(`SELECT 1 FROM discussions WHERE id = ?`, [discussionId]);

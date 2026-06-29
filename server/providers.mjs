@@ -29,6 +29,8 @@ import {
   buildAutoCompliancePrompt,
   buildAutoBuilderPrompt,
   buildAutoEvalPrompt,
+  buildGateCardPrompt,
+  buildScopeAuditPrompt,
 } from "./prompts.mjs";
 
 const OPENAI_COMPATIBLE = [
@@ -661,7 +663,8 @@ export async function runProduce({ type, mode, brief, conclusion, evidence, sour
   const messages = buildProducePrompt({ type, mode, brief, conclusion, evidence, sourceContent, instruction });
   // HTML 原型/代码草稿很长,默认 1100 token 会截断半截;按 type 给足
   // 输出上限:设计文档/PRD/PPT/HTML原型/代码 都可能很长 → 给足,否则生成到一半就被截断(2400 太小)
-  const longForm = type === "design_doc" || type === "prd" || type === "ppt" || type === "html_proto" || type === "code_sketch";
+  // ★ build_package(施工包)有 10 个强制小标题,末两节(禁止事项/回流给人)正是防发散承重护栏 —— 必须给足 token,否则被截断时护栏静默丢失
+  const longForm = type === "design_doc" || type === "prd" || type === "ppt" || type === "html_proto" || type === "code_sketch" || type === "build_package";
   // HTML 原型(MVP):Tailwind 类 + 中文内容很吃 token,哪怕"最小完整 app"也常需 ~1 万 token →
   // Claude/OpenAI(高输出)给 12000、超时 240s,配合 prompt 的「最小但完整」铁律,刚好够写完不截断;
   // 其余模型守 8000(输出上限,避免超限报错)。tries:1 不重试(长生成重试只会更久)。
@@ -1642,4 +1645,51 @@ ${correctionText ? `用户纠偏记录:\n${correctionText}` : ""}
     { role: "system", content: system },
     { role: "user", content: user },
   ], { maxTokens: 1200 });
+}
+
+// ---- 浅档收口:多轮 → 方向闸门卡(单收口,不跳议会)----
+// 闸门卡是命门(深档全冻结在它的 3 个分叉上),收口质量要紧 → 偏好强模型(Claude→OpenAI→其余)。
+export async function runGateCard({ brief, rounds = [], adopted = [], byoKeys }) {
+  const configured = getConfiguredProviders(byoKeys);
+  if (!configured.length) throw new Error("没有可用模型");
+  const PREF = ["claude", "openai", "deepseek", "qwen", "zhipu"]; // 收口要稳,优先强模型
+  const p = [...PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean), ...configured][0];
+  const apiKey = resolveKey(p, byoKeys);
+  const card = await chatJSON(p, apiKey, buildGateCardPrompt({ brief, rounds, adopted }), { maxTokens: 2000 });
+  // 兜底归一:形状收敛到前端可直接渲染(分叉/候选/假设缺失不炸)
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  return {
+    direction: clean(card?.direction) || (rounds[rounds.length - 1]?.fields?.direction || ""),
+    targetUser: clean(card?.targetUser) || "",
+    assumptions: arr(card?.assumptions).map(clean).filter(Boolean).slice(0, 3),
+    forks: arr(card?.forks).map((f) => ({
+      question: clean(f?.question),
+      why: clean(f?.why),
+      candidates: arr(f?.candidates).map((c) => ({ option: clean(c?.option), tradeoff: clean(c?.tradeoff) })).filter((c) => c.option).slice(0, 4),
+    })).filter((f) => f.question && f.candidates.length).slice(0, 3),
+    recommendation: { goDeep: !!card?.recommendation?.goDeep, reason: clean(card?.recommendation?.reason) },
+    provider: p.provider.id,
+    at: new Date().toISOString(),
+  };
+}
+
+// 深档命门:可溯源校验(独立 pass)。便宜模型即可——只做"越界/指不回"的范围审,不评好坏。
+export async function runScopeAudit({ handoff, buildPackage, byoKeys }) {
+  const configured = getConfiguredProviders(byoKeys);
+  if (!configured.length) return null;
+  const PREF = ["deepseek", "qwen", "zhipu", "openai", "claude"]; // 审范围用便宜模型够
+  const p = [...PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean), ...configured][0];
+  const apiKey = resolveKey(p, byoKeys);
+  try {
+    const a = await chatJSON(p, apiKey, buildScopeAuditPrompt({ handoff, buildPackage }), { maxTokens: 800 });
+    const arr = (x) => (Array.isArray(x) ? x.map(clean).filter(Boolean) : []);
+    const out_of_scope = arr(a?.out_of_scope), untraceable = arr(a?.untraceable), contradictions = arr(a?.contradictions);
+    const flagged = out_of_scope.length + untraceable.length + contradictions.length;
+    return {
+      out_of_scope, untraceable, contradictions,
+      verdict: flagged ? "needs_review" : "clean",
+      summary: clean(a?.summary) || (flagged ? "发现疑似越界/指不回的项,请人核对" : "未发现越界,施工包贴合冻结合同"),
+      provider: p.provider.id,
+    };
+  } catch { return null; } // 审计失败不挡产物(诚实降级)
 }

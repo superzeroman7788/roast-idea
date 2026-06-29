@@ -24,6 +24,8 @@ import {
   runAutoRound,
   runAgentTask,
   runReflection,
+  runGateCard,
+  runScopeAudit,
 } from "./providers.mjs";
 import { buildEvidencePack } from "./evidence.mjs";
 import { buildMemoryInjection } from "./memory.mjs";
@@ -38,6 +40,7 @@ import {
   listDiscussions,
   deleteDiscussion,
   saveArtifact,
+  setArtifactAudit,
   listAllArtifacts,
   getArtifact,
   chooseArtifact,
@@ -645,7 +648,9 @@ const server = http.createServer(async (req, res) => {
         let best = 0, bestScore = -1;
         rounds.forEach((r, i) => { const s = Object.values(r.eval?.schema_completeness || {}).filter(Boolean).length; if (s >= bestScore) { bestScore = s; best = i; } }); // 强字段最齐者(平手取最新)
         const fourFilled = !!(round.fields.direction && round.fields.open_questions?.length && round.fields.artifacts_hint?.length);
-        await setAutoRun(d.id, { rounds, md, bestRoundIndex: best, status: "paused", updatedAt: new Date().toISOString() });
+        // ★ 重读最新 autoRun 再合并:别把本轮跑动期间用户点赞的 adopted / 收口的 gateCard / injectBackup 覆写掉(整列覆写,非 merge)
+        const latest = (await getDiscussion(d.id, req.userId))?.autoRun || prevState;
+        await setAutoRun(d.id, { ...prevState, ...latest, rounds, md, bestRoundIndex: best, status: "paused", updatedAt: new Date().toISOString() });
         sseSend(res, "round-done", {
           roundIndex, fields: round.fields, convergence: round.convergence, eval: round.eval,
           canStop: fourFilled,                                              // 规则层:四强字段全非空,可注入
@@ -739,6 +744,46 @@ const server = http.createServer(async (req, res) => {
       const md = rounds.length ? { brief_original: prev.md?.brief_original || d.brief, ...rounds[rounds.length - 1].fields } : null;
       await setAutoRun(d.id, { ...prev, rounds, md, bestRoundIndex: Math.min(prev.bestRoundIndex || 0, rounds.length - 1) });
       return json(res, 200, { ok: true, roundsLeft: rounds.length });
+    }
+
+    // 采纳/取消采纳一个实质点(历史轮点赞 → 进方案)。存文本不存下标:反熵 C 去重可能剃掉好点子,点赞把它从刀下救回。
+    // ★ 加法不减法:只 toggle 进/出 adopted[],不影响机器独立给的假设/风险。
+    const autoAdopt = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/adopt$/);
+    if (req.method === "POST" && autoAdopt) {
+      const d = await getDiscussion(autoAdopt[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const prev = d.autoRun;
+      if (!prev) return json(res, 400, { ok: false, error: "还没有自动档草稿" });
+      const body = await readJson(req);
+      const text = String(body.text || "").trim().slice(0, 400);
+      if (!text) return json(res, 400, { ok: false, error: "text required" });
+      const kind = String(body.kind || "point").slice(0, 24);
+      const round = Number.isFinite(body.round) ? body.round : null;
+      const on = body.on !== false; // 默认采纳;on:false = 取消
+      const adopted = Array.isArray(prev.adopted) ? prev.adopted.slice() : [];
+      const idx = adopted.findIndex((a) => (a?.text || "") === text);
+      if (on && idx < 0) adopted.push({ text, kind, round, at: new Date().toISOString() });
+      else if (!on && idx >= 0) adopted.splice(idx, 1);
+      await setAutoRun(d.id, { ...prev, adopted });
+      return json(res, 200, { ok: true, adopted });
+    }
+
+    // 浅档收口:多轮 + 已采纳点 → 方向闸门卡(人类校准检查点)。单收口,不跳议会。
+    const autoGate = url.pathname.match(/^\/api\/discussion\/([^/]+)\/autopilot\/gatecard$/);
+    if (req.method === "POST" && autoGate) {
+      const d = await getDiscussion(autoGate[1], req.userId);
+      if (!d) return json(res, 404, { ok: false, error: "not found" });
+      const prev = d.autoRun;
+      if (!prev?.rounds?.length) return json(res, 400, { ok: false, error: "还没有自动档轮次可收口" });
+      const gbody = await readJson(req).catch(() => ({}));
+      const byoKeys = gbody.keys && typeof gbody.keys === "object" ? gbody.keys : undefined;
+      try {
+        const gateCard = await runGateCard({ brief: d.brief, rounds: prev.rounds, adopted: prev.adopted || [], byoKeys });
+        await setAutoRun(d.id, { ...prev, gateCard });
+        return json(res, 200, { ok: true, gateCard });
+      } catch (e) {
+        return json(res, 500, { ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
     }
 
     // ============ Skill 系统 ============
@@ -892,7 +937,7 @@ const server = http.createServer(async (req, res) => {
         : rawInstruction;
       // 交接来的方案文档(MD,如 方向卡/收敛方案 → 产出):优先作为产出的"方案源"
       const handoffDoc = typeof body.handoff === "string" ? body.handoff.trim().slice(0, 8000) : "";
-      const validTypes = ["copy", "prd", "design_doc", "code_sketch", "image", "ppt", "html_proto", "critique"];
+      const validTypes = ["copy", "prd", "design_doc", "code_sketch", "image", "ppt", "html_proto", "critique", "build_package"];
       if (!validTypes.includes(type)) return json(res, 400, { ok: false, error: "invalid type" });
       if (!providerId) return json(res, 400, { ok: false, error: "provider required" });
 
@@ -950,6 +995,21 @@ const server = http.createServer(async (req, res) => {
           saved = await saveArtifact({ discussionId: d.id, type, provider: out.provider, content: out.content, parentId: fromArtifactId, mode, instruction });
         }
         sseSend(res, "artifact", { ...saved, latencyMs: out.latencyMs });
+        // 深档命门:施工包出来后独立审范围(越界/指不回冻结闸门卡)→ 溯源旗标回流给人
+        // ★ 只对「走开深档冻结的闸门卡」做溯源;直接点施工包(无冻结合同)不能假装 clean,标 no_contract;审计跑不动标 unavailable
+        if (type === "build_package" && out.kind !== "image" && out.content) {
+          const contract = handoffDoc || d.conclusion || "";
+          const frozen = contract.includes("已冻结") && contract.includes("闸门卡");
+          let audit;
+          if (!frozen) {
+            audit = { out_of_scope: [], untraceable: [], contradictions: [], verdict: "no_contract", summary: "未走「开深档」冻结闸门卡 —— 本施工包不在冻结合同约束下,未做溯源审计" };
+          } else {
+            audit = (await runScopeAudit({ handoff: contract, buildPackage: out.content, byoKeys }))
+              || { out_of_scope: [], untraceable: [], contradictions: [], verdict: "unavailable", summary: "溯源审计未能运行(无可用模型/审计失败)—— 请人工核对是否越界" };
+          }
+          try { await setArtifactAudit(saved.id, audit); } catch {} // 落到产物 → 刷新后旗标仍在
+          sseSend(res, "build-audit", { artifactId: saved.id, audit });
+        }
         sseSend(res, "produce-done", { discussionId: d.id });
       } catch (error) {
         sseSend(res, "error", { error: error?.message || "produce failed" });
@@ -1247,6 +1307,15 @@ async function emitTurn(res, discussionId, turn, pack) {
   });
 }
 
+// BYO keys 兜底解析:可经 x-roast-keys 头(JSON 字符串)带入;没带 → undefined,服务端用自己配置的 key。
+// (此前 /reflect 直接调用未定义的 parseByo,无 body 调用时会 ReferenceError —— 补上定义同时修掉该潜伏崩溃。)
+function parseByo(req) {
+  try {
+    const h = req?.headers?.["x-roast-keys"];
+    const v = h ? JSON.parse(h) : undefined;
+    return v && typeof v === "object" ? v : undefined;
+  } catch { return undefined; }
+}
 function readJson(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
