@@ -1498,8 +1498,10 @@ function App() {
         <div className="station-head">产出 · 让某个 AI 生成</div>
         <div className="station-sub">把方案交给一个模型 → 文案 / PRD / 设计文档 / 配图 · 或用⚡马仔直接执行任务</div>
         <div className="station-canvas" style={{ alignItems: "stretch", justifyContent: "flex-start" }}>
-          {planReady ? <div className="out-scroll">
-            {deliverBlock()}
+          <div className="out-scroll">
+            {planReady ? deliverBlock() : <div className="board-empty" style={{ padding: "20px 24px", lineHeight: 1.7 }}>
+              先在「陪练」出方向卡、或「议会」收敛出方案，再用左栏「送到产出」<br/>也可以直接告诉下面的 ⚡ 马仔要做什么
+            </div>}
             {/* ── 马仔 Agent 执行区 ── */}
             <div className="agent-box">
               <div className="agent-box-head">
@@ -1573,7 +1575,6 @@ function App() {
               ))}
             </div>
           </div>
-            : stationEmpty("先在「陪练」出方向卡、或「议会」收敛出方案,再用左栏「送到产出」把它送过来")}
         </div>
       </div>
     );
@@ -1619,6 +1620,25 @@ function App() {
             : <div className="board-empty" style={{ padding: 16 }}>左栏和搭子聊清楚 → 点中央「理清了」召多脑出方向卡</div>}
         </div></div>
         {handoffBar("relay")}
+        {turns.length >= 3 && !busy && !deliberating && discussion && (
+          reflectDone ? (
+            <div className="mono" style={{ fontSize: 10, color: "var(--green)", padding: "6px 12px" }}>
+              ✓ 已提炼 {reflectDone.memories} 条记忆 · <span className="clk" style={{ color: "var(--cyan)" }} onClick={() => setShowMemoryPanel(true)}>查看</span>
+            </div>
+          ) : (
+            <button className="ghost-chip" style={{ margin: "6px 12px", fontSize: 10.5, color: "var(--faint)" }} disabled={reflectBusy} onClick={async () => {
+              setReflectBusy(true);
+              try {
+                const r = await fetch(`/api/discussion/${discussion.id}/reflect`, { method: "POST" }).then(x => x.json());
+                if (r.ok) {
+                  setReflectDone({ memories: r.memories, proposals: r.proposals });
+                  fetch("/api/memories").then(x => x.json()).then(d => { if (d.ok) setMemories(d.memories || []); }).catch(() => {});
+                  fetch("/api/skill-proposals").then(x => x.json()).then(d => { if (d.ok) setSkillProposals(d.proposals || []); }).catch(() => {});
+                }
+              } finally { setReflectBusy(false); }
+            }}>{reflectBusy ? "提炼中…" : "📝 提炼本次记忆"}</button>
+          )
+        )}
       </div>
     );
     if (tab === "council") return (
@@ -1629,6 +1649,25 @@ function App() {
           {convergedBlock()}
         </div></div>
         {handoffBar("council")}
+        {viewpoints.length >= 3 && !deliberating && discussion && (
+          reflectDone ? (
+            <div className="mono" style={{ fontSize: 10, color: "var(--green)", padding: "6px 12px" }}>
+              ✓ 已提炼 {reflectDone.memories} 条记忆 · <span className="clk" style={{ color: "var(--cyan)" }} onClick={() => setShowMemoryPanel(true)}>查看</span>
+            </div>
+          ) : (
+            <button className="ghost-chip" style={{ margin: "6px 12px", fontSize: 10.5, color: "var(--faint)" }} disabled={reflectBusy} onClick={async () => {
+              setReflectBusy(true);
+              try {
+                const r = await fetch(`/api/discussion/${discussion.id}/reflect`, { method: "POST" }).then(x => x.json());
+                if (r.ok) {
+                  setReflectDone({ memories: r.memories, proposals: r.proposals });
+                  fetch("/api/memories").then(x => x.json()).then(d => { if (d.ok) setMemories(d.memories || []); }).catch(() => {});
+                  fetch("/api/skill-proposals").then(x => x.json()).then(d => { if (d.ok) setSkillProposals(d.proposals || []); }).catch(() => {});
+                }
+              } finally { setReflectBusy(false); }
+            }}>{reflectBusy ? "提炼中…" : "📝 提炼本次记忆"}</button>
+          )
+        )}
       </div>
     );
     const planMd = (converged ? convergedToMd(converged) : "") || cardToMd(relayCard) || conclusion;
