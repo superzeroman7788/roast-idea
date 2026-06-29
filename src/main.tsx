@@ -283,6 +283,8 @@ function App() {
   const [agentLog, setAgentLog] = useState<{ type: string; text: string }[]>([]);
   const [agentHtml, setAgentHtml] = useState("");
   const [agentFiles, setAgentFiles] = useState<{ mimeType: string; b64: string }[]>([]);
+  const [mzOpen, setMzOpen] = useState(false);
+  const [mzTarget, setMzTarget] = useState<"artifact" | "plan" | "blank">("blank");
   // Skill 系统
   const [skillList, setSkillList] = useState<{ name: string; description: string }[]>([]);
   const [loadedSkill, setLoadedSkill] = useState<{ name: string; body: string } | null>(null);
@@ -2465,6 +2467,7 @@ function App() {
           {a.type === "html_proto" && <button className="mbtn" onClick={() => downloadHtml(a)}>↓ 下载 HTML</button>}
           {a.type !== "image" && a.type !== "html_proto" && <button className="mbtn" onClick={() => ccExportArt(a)}>{a.type === "ppt" ? "↓ 导出 PPTX" : "↓ 导出 MD"}</button>}
           {a.type === "image" && a.imagePath && <button className="mbtn" onClick={() => downloadArtifactImage(a)}>↓ 下载图</button>}
+          {!isCrit && <button className="mbtn" style={{ marginLeft: "auto", borderColor: "rgba(95,208,196,.4)", color: "var(--mz)" }} onClick={() => { setMzTarget("artifact"); setMzOpen(true); setAgentTask(`基于上面这份「${fm.name}」，`); }}>⚡ 交给马仔加工</button>}
         </div>
         {menuOpen && artMenu?.mode === "refine" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 7, paddingTop: 4 }}>
@@ -2585,74 +2588,77 @@ function App() {
             {artifacts.length === 0 && !producing && <div className="board-empty" style={{ margin: "auto", textAlign: "center", lineHeight: 1.8, maxWidth: 360 }}>{discussion ? "选个格式 + 模型,点「生成」出第一份交付物。" : "选格式 + 模型,在下方写要求或 📎 附素材,直接生成 —— 产出也能当独立工具用。"}</div>}
             {[...artifacts].reverse().map((a) => ccArtCard(a))}
           </div>
-          {/* ── 马仔 Agent 执行区 ── */}
-          <div className="agent-box" style={{ flex: "0 0 auto", borderTop: "1px solid var(--line2)", margin: "0", borderRadius: 0 }}>
-            <div className="agent-box-head">
-              <span>⚡ 马仔执行</span>
-              <span className="agent-box-sub">gpt-4o-mini · code_interpreter · web_search</span>
-              {loadedSkill && <span className="skill-badge" style={{ marginLeft: "auto" }}>Skill: {loadedSkill.name}</span>}
-            </div>
-            <div className="agent-input-row">
-              <textarea
-                className="agent-input"
-                rows={2}
-                placeholder="告诉马仔要做什么，例如：把上面的方案做成一个可查询的 HTML 数据展示页"
-                value={agentTask}
-                onChange={(e) => setAgentTask(e.target.value)}
-                disabled={agentRunning}
-                onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runAgent(); }}
-              />
-              <button className="agent-run-btn" disabled={agentRunning || !agentTask.trim() || !discussion} onClick={runAgent}>
-                {agentRunning ? "■ 停止" : "⚡ 执行"}
-              </button>
-            </div>
-            {agentRunning && agentLogMerged.length === 0 && <div className="thinking"><span className="blink" /> 马仔启动中…</div>}
-            {agentLogMerged.length > 0 && (
-              <div className="agent-stream" style={{ maxHeight: 200, overflow: "auto" }}>
-                {agentLogMerged.map((e, i) => (
-                  <div key={i} className={`agent-line agent-line-${e.type}`}>
-                    {e.type === "thinking" && <span className="agent-line-label">思考</span>}
-                    {e.type === "code" && <span className="agent-line-label code">代码</span>}
-                    {e.type === "output" && <span className="agent-line-label out">输出</span>}
-                    <span className="agent-line-text">{e.text}</span>
+          {/* ── 马仔 MzDock ── */}
+          <div style={{ flex: "0 0 auto", borderTop: "1px solid var(--line)", padding: "10px 22px 0" }}>
+            <div className="mz-dock">
+              <div className="mz-head" onClick={() => setMzOpen((v) => !v)}>
+                <span className="mz-bot">⚙</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#CFEDE8" }}>马仔 · 执行层</span>
+                <span className="mono" style={{ fontSize: 10, color: "var(--mz)" }}>gpt-4o-mini</span>
+                <span className="tool-chip">code_interpreter</span>
+                <span className="tool-chip">web_search</span>
+                {loadedSkill && <span className="tool-chip" style={{ color: "var(--amber)", borderColor: "rgba(232,154,42,.4)" }}>Skill: {loadedSkill.name}</span>}
+                <span className="mono" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--faint)" }}>
+                  {mzOpen ? "把产物变成可执行的东西 ▾" : "展开 · 让马仔干活 ▸"}
+                </span>
+              </div>
+              {mzOpen && (
+                <div style={{ paddingBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <span className="label" style={{ flex: "0 0 auto" }}>作用于</span>
+                    <div style={{ display: "flex", gap: 7 }}>
+                      {artifacts.length > 0 && <button className="ghost-chip" style={{ padding: "5px 11px", ...(mzTarget === "artifact" ? { borderColor: "var(--mz)", color: "var(--mz)" } : {}) }} onClick={() => setMzTarget("artifact")}>最新产物</button>}
+                      <button className="ghost-chip" style={{ padding: "5px 11px", ...(mzTarget === "plan" ? { borderColor: "var(--mz)", color: "var(--mz)" } : {}) }} onClick={() => setMzTarget("plan")}>整份方案</button>
+                      <button className="ghost-chip" style={{ padding: "5px 11px", ...(mzTarget === "blank" ? { borderColor: "var(--mz)", color: "var(--mz)" } : {}) }} onClick={() => setMzTarget("blank")}>空白任务</button>
+                    </div>
                   </div>
-                ))}
-                {agentRunning && <div className="thinking" style={{ marginTop: 4 }}><span className="blink" /> 执行中…</div>}
-              </div>
-            )}
-            {agentHtml && (
-              <div className="agent-result">
-                <div className="agent-result-head">
-                  HTML 成果
-                  <button className="agent-dl-btn" onClick={() => {
-                    const a = document.createElement("a");
-                    a.href = URL.createObjectURL(new Blob([agentHtml], { type: "text/html" }));
-                    a.download = "agent-output.html"; a.click();
-                  }}>下载</button>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 11, border: "1px solid rgba(95,208,196,.28)", borderRadius: 10, background: "rgba(255,255,255,.025)", padding: "9px 9px 9px 14px" }}>
+                    <span className="mono" style={{ color: "var(--mz)", fontSize: 14, paddingTop: 2 }}>›</span>
+                    <textarea
+                      rows={2}
+                      style={{ flex: 1, border: "none", background: "transparent", color: "#E7ECF2", fontSize: 13.5, resize: "none", outline: "none", fontFamily: "inherit" }}
+                      placeholder="告诉马仔要做什么，例如：把上面的方案做成一个可查询的 HTML 数据展示页"
+                      value={agentTask}
+                      onChange={(e) => setAgentTask(e.target.value)}
+                      disabled={agentRunning}
+                      onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runAgent(); }}
+                    />
+                    <button className="mz-run" disabled={agentRunning || !agentTask.trim() || !discussion} onClick={runAgent}>
+                      {agentRunning ? "■ 停止" : "⚡ 执行"}
+                    </button>
+                  </div>
+                  {agentRunning && agentLogMerged.length === 0 && <div className="thinking"><span className="blink" /> 马仔启动中…</div>}
+                  {agentLogMerged.length > 0 && (
+                    <div className="agent-stream" style={{ maxHeight: 160, overflow: "auto" }}>
+                      {agentLogMerged.map((e, i) => (
+                        <div key={i} className={`agent-line agent-line-${e.type}`}>
+                          {e.type === "thinking" && <span className="agent-line-label">思考</span>}
+                          {e.type === "code" && <span className="agent-line-label code">代码</span>}
+                          {e.type === "output" && <span className="agent-line-label out">输出</span>}
+                          <span className="agent-line-text">{e.text}</span>
+                        </div>
+                      ))}
+                      {agentRunning && <div className="thinking" style={{ marginTop: 4 }}><span className="blink" /> 执行中…</div>}
+                    </div>
+                  )}
+                  {agentHtml && (
+                    <div className="agent-result">
+                      <div className="agent-result-head">HTML 成果 <button className="agent-dl-btn" onClick={() => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([agentHtml], { type: "text/html" })); a.download = "agent-output.html"; a.click(); }}>下载</button></div>
+                      <iframe className="agent-iframe" sandbox="allow-scripts" srcDoc={agentHtml} title="Agent HTML 成果" />
+                    </div>
+                  )}
+                  {agentFiles.map((f, i) => (
+                    <div key={i} className="agent-result">
+                      <div className="agent-result-head">文件成果 ({f.mimeType}) <button className="agent-dl-btn" onClick={() => { const byteStr = atob(f.b64); const arr = new Uint8Array(byteStr.length); for (let j = 0; j < byteStr.length; j++) arr[j] = byteStr.charCodeAt(j); const blob = new Blob([arr], { type: f.mimeType }); const ext = f.mimeType.split("/")[1] || "bin"; const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `agent-output.${ext}`; a.click(); }}>下载</button></div>
+                      {f.mimeType.startsWith("image/") && <img className="agent-img" src={`data:${f.mimeType};base64,${f.b64}`} alt="agent output" />}
+                    </div>
+                  ))}
+                  <div className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>马仔＝跑工具的小快手：写代码、查资料、转格式 · 与上方「大模型生成」分工</div>
                 </div>
-                <iframe className="agent-iframe" sandbox="allow-scripts" srcDoc={agentHtml} title="Agent HTML 成果" />
-              </div>
-            )}
-            {agentFiles.map((f, i) => (
-              <div key={i} className="agent-result">
-                <div className="agent-result-head">
-                  文件成果 ({f.mimeType})
-                  <button className="agent-dl-btn" onClick={() => {
-                    const byteStr = atob(f.b64);
-                    const arr = new Uint8Array(byteStr.length);
-                    for (let j = 0; j < byteStr.length; j++) arr[j] = byteStr.charCodeAt(j);
-                    const blob = new Blob([arr], { type: f.mimeType });
-                    const ext = f.mimeType.split("/")[1] || "bin";
-                    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `agent-output.${ext}`; a.click();
-                  }}>下载</button>
-                </div>
-                {f.mimeType.startsWith("image/") && (
-                  <img className="agent-img" src={`data:${f.mimeType};base64,${f.b64}`} alt="agent output" />
-                )}
-              </div>
-            ))}
+              )}
+            </div>
           </div>
-          <div style={{ flex: "0 0 auto", padding: "14px 24px 16px", borderTop: "1px solid var(--line)" }}>
+          <div style={{ flex: "0 0 auto", padding: "10px 24px 16px", borderTop: "1px solid var(--line)" }}>
             {attachments.length > 0 && (
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 8 }}>
                 {attachments.map((a, i) => (
@@ -2674,7 +2680,7 @@ function App() {
                 ? <button className="ghost-chip" title="停止当前生成(卡住时点这里,不用退出重进)" onClick={cancelRun} style={{ padding: "7px 13px", fontSize: 12.5, color: "var(--red)", borderColor: "var(--red)" }}>■ 停止</button>
                 : <button className="amber-btn send-icon" disabled={!model || (!discussion && !userInput.trim() && !attachments.length)} onClick={() => { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); }}>↑</button>}
             </div>
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>📎 附素材直接产出(无需先走前几站) · 选格式+模型生成 · 卡片上点「改稿」 · ⌘/Ctrl+Enter</div>
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 8, paddingLeft: 4 }}>大模型生成（上）产内容 · 马仔（中）跑工具做执行 · ⌘/Ctrl+Enter 提交</div>
           </div>
         </div>
         {/* 右:产物清单 / 导出 */}

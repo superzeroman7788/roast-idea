@@ -848,7 +848,17 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .yc-reply{flex:1;background:rgba(255,255,255,.03);border:1px solid var(--line2);border-radius:8px;padding:7px 11px;color:var(--tx);font-family:var(--sans);font-size:12.5px;outline:none}
 .yc-reply:focus{border-color:rgba(72,220,255,.4)}
 
-/* 马仔 Agent 执行区 */
+/* 马仔 MzDock */
+:root{--mz:#5FD0C4}
+.mz-dock{border:1px solid rgba(95,208,196,.22);border-radius:10px;background:rgba(95,208,196,.04);overflow:hidden}
+.mz-head{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;transition:.13s;user-select:none}
+.mz-head:hover{background:rgba(95,208,196,.07)}
+.mz-bot{font-size:13px;color:var(--mz)}
+.mz-run{flex:0 0 auto;font-family:var(--mono);font-size:12.5px;color:var(--mz);background:rgba(95,208,196,.1);border:1px solid rgba(95,208,196,.4);border-radius:8px;padding:7px 15px;cursor:pointer;white-space:nowrap;transition:.13s}
+.mz-run:hover:not(:disabled){background:rgba(95,208,196,.18);box-shadow:0 0 10px rgba(95,208,196,.2)}
+.mz-run:disabled{opacity:.4;cursor:not-allowed}
+.tool-chip{font-family:var(--mono);font-size:10px;letter-spacing:.05em;color:var(--tx3);border:1px solid rgba(255,255,255,.12);border-radius:4px;padding:1px 6px}
+/* 马仔 Agent 执行区(旧 legacy,保留流/结果样式) */
 .agent-box{margin-top:16px;border:1px solid #1d3a5a;border-radius:10px;padding:13px 14px;background:linear-gradient(180deg,#070f1e,#050b16)}
 .agent-box-head{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--cyan);margin-bottom:10px;display:flex;align-items:center;gap:10px;text-shadow:0 0 10px #48dcff44}
 .agent-box-sub{font-size:11px;letter-spacing:.06em;color:var(--tx3);font-weight:400;text-shadow:none}
