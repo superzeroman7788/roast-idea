@@ -106,7 +106,7 @@ function setSessionCookie(res, token) {
 }
 const clearSessionCookie = (res) => res.setHeader("Set-Cookie", `roast_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
 // 邀请白名单:站长 + 硬编码兜底名单 ALLOWED_EXTRA + env ROAST_ALLOWED_EMAILS(逗号分隔,两者合并)
-const ALLOWED_EXTRA = ["5423696@qq.com"]; // 站长 QQ 备用邮箱
+const ALLOWED_EXTRA = ["5423696@qq.com", "624958300@qq.com"]; // 站长 QQ 备用邮箱 + 受邀用户
 function isInvited(email) {
   const e = String(email || "").trim().toLowerCase();
   if (!e || !e.includes("@")) return false;
