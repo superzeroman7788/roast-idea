@@ -1,5 +1,10 @@
-# 推一个 tag(如 v0.1.1)→ 自动构建 + 签名 + 公证 + 建 GitHub Release + 生成 updater 的 latest.json。
+# 推一个 tag(如 v0.1.1)→ 构建 + 签名 + 公证 + 建 GitHub Release + 生成 updater 的 latest.json。
 # 以后发版只需:bump 版本号 → 打 tag → push,本地什么都不用跑。
+#
+# ⚠️ 公证(notarization)拆成了独立步骤,不再让 tauri-action 黑盒等(它内部 notarytool --wait 无超时,
+#    Apple 偶发卡住能挂 6 小时)。现在:tauri-action 只「构建 + 签名」(摘掉 APPLE_ID/PASSWORD/TEAM_ID
+#    它就不公证),公证由「Notarize + staple」步骤显式跑 —— 带超时、打 submission id、Invalid 自动拉日志,
+#    一眼能看出 Apple 端是 In Progress / Accepted / Invalid。
 #
 # 需要在仓库 Settings → Secrets and variables → Actions 里加这些 secret:
 #   TAURI_SIGNING_PRIVATE_KEY           — ~/.tauri/roast.key 的内容(updater 验签私钥)
@@ -23,7 +28,7 @@ jobs:
   release:
     runs-on: macos-latest
     permissions:
-      contents: write     # 建 Release 需要写权限
+      contents: write     # 建 Release / 重传 dmg 需要写权限
     steps:
       - uses: actions/checkout@v4
 
@@ -53,18 +58,19 @@ jobs:
             exit 1
           fi
 
-      - uses: tauri-apps/tauri-action@v0
+      # ① 构建 + 签名(★ 不公证):只给签名凭据,不给 APPLE_ID/PASSWORD/TEAM_ID,tauri-action 就跳过公证,绝不挂 6 小时。
+      #    它仍负责:tauri build → Developer ID 签名(hardened runtime)→ updater minisign 签名 → 建 Release → 传 dmg/updater/latest.json。
+      - name: Build + sign (no notarize)
+        uses: tauri-apps/tauri-action@v0
+        timeout-minutes: 40
         env:
           # updater 包验签(minisign)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # 苹果分发签名 + 公证
+          # 只给苹果「签名」凭据 —— 故意不给 APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID,让 tauri-action 不做公证
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "ROAST ${{ github.ref_name }}"
@@ -73,3 +79,50 @@ jobs:
           prerelease: false
           # universal:Intel + Apple Silicon 一个包通吃
           args: --target universal-apple-darwin
+
+      # ② 公证 + staple(★ 独立、可观测):notarytool submit --wait --timeout,打出 submission id + 状态;
+      #    Accepted → staple 进 dmg 再覆盖重传;非 Accepted → 自动拉 notarytool log(JSON)看 Apple 报的具体问题,然后 fail。
+      #    step 级 timeout-minutes 兜底:即便 Apple 端真卡住,40 分钟也会断,不会再 6 小时黑盒。
+      - name: Notarize + staple DMG
+        timeout-minutes: 40
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          DMG=$(find src-tauri/target -name "*.dmg" | head -n1)
+          if [ -z "$DMG" ]; then echo "::error::没找到构建出的 .dmg"; exit 1; fi
+          echo "DMG = $DMG"
+
+          echo "::group::notarytool submit --wait(最长 30 分钟)"
+          OUT=$(xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m 2>&1)
+          RC=$?
+          echo "$OUT"
+          echo "::endgroup::"
+
+          SUBID=$(printf '%s\n' "$OUT" | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n1)
+          STATUS=$(printf '%s\n' "$OUT" | grep -Eo 'status: [A-Za-z ]+' | tail -n1 | sed 's/status: //')
+          echo "──────────────────────────────"
+          echo "submission id : ${SUBID:-(未取到)}"
+          echo "apple status  : ${STATUS:-(未取到)}  (notarytool exit=$RC)"
+          echo "──────────────────────────────"
+
+          if [ "$STATUS" = "Accepted" ]; then
+            echo "✓ Apple 公证通过 → staple 票据进 dmg"
+            xcrun stapler staple "$DMG"
+            xcrun stapler validate "$DMG"
+            echo "↻ 覆盖重传 stapled dmg 到 Release ${GITHUB_REF_NAME}"
+            gh release upload "${GITHUB_REF_NAME}" "$DMG" --clobber
+            echo "✓ 完成:用户下载的 dmg 已公证 + stapled(离线也不弹 Gatekeeper 警告)"
+          else
+            echo "::error::公证未通过(status=${STATUS:-unknown})。下面是 Apple 的详细日志:"
+            if [ -n "$SUBID" ]; then
+              xcrun notarytool log "$SUBID" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            fi
+            exit 1
+          fi
