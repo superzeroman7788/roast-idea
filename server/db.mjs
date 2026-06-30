@@ -158,7 +158,10 @@ export async function assignOrphanDiscussions(userId) {
 // category: 'preference' | 'product_judgment' | 'pattern'
 export async function getMemories(userId, limit = 20) {
   await ensureReady();
-  return (await all(`SELECT * FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`, [userId, limit]));
+  // ★ Render/Turso 偶发(冷连接/类型)抛错 → 别 500 整页;记真因到日志,降级空表
+  try {
+    return (await all(`SELECT * FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`, [userId, Number(limit) || 20]));
+  } catch (e) { console.error("[db] getMemories failed:", e?.message || e); return []; }
 }
 export async function saveMemories(userId, items, sourceDiscId) {
   await ensureReady();
@@ -177,7 +180,9 @@ export async function deleteMemory(id, userId) {
 // ---- Skill Proposals ----
 export async function getSkillProposals(userId, status = "pending") {
   await ensureReady();
-  return (await all(`SELECT * FROM skill_proposals WHERE user_id = ? AND status = ? ORDER BY created_at DESC`, [userId, status]));
+  try {
+    return (await all(`SELECT * FROM skill_proposals WHERE user_id = ? AND status = ? ORDER BY created_at DESC`, [userId, status]));
+  } catch (e) { console.error("[db] getSkillProposals failed:", e?.message || e); return []; }
 }
 export async function saveSkillProposals(userId, proposals, sourceDiscId) {
   await ensureReady();

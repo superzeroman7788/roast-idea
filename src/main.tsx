@@ -105,6 +105,13 @@ function renderMd(md: string): React.ReactNode {
   return out;
 }
 
+// 诊断:把任何未捕获错误/Promise 拒绝的完整堆栈打到 console(定位 "did not match the expected pattern" 这类难复现报错)
+if (typeof window !== "undefined" && !(window as any).__roastErrHook) {
+  (window as any).__roastErrHook = true;
+  window.addEventListener("error", (e) => console.error("[window.error]", e.message, e.filename + ":" + e.lineno + ":" + e.colno, e.error?.stack));
+  window.addEventListener("unhandledrejection", (e) => console.error("[unhandledrejection]", (e.reason as any)?.message || e.reason, (e.reason as any)?.stack));
+}
+
 async function streamSSE(
   path: string,
   body: unknown,
@@ -693,7 +700,7 @@ function App() {
         () => cancelled(t),
       );
       if (!cancelled(t)) setPhase("awaiting-user");
-    } catch (e) { if (!cancelled(t)) setRunError((e as Error).message); }
+    } catch (e) { console.error("[deliberate] failed:", e); if (!cancelled(t)) setRunError((e as Error).message); }
     finally { if (!cancelled(t)) { setDeliberating(false); stopTimer(); } }
   }
 
@@ -882,7 +889,7 @@ function App() {
       const r = await fetch(`/api/discussion/${discussion.id}/solution-doc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }).then((x) => x.json());
       if (r.ok && r.md) { setSolutionDoc(r.md); flash("✓ 已更新方案文档"); }
       else setRunError(r.error || "方案文档生成失败");
-    } catch (e) { setRunError((e as Error).message); }
+    } catch (e) { console.error("[solutionDoc] failed:", e); setRunError((e as Error).message); }
     finally { setMakingSolDoc(false); }
   }
 
