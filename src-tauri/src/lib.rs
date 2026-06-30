@@ -2,7 +2,36 @@
 // 大部分迭代靠 Render 部署直达,无需重发 App;原生壳本身的更新走 updater 插件(签名校验)。
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::Manager;
+use tauri::webview::{DownloadEvent, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl};
+
+// 主窗口:瘦壳载远程 Web 版。★ 必须用 builder 程序化建(而非 tauri.conf.json),才能挂 on_download ——
+// 否则 webview 收到 Content-Disposition 下载没人接管,点下载毫无反应。下载落到系统「下载」文件夹。
+fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+  let url = if cfg!(debug_assertions) {
+    "http://localhost:5173"
+  } else {
+    "https://roast-idea.onrender.com"
+  };
+  let dl_dir = app.path().download_dir().ok();
+  WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
+    .title("ROAST · 点子陪练")
+    .inner_size(1280.0, 860.0)
+    .min_inner_size(1024.0, 700.0)
+    .resizable(true)
+    .center()
+    .on_download(move |_webview, event| {
+      if let DownloadEvent::Requested { destination, .. } = event {
+        // 把文件名拼到「下载」目录(destination 初值带 Content-Disposition 推断的文件名)
+        if let (Some(dir), Some(name)) = (&dl_dir, destination.file_name().map(|s| s.to_owned())) {
+          *destination = dir.join(name);
+        }
+      }
+      true // 允许下载
+    })
+    .build()?;
+  Ok(())
+}
 
 // 启动时静默检查原生壳更新:有新版就下载+安装+重启;无网/无更新都不打扰用户。
 #[cfg(desktop)]
@@ -75,6 +104,8 @@ pub fn run() {
       }
     })
     .setup(|app| {
+      // 程序化建主窗口(带 on_download)—— 取代 tauri.conf.json 里的 windows 配置
+      build_main_window(app.handle())?;
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()

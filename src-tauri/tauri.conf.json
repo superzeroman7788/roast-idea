@@ -1,25 +1,14 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ROAST",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.roastidea.app",
   "build": {
     "frontendDist": "https://roast-idea.onrender.com",
     "devUrl": "http://localhost:5173"
   },
   "app": {
-    "windows": [
-      {
-        "title": "ROAST · 点子陪练",
-        "width": 1280,
-        "height": 860,
-        "minWidth": 1024,
-        "minHeight": 700,
-        "resizable": true,
-        "fullscreen": false,
-        "center": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
