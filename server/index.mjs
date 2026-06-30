@@ -144,6 +144,25 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
+    // 文件下载中转:前端把马仔产出的 b64 表单 POST 过来,服务端带 Content-Disposition 吐回去
+    // → WKWebView/Tauri 里 <a download blob> 不触发原生下载,走这条服务端附件头才稳。无状态、只回显本次提交的字节。
+    if (req.method === "POST" && url.pathname === "/api/download") {
+      const raw = await readRaw(req);
+      const f = new URLSearchParams(raw);
+      const b64 = (f.get("b64") || "").trim();
+      const filename = (f.get("filename") || "download.bin").replace(/[\r\n"\\]/g, "").slice(0, 200);
+      const mimeType = (f.get("mimeType") || "application/octet-stream").replace(/[\r\n]/g, "");
+      if (!b64) { res.writeHead(400); res.end("no data"); return; }
+      const buf = Buffer.from(b64, "base64");
+      res.writeHead(200, {
+        "Content-Type": mimeType,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "Content-Length": buf.length,
+      });
+      res.end(buf);
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/status") {
       const providers = getProviderStatus();
       return json(res, 200, {
@@ -1351,6 +1370,14 @@ function readJson(req) {
         reject(error);
       }
     });
+    req.on("error", reject);
+  });
+}
+function readRaw(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }

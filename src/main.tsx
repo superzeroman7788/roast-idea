@@ -959,15 +959,19 @@ function App() {
     flashTimer.current = setTimeout(() => setFlashMsg(""), 1600);
   }
   // 复制 + 反馈:成功浮「✓ 已复制」,失败给可操作提示(不再静默)
-  // 马仔产出文件下载:b64 → blob → 下载,用真实文件名(docx/xlsx/pdf 等)
+  // 马仔产出文件下载:★ WKWebView/Tauri 里 <a download blob> 不触发原生下载 → 走服务端 Content-Disposition。
+  // 隐藏 form POST 到 /api/download(b64),target 一个隐藏 iframe → 触发下载且不导航离开当前页。
   function dlAgentFile(f: { mimeType: string; b64: string; filename?: string }) {
     try {
-      const bs = atob(f.b64); const arr = new Uint8Array(bs.length);
-      for (let j = 0; j < bs.length; j++) arr[j] = bs.charCodeAt(j);
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([arr], { type: f.mimeType }));
-      a.download = f.filename || `agent-output.${(f.mimeType.split("/")[1] || "bin").split("+")[0]}`;
-      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      const name = f.filename || `agent-output.${(f.mimeType.split("/")[1] || "bin").split("+")[0]}`;
+      let ifr = document.getElementById("__dl_ifr") as HTMLIFrameElement | null;
+      if (!ifr) { ifr = document.createElement("iframe"); ifr.id = "__dl_ifr"; ifr.name = "__dl_ifr"; ifr.style.display = "none"; document.body.appendChild(ifr); }
+      const form = document.createElement("form");
+      form.method = "POST"; form.action = "/api/download"; form.target = "__dl_ifr"; form.style.display = "none";
+      const add = (n: string, v: string) => { const i = document.createElement("input"); i.type = "hidden"; i.name = n; i.value = v; form.appendChild(i); };
+      add("b64", f.b64); add("filename", name); add("mimeType", f.mimeType || "application/octet-stream");
+      document.body.appendChild(form); form.submit();
+      setTimeout(() => form.remove(), 4000);
     } catch (e) { setRunError("下载失败:" + (e as Error).message); }
   }
   async function copy(text: string, label = "已复制") {
