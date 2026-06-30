@@ -83,7 +83,8 @@ jobs:
           args: --target universal-apple-darwin
 
       # ② 公证 + staple(★ 独立、可观测):notarytool submit --wait --timeout,打出 submission id + 状态;
-      #    Accepted → staple 进 dmg 再覆盖重传;非 Accepted → 自动拉 notarytool log(JSON)看 Apple 报的具体问题,然后 fail。
+      #    Accepted → staple 进 dmg 再覆盖重传 + 改 Release 说明为「已公证」;
+      #    非 Accepted → ★ 不阻断:已签名 dmg 照常留在 Release,说明里附 `xattr -cr` 首开指引,并拉 Apple 日志看原因;等账号侧通了下次自动补 staple。
       #    step 级 timeout-minutes 兜底:即便 Apple 端真卡住,40 分钟也会断,不会再 6 小时黑盒。
       - name: Notarize + staple DMG
         timeout-minutes: 40
@@ -97,6 +98,8 @@ jobs:
           DMG=$(find src-tauri/target -name "*.dmg" | head -n1)
           if [ -z "$DMG" ]; then echo "::error::没找到构建出的 .dmg"; exit 1; fi
           echo "DMG = $DMG"
+          TAG="${GITHUB_REF_NAME}"
+          set +e   # ★ 软失败:公证没过也不中断 —— 已签名的 dmg 照常留在 Release(附首开指引),Apple 通了下次自动补 staple
 
           echo "::group::notarytool submit --wait(最长 30 分钟)"
           OUT=$(xcrun notarytool submit "$DMG" \
@@ -117,14 +120,24 @@ jobs:
             echo "✓ Apple 公证通过 → staple 票据进 dmg"
             xcrun stapler staple "$DMG"
             xcrun stapler validate "$DMG"
-            echo "↻ 覆盖重传 stapled dmg 到 Release ${GITHUB_REF_NAME}"
-            gh release upload "${GITHUB_REF_NAME}" "$DMG" --clobber
-            echo "✓ 完成:用户下载的 dmg 已公证 + stapled(离线也不弹 Gatekeeper 警告)"
+            echo "↻ 覆盖重传 stapled dmg 到 Release $TAG"
+            gh release upload "$TAG" "$DMG" --clobber
+            gh release edit "$TAG" --notes "桌面版自动构建 · 已通过 Apple 公证 ✅
+
+          下载 .dmg → 拖进「应用程序」→ 双击打开即可。已安装旧版打开即自动更新。"
+            echo "✓ 完成:dmg 已公证 + stapled(离线也不弹 Gatekeeper 警告)"
           else
-            echo "::error::公证未通过(status=${STATUS:-unknown})。下面是 Apple 的详细日志:"
-            if [ -n "$SUBID" ]; then
-              xcrun notarytool log "$SUBID" \
-                --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
-            fi
-            exit 1
+            echo "::warning::公证未通过(status=${STATUS:-unknown},submission ${SUBID:-?})—— 不阻断,发布已签名版 + 首开指引。Apple 详细日志:"
+            [ -n "$SUBID" ] && xcrun notarytool log "$SUBID" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+            gh release edit "$TAG" --notes "桌面版自动构建 · 已 Developer ID 签名(Apple 公证开通中,本版暂未公证)
+
+          ⚠️ 首次打开:下载 .dmg → 拖进「应用程序」后,**终端跑一行**去掉下载隔离标记:
+          \`\`\`
+          xattr -cr /Applications/ROAST.app
+          \`\`\`
+          再双击打开(每台机器做一次即可)。等公证开通,之后的新版本不再需要这步。
+
+          已安装旧版打开即自动更新。"
+            echo "✓ 已发布签名版 dmg + 首开指引(公证待 Apple 侧开通后自动补)"
           fi
+          exit 0
