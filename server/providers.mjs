@@ -115,7 +115,7 @@ const ALL = [...OPENAI_COMPATIBLE, ANTHROPIC];
 const rejectsTemp = (model) => /^(gpt-5|o1|o3)/i.test(model || "") || /opus-4-8/i.test(model || "");
 
 function firstEnv(keys) {
-  for (const key of keys) {
+  for (const key of Array.isArray(keys) ? keys : []) { // 防御:误传非数组(如 {provider,apiKey} 包装)不炸,退化为""
     const value = process.env[key]?.trim();
     if (value) return value;
   }
@@ -1610,7 +1610,7 @@ export async function runReflection({ brief, rounds, corrections, byoKeys }) {
   const PREF = ["deepseek", "qwen", "zhipu", "openai", "claude"];
   const p = [...PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean),
     ...configured][0];
-  const apiKey = resolveKey(p, byoKeys);
+  const apiKey = p.apiKey; // ★ 用包装里已解析 key,别 resolveKey(包装)
 
   const summaries = (rounds || []).slice(-8).map((r, i) =>
     `轮次${r.roundIndex || i + 1}: ${r.eval?.round_summary || r.fields?.direction || ""}`.trim()
@@ -1641,7 +1641,7 @@ ${correctionText ? `用户纠偏记录:\n${correctionText}` : ""}
 
 请提炼记忆和 Skill 候选。`;
 
-  return await chatJSON(p, apiKey, [
+  return await chatJSON(p.provider, apiKey, [
     { role: "system", content: system },
     { role: "user", content: user },
   ], { maxTokens: 1200 });
@@ -1654,8 +1654,8 @@ export async function runGateCard({ brief, rounds = [], adopted = [], byoKeys })
   if (!configured.length) throw new Error("没有可用模型");
   const PREF = ["claude", "openai", "deepseek", "qwen", "zhipu"]; // 收口要稳,优先强模型
   const p = [...PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean), ...configured][0];
-  const apiKey = resolveKey(p, byoKeys);
-  const card = await chatJSON(p, apiKey, buildGateCardPrompt({ brief, rounds, adopted }), { maxTokens: 2000 });
+  const apiKey = p.apiKey; // ★ getConfiguredProviders 返回 {provider, apiKey} 包装 —— 直接用已解析 key;旧码 resolveKey(包装) → firstEnv(undefined) → "keys is not iterable"
+  const card = await chatJSON(p.provider, apiKey, buildGateCardPrompt({ brief, rounds, adopted }), { maxTokens: 2000 });
   // 兜底归一:形状收敛到前端可直接渲染(分叉/候选/假设缺失不炸)
   const arr = (x) => (Array.isArray(x) ? x : []);
   return {
@@ -1679,9 +1679,9 @@ export async function runScopeAudit({ handoff, buildPackage, byoKeys }) {
   if (!configured.length) return null;
   const PREF = ["deepseek", "qwen", "zhipu", "openai", "claude"]; // 审范围用便宜模型够
   const p = [...PREF.map((id) => configured.find((c) => c.provider.id === id)).filter(Boolean), ...configured][0];
-  const apiKey = resolveKey(p, byoKeys);
+  const apiKey = p.apiKey; // ★ 同上:用包装里已解析 key + p.provider,别 resolveKey(包装)
   try {
-    const a = await chatJSON(p, apiKey, buildScopeAuditPrompt({ handoff, buildPackage }), { maxTokens: 800 });
+    const a = await chatJSON(p.provider, apiKey, buildScopeAuditPrompt({ handoff, buildPackage }), { maxTokens: 800 });
     const arr = (x) => (Array.isArray(x) ? x.map(clean).filter(Boolean) : []);
     const out_of_scope = arr(a?.out_of_scope), untraceable = arr(a?.untraceable), contradictions = arr(a?.contradictions);
     const flagged = out_of_scope.length + untraceable.length + contradictions.length;
