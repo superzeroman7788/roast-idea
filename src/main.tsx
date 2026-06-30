@@ -284,6 +284,10 @@ function App() {
   const [forkChoice, setForkChoice] = useState<Record<number, number>>({}); // fork idx → 选中候选 idx
   // 深档:施工包可溯源审计旗标(artifactId → audit)
   const [buildAudits, setBuildAudits] = useState<Record<string, { out_of_scope: string[]; untraceable: string[]; contradictions: string[]; verdict: string; summary: string }>>({});
+  // 深档:留在自动档内的施工包面板(开深档不跳产出,在这儿生成+改包+交马仔)
+  const [deepOpen, setDeepOpen] = useState(false);
+  const [deepInstruction, setDeepInstruction] = useState("");
+  const deepContract = useRef(""); // 冻结闸门卡合同(改包时复用,审计照它溯源)
   // 马仔 Agent
   const [agentTask, setAgentTask] = useState("");
   const [agentRunning, setAgentRunning] = useState(false);
@@ -469,7 +473,7 @@ function App() {
     setViewpoints([]); setDeliberation(null); setClarify(null); setRelayHops([]); setRelayCard(null); setDelibFails([]);
     setSolutionDoc(null); setMakingSolDoc(false);
     setAutoRun(null); setAutoLive(null); setAutoBusy(false); setAutoNote(""); setAutoInjected(null);
-    setForkChoice({}); setExpandedRounds(new Set()); setBuildAudits({}); // 切讨论清浅档/深档临时态,别串台
+    setForkChoice({}); setExpandedRounds(new Set()); setBuildAudits({}); setDeepOpen(false); setDeepInstruction(""); deepContract.current = ""; // 切讨论清浅档/深档临时态,别串台
     setCuration({}); setReplyOpen(null); setReplyText("");
     setBrief(SAMPLE_BRIEF[mode]);
     // 四站导航/交接复位:回默认首站 + 暖场强度 + 清挂起交接/下拉
@@ -503,6 +507,7 @@ function App() {
       setConverged(dis.converged || null);
       setArtifacts(dis.artifacts || []); setRefineFor(null); setRefineText("");
       setBuildAudits(Object.fromEntries((dis.artifacts || []).filter((a: Artifact) => a.audit).map((a: Artifact) => [a.id, a.audit]))); // 施工包溯源旗标:刷新后从持久 audit 回填
+      setDeepOpen((dis.artifacts || []).some((a: Artifact) => a.type === "build_package")); setDeepInstruction(""); deepContract.current = ""; // 有施工包就展开深档面板;冻结合同回落 solutionDoc
       setViewpoints(dis.viewpoints || []); setDeliberation(dis.deliberation || null); setClarify(dis.clarify || null); setDelibFails([]);
       setRelayHops(dis.relay?.hops || []); setRelayCard(dis.relay?.card || null); setSolutionDoc(dis.solutionDoc || null);
       setAutoRun(dis.autoRun || null); setAutoLive(null); setForkChoice({}); setExpandedRounds(new Set()); // buildAudits 上面已从持久 audit 回填,别清
@@ -3153,13 +3158,24 @@ function App() {
       "", "## 原始点子", brief || "",
       "", "> 深档任务:只围绕以上已拍板方向产出可交 codegen 的施工包,P0 砍到能证明点子的单一核心流程;不重新发散;若发现合同自相矛盾,显式标出回流给人,不要自行改方向。",
     ].filter(Boolean).join("\n");
+    // ★ 不跳产出:深档留在自动档内生成 + 迭代(用户改的就是这个传送+一锤子)。施工包仍存为 build_package 产物。
+    deepContract.current = ho;
     pendingHandoff.current = ho;
-    setProduceType("build_package");
-    switchTab("produce");
+    setDeepOpen(true);
     const pm = produceModel || produceProviders.find((p) => !p.image)?.id || produceProviders[0]?.id || "";
-    if (!pm) { flash("✓ 闸门卡已冻结注入产出站 —— 选个模型点生成施工包"); return; }
-    flash("✓ 闸门卡已冻结注入产出站 —— 正在生成施工包");
+    if (!pm) { flash("✓ 闸门卡已冻结 —— 在下方深档面板选个文本模型生成施工包"); return; }
+    flash("✓ 闸门卡已冻结 —— 正在自动档内生成施工包(冻结合同·不发散)");
     await produce("build_package", pm);
+  }
+  // 深档面板内:改一版 / 重新生成施工包(始终用冻结合同当 handoff,审计照它溯源;不发散)
+  async function deepRegen(refine: boolean) {
+    if (!discussion || producing) return;
+    const pm = produceModel || produceProviders.find((p) => !p.image)?.id || produceProviders[0]?.id || "";
+    if (!pm) { setRunError("先选个文本模型(产出站格式区),再生成施工包。"); return; }
+    if (deepContract.current) pendingHandoff.current = deepContract.current; // 在场:用内存里的冻结合同;刷新后回落 solutionDoc(后端已持久冻结合同)
+    const lastPkg = [...artifacts].reverse().find((a) => a.type === "build_package");
+    await produce("build_package", pm, refine && lastPkg ? lastPkg.id : undefined, deepInstruction.trim() || undefined);
+    setDeepInstruction("");
   }
   const autoSpark = (rounds: AutoRound[]) => {
     const w = 224, h = 46, pad = 7;
@@ -3425,10 +3441,45 @@ function App() {
                       {!formed
                         ? <div className="mono" style={{ fontSize: 10.5, color: "var(--amber)", lineHeight: 1.6 }}>闸门卡未成型(承重分叉不足 3 个 / 缺方向或假设)—— 点上方「↻ 重收口」再跑,够清晰才放行开深档。</div>
                         : <button className="amber-btn" style={{ padding: "10px 12px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center", opacity: allChosen ? 1 : 0.45 }} disabled={!allChosen || autoBusy || producing}
-                            title={allChosen ? "冻结闸门卡 → 产出站生成施工包" : "先把每个决策分叉都选定一个候选"} onClick={openDeep}>
-                            {allChosen ? "🔒 开深档 · 冻结方向 → 出施工包 →" : `还需拍板 ${gate.forks.length - gate.forks.filter((_, i) => forkChoice[i] != null).length} 个分叉`}
+                            title={allChosen ? "冻结闸门卡 → 在自动档内生成施工包" : "先把每个决策分叉都选定一个候选"} onClick={openDeep}>
+                            {allChosen ? "🔒 开深档 · 冻结方向 → 出施工包" : `还需拍板 ${gate.forks.length - gate.forks.filter((_, i) => forkChoice[i] != null).length} 个分叉`}
                           </button>}
                     </>}
+                </div>
+              );
+            })()}
+            {deepOpen && (() => {
+              const pkgs = artifacts.filter((a) => a.type === "build_package");
+              const latest = pkgs[pkgs.length - 1];
+              const pm = produceModel || produceProviders.find((p) => !p.image)?.id || produceProviders[0]?.id || "";
+              return (
+                <div style={{ border: "1px solid var(--mz)", borderRadius: 10, padding: "12px 13px", background: "rgba(95,208,196,.05)", display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#CFEDE8" }}>🔧 深档 · 施工包</span>
+                    <span className="mono" style={{ fontSize: 9.5, color: "var(--faint)" }}>冻结闸门卡施工 · 不发散</span>
+                    {producing && <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--mz)" }}>生成中…</span>}
+                  </div>
+                  {!latest && !producing && <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)", lineHeight: 1.6 }}>选个文本模型(产出站格式区)→ 点下方「生成施工包」,在自动档里直接出 + 改包。</div>}
+                  {latest && <>
+                    {buildAudits[latest.id] && (() => {
+                      const au = buildAudits[latest.id]; const v = au.verdict; const clean = v === "clean"; const neutral = v === "no_contract" || v === "unavailable";
+                      const col = clean ? "var(--green)" : neutral ? "var(--faint)" : "var(--amber)";
+                      const n = au.out_of_scope.length + au.untraceable.length + au.contradictions.length;
+                      const head = clean ? "✓ 溯源:贴合冻结闸门卡" : v === "no_contract" ? "○ 无冻结合同·未审" : v === "unavailable" ? "○ 审计未运行" : "⚠ 疑似越界·待回流";
+                      return <div className="mono" style={{ fontSize: 10, color: col, lineHeight: 1.5 }}>{head}{n ? `(${n} 项)` : ""} · {au.summary}</div>;
+                    })()}
+                    <div style={{ maxHeight: 280, overflow: "auto", border: "1px solid var(--line2)", borderRadius: 8, padding: "9px 11px", background: "rgba(0,0,0,.18)", fontSize: 11.5, color: "#cdd9e4", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{latest.content}</div>
+                    <div className="mono" style={{ fontSize: 9, color: "var(--faint)" }}>{pkgs.length} 版 · 最新 by {latest.provider}</div>
+                  </>}
+                  <textarea value={deepInstruction} disabled={producing} onChange={(e) => setDeepInstruction(e.target.value)} rows={2} placeholder="改包要求(可空):如『P0 砍到只剩登录+发帖』『补一节错误处理』—— 仍在冻结合同内,不发散" className="agent-input" style={{ fontSize: 12 }} />
+                  <div style={{ display: "flex", gap: 7 }}>
+                    <button className="mz-run" style={{ flex: 1, justifyContent: "center" }} disabled={producing || !pm} onClick={() => deepRegen(!!latest)}>{producing ? "生成中…" : latest ? "🔁 改这版(冻结合同内)" : "⚡ 生成施工包"}</button>
+                    {latest && <button className="ghost-chip" disabled={producing} title="不基于上版,重出一版" onClick={() => deepRegen(false)}>重出一版</button>}
+                  </div>
+                  {latest && <div style={{ display: "flex", gap: 7 }}>
+                    <button className="ghost-chip" style={{ flex: 1, justifyContent: "center" }} onClick={() => { setProduceType("build_package"); switchTab("produce"); }}>📦 产出站看全文/导出</button>
+                    <button className="ghost-chip" style={{ flex: 1, justifyContent: "center", color: "var(--mz)", borderColor: "rgba(95,208,196,.4)" }} onClick={() => { setMzTarget("artifact"); setMzOpen(true); setAgentTask("基于这份施工包,"); setProduceType("build_package"); switchTab("produce"); }}>⚡ 交马仔/Codex</button>
+                  </div>}
                 </div>
               );
             })()}

@@ -1022,6 +1022,8 @@ const server = http.createServer(async (req, res) => {
         if (type === "build_package" && out.kind !== "image" && out.content) {
           const contract = handoffDoc || d.conclusion || "";
           const frozen = contract.includes("已冻结") && contract.includes("闸门卡");
+          // 持久冻结合同到 solutionDoc → 刷新后深档「改包」仍以它当 handoff,溯源审计照旧对照(不靠前端内存)
+          if (frozen) { try { await setSolutionDoc(d.id, contract); } catch {} }
           let audit;
           if (!frozen) {
             audit = { out_of_scope: [], untraceable: [], contradictions: [], verdict: "no_contract", summary: "未走「开深档」冻结闸门卡 —— 本施工包不在冻结合同约束下,未做溯源审计" };
