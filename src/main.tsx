@@ -112,6 +112,10 @@ if (typeof window !== "undefined" && !(window as any).__roastErrHook) {
   window.addEventListener("unhandledrejection", (e) => console.error("[unhandledrejection]", (e.reason as any)?.message || e.reason, (e.reason as any)?.stack));
 }
 
+// 做减法:隐藏「撤最后一轮 / 生成本轮总结(提炼记忆)/ 提炼为 Skill」入口。代码全保留 —— 改回 true 即恢复。
+// 用 boolean 类型(非字面 false)是为了不让 TS 把 {HIDE && …} 当死代码而丢失 && 链里的类型收窄。
+const HIDE: boolean = false;
+
 async function streamSSE(
   path: string,
   body: unknown,
@@ -1668,7 +1672,8 @@ function App() {
             : <div className="board-empty" style={{ padding: 16 }}>左栏和搭子聊清楚 → 点中央「理清了」召多脑出方向卡</div>}
         </div></div>
         {handoffBar("relay")}
-        {turns.length >= 3 && !busy && !deliberating && discussion && (
+        {/* 提炼本次记忆 —— 暂时隐藏(做减法,代码保留) */}
+        {HIDE && turns.length >= 3 && !busy && !deliberating && discussion && (
           reflectDone ? (
             <div className="mono" style={{ fontSize: 10, color: "var(--green)", padding: "6px 12px" }}>
               ✓ 已提炼 {reflectDone.memories} 条记忆 · <span className="clk" style={{ color: "var(--cyan)" }} onClick={() => setShowMemoryPanel(true)}>查看</span>
@@ -1697,7 +1702,8 @@ function App() {
           {convergedBlock()}
         </div></div>
         {handoffBar("council")}
-        {viewpoints.length >= 3 && !deliberating && discussion && (
+        {/* 提炼本次记忆 —— 暂时隐藏(做减法,代码保留) */}
+        {HIDE && viewpoints.length >= 3 && !deliberating && discussion && (
           reflectDone ? (
             <div className="mono" style={{ fontSize: 10, color: "var(--green)", padding: "6px 12px" }}>
               ✓ 已提炼 {reflectDone.memories} 条记忆 · <span className="clk" style={{ color: "var(--cyan)" }} onClick={() => setShowMemoryPanel(true)}>查看</span>
@@ -3392,7 +3398,8 @@ function App() {
                         loopAuto(discussion.id, n || undefined);
                       }
                     }}>{autoBusy ? "跑这一轮中…" : autoNote.trim() ? "↳ 带这句续跑(恢复自动)" : "▶ 继续自动"}</button>
-                    {(autoRun?.rounds?.length || 0) > 0 && !autoBusy && (
+                    {/* 撤最后一轮 —— 暂时隐藏(做减法,代码保留) */}
+                    {HIDE && (autoRun?.rounds?.length || 0) > 0 && !autoBusy && (
                       <button className="mbtn" style={{ flex: "0 0 auto", padding: "8px 12px", fontSize: 11, color: "var(--muted)" }} title="撤销最后一轮" onClick={async () => {
                         if (!discussion) return;
                         const r = await fetch(`/api/discussion/${discussion.id}/autopilot/undo`, { method: "POST" }).then(x => x.json());
@@ -3522,8 +3529,8 @@ function App() {
               <button className="mbtn" style={{ flex: 1, justifyContent: "center" }} disabled={!md?.open_questions?.length || autoBusy} onClick={() => autoInject("council")} title="需待拍板≥1">议会</button>
               <button className="amber-btn" style={{ flex: 1.2, padding: "9px 10px", fontFamily: "var(--mono)", fontSize: 12.5, justifyContent: "center" }} disabled={!md?.direction || autoBusy} onClick={() => autoInject("produce")}>产出 →</button>
             </div>
-            {/* 生成 Reflection 总结 */}
-            {rounds.length >= 3 && !autoBusy && !autoLooping && (
+            {/* 生成 Reflection 总结 —— 暂时隐藏(做减法,代码保留;恢复把 false && 去掉即可) */}
+            {HIDE && rounds.length >= 3 && !autoBusy && !autoLooping && (
               reflectDone ? (
                 <div className="mono" style={{ fontSize: 10, color: "var(--green)" }}>
                   ✓ 已提炼 {reflectDone.memories} 条记忆 · {reflectDone.proposals} 条 Skill 候选 →
@@ -3544,8 +3551,8 @@ function App() {
                 }}>{reflectBusy ? "提炼中…" : "📝 生成本轮总结(提炼记忆)"}</button>
               )
             )}
-            {/* 自动提炼为 Skill */}
-            {md?.direction && !autoBusy && (
+            {/* 自动提炼为 Skill —— 暂时隐藏(做减法,代码保留) */}
+            {HIDE && md?.direction && !autoBusy && (
               distillOpen ? (
                 <div className="distill-form">
                   <div className="distill-form-title">💾 提炼为 Skill</div>
