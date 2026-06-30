@@ -1069,6 +1069,8 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const task = String(body.task || "").trim().slice(0, 2000);
       if (!task) return json(res, 400, { ok: false, error: "task required" });
+      // ★ 「作用于:最新产物/整份方案」→ 前端把那份内容当 material 传来,马仔基于它操作(转格式/精炼),而不是凭 brief 重攒
+      const material = body.material ? String(body.material).slice(0, 16000) : "";
       const byoKeys = body.keys && typeof body.keys === "object" ? body.keys : undefined;
       const agentSkillName = body.skillName ? String(body.skillName) : "";
       const agentLoadedSkill = agentSkillName ? loadSkill(agentSkillName) : null;
@@ -1086,9 +1088,13 @@ const server = http.createServer(async (req, res) => {
         const { block: memBlock, injected: memInjected } = await buildMemoryInjection(getMemories, req.userId, { discussionId: d.id, brief: d.brief, station: "agent", disabled: body.memory === false });
         const effBrief = memBlock ? memBlock + brief : brief;
         if (memBlock) sseSend(res, "memories", { station: "agent", injected: memInjected });
+        // 有指定产物 → 把它原文塞进任务输入,并明确"基于这份操作,别重新生成"
+        const effTask = material
+          ? `${task}\n\n────────── 要加工的内容(用户指定的产物原文 —— 基于它转换/精炼/补充,不要凭空重新生成一份)──────────\n${material}`
+          : task;
         await runAgentTask({
           brief: effBrief,
-          task,
+          task: effTask,
           skillText: agentSkillText,
           byoKeys,
           signal: ctrl.signal,

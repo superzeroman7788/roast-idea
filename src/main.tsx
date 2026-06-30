@@ -587,12 +587,21 @@ function App() {
   async function runAgent() {
     const task = agentTask.trim();
     if (!task || agentRunning || !discussion) return;
+    // 「作用于」:最新产物 → 带那份产物原文;整份方案 → 带方案文档(没有则用最近文本产物);空白任务 → 不带
+    let material = "";
+    if (mzTarget === "artifact") {
+      const a = [...artifacts].reverse().find((x) => x.type !== "image" && x.content);
+      material = a?.content || "";
+    } else if (mzTarget === "plan") {
+      const a = [...artifacts].reverse().find((x) => x.type !== "image" && x.content);
+      material = solutionDoc || a?.content || "";
+    }
     setAgentRunning(true); setAgentLog([]); setAgentHtml(""); setAgentFiles([]); setRunError("");
     const t = ++token.current;
     try {
       await streamSSE(
         `/api/discussion/${discussion.id}/agent`,
-        { task, skillName: loadedSkill?.name || undefined },
+        { task, skillName: loadedSkill?.name || undefined, material: material || undefined },
         (ev, d) => {
           if (cancelled(t)) return;
           if (ev === "agent-thinking") setAgentLog((p) => [...p, { type: "thinking", text: d.delta || "" }]);
