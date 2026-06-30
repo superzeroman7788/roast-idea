@@ -671,11 +671,14 @@ const server = http.createServer(async (req, res) => {
       const target = ["relay", "council", "produce"].includes(body.target) ? body.target : "relay";
       const md = d.autoRun?.md;
       if (!md) return json(res, 400, { ok: false, error: "还没有自动档草稿可注入" });
+      // ★ 浅档收口后,gateCard 才是拍过板的精炼成果(目标用户/3核心假设/3承重决策分叉/采纳点)——优先带它,别只带 md 一句话方向
+      const gate = d.autoRun?.gateCard || null;
+      const adopted = (d.autoRun?.adopted || []).map((a) => (typeof a === "string" ? a : a?.text)).filter((x) => x && x.trim());
       const missing = [];
-      if (!md.direction) missing.push("direction(方向)");
-      if (target === "council" && !(md.open_questions?.length)) missing.push("open_questions(待拍板≥1)");
+      if (!gate?.direction && !md.direction) missing.push("direction(方向)");
+      if (target === "council" && !(gate?.forks?.length) && !(md.open_questions?.length)) missing.push("决策分叉/待拍板(≥1)");
       if (missing.length) return json(res, 400, { ok: false, missing });
-      // 从全部轮次蒸出"成果":各轮署名观点 / 盲点 / 方向演进 —— 不是只带 direction 一句话
+      // 从全部轮次蒸出"成果":各轮署名观点 / 盲点 / 方向演进 —— 补充上下文(gateCard 之外的讨论实质)
       const rounds = d.autoRun?.rounds || [];
       const uniq = (arr) => [...new Set(arr.filter((x) => x && String(x).trim()))];
       const viewpoints = uniq(rounds.map((r) => r.viewpoint?.text));
@@ -683,21 +686,40 @@ const server = http.createServer(async (req, res) => {
       const blindSpots = uniq(rounds.flatMap((r) => r.eval?.blind_spots || []));
       const openIssues = uniq(rounds.flatMap((r) => r.eval?.open_issues || []));
       const angles = uniq(rounds.map((r) => r.lens?.name && r.fields?.direction ? `透镜「${r.lens.name}」→ ${r.fields.direction}` : null));
+      const direction = gate?.direction || md.direction || "";
       // 厚交接文档(写进 solutionDoc:四站读的持久上游源 `ho = pendingHandoff || solutionDoc`)
       const H = [];
-      H.push(`# 自动档粗稿 · ${(d.brief || "").split("\n")[0].slice(0, 50)}`);
-      H.push("", `> 自动档跑了 ${rounds.length} 轮(导演调度 + Claude/OpenAI/DeepSeek 三脑并行 + 反熵防复读)蒸出的结构化粗稿,请基于它继续推进,别从零开始。`, "");
-      H.push("## 一句话方向", md.direction || "(无)", "");
-      if (md.open_questions?.length) { H.push("## 待拍板(需要你/议会定的关键决策)"); md.open_questions.forEach((q) => H.push("- " + q)); H.push(""); }
+      H.push(`# 自动档${gate ? "闸门卡(已拍板浅档成果)" : "粗稿"} · ${(d.brief || "").split("\n")[0].slice(0, 50)}`);
+      H.push("", `> 自动档跑了 ${rounds.length} 轮${gate ? " 并已收口成方向闸门卡" : ""}(导演调度 + 三脑并行 + 反熵防复读)的结构化成果,请基于它继续推进,别从零开始。`, "");
+      H.push("## 一句话方向", direction || "(无)", "");
+      if (gate?.targetUser) { H.push("## 目标用户", gate.targetUser, ""); }
+      if (gate?.assumptions?.length) { H.push("## 核心假设(必须为真;含最危险那条)"); gate.assumptions.forEach((a) => H.push("- " + a)); H.push(""); }
+      if (gate?.forks?.length) {
+        H.push("## 必须拍板的承重决策(浅档已列分叉)");
+        gate.forks.forEach((f, i) => { H.push(`${i + 1}. ${f.question}${f.why ? `(${f.why})` : ""}`); (f.candidates || []).forEach((c) => H.push(`   - ${c.option}${c.tradeoff ? ` — 权衡:${c.tradeoff}` : ""}`)); });
+        H.push("");
+      } else if (md.open_questions?.length) { H.push("## 待拍板(需要你/议会定的关键决策)"); md.open_questions.forEach((q) => H.push("- " + q)); H.push(""); }
+      if (adopted.length) { H.push("## 你已采纳的实质点(强约束,务必保留)"); adopted.forEach((a) => H.push("- " + a)); H.push(""); }
       if (md.artifacts_hint?.length) { H.push("## 建议产出物", md.artifacts_hint.join("、"), ""); }
       if (viewpoints.length) { H.push("## 各轮署名观点(讨论出来的实质)"); viewpoints.forEach((v) => H.push("- " + v)); H.push(""); }
       if (dissents.length) { H.push("## 分歧 / 反对意见"); dissents.forEach((v) => H.push("- " + v)); H.push(""); }
       if (blindSpots.length || openIssues.length) { H.push("## 盲点 / 未解问题"); uniq([...blindSpots, ...openIssues]).forEach((v) => H.push("- " + v)); H.push(""); }
       if (angles.length) { H.push("## 方向演进脉络"); angles.forEach((a) => H.push("- " + a)); H.push(""); }
+      if (gate?.recommendation) { H.push("## 是否建议进深档", `${gate.recommendation.goDeep ? "建议" : "建议再想清楚"}:${gate.recommendation.reason || ""}`, ""); }
       H.push("## 原始点子", md.brief_original || d.brief || "");
       const handoff = H.join("\n");
-      // 厚方向卡(陪练直接看到的,不再只一句话)
-      const card = { oneLine: md.direction, clear: viewpoints.slice(0, 6), expandedAngles: angles.slice(0, 6), assumptions: dissents.slice(0, 6), firstNarrowing: md.artifacts_hint?.length ? "建议先产出:" + md.artifacts_hint.join("、") : "", decisionsForYou: md.open_questions || [], inviteYourInput: "", dontBuildYet: uniq([...blindSpots, ...openIssues]).slice(0, 6) };
+      // 厚方向卡(陪练/议会直接看到的):gateCard 优先 —— 分叉→待拍板、核心假设→假设、目标用户+采纳点→已清楚
+      const forkDecisions = (gate?.forks || []).map((f) => `${f.question}（${(f.candidates || []).map((c) => c.option).join(" / ")}）`);
+      const card = {
+        oneLine: direction,
+        clear: uniq([...(gate?.targetUser ? ["目标用户:" + gate.targetUser] : []), ...adopted, ...viewpoints]).slice(0, 8),
+        expandedAngles: angles.slice(0, 6),
+        assumptions: (gate?.assumptions?.length ? gate.assumptions : dissents).slice(0, 6),
+        firstNarrowing: md.artifacts_hint?.length ? "建议先产出:" + md.artifacts_hint.join("、") : "",
+        decisionsForYou: (forkDecisions.length ? forkDecisions : md.open_questions || []).slice(0, 8),
+        inviteYourInput: "",
+        dontBuildYet: uniq([...blindSpots, ...openIssues]).slice(0, 6),
+      };
       const relay = { card, hops: [{ order: 1, seat: "自动档", role: "auto", lens: null, added: [], framing: null, failed: false, latencyMs: 0 }], auto: true, artifactsHint: md.artifacts_hint || [] };
       try {
         const state = { ...d.autoRun, injectBackup: { relay: d.relay || null, solutionDoc: d.solutionDoc || null, at: new Date().toISOString(), target, roundIndex: rounds.length } };
