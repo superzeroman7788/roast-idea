@@ -1225,7 +1225,7 @@ function App() {
           )}
           {replyOpen === v.id && (
             <div className="vp-reply-box">
-              <input value={replyText} onChange={(e) => setReplyText(e.target.value)} autoFocus placeholder="插一句反驳…" onKeyDown={(e) => { if (e.key === "Enter") replyTo(v.id!, replyText); }} />
+              <input value={replyText} onChange={(e) => setReplyText(e.target.value)} autoFocus placeholder="插一句反驳…" onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) replyTo(v.id!, replyText); }} />
               <button onClick={() => replyTo(v.id!, replyText)} disabled={!replyText.trim()}>发</button>
             </div>
           )}
@@ -1541,7 +1541,7 @@ function App() {
                   value={agentTask}
                   onChange={(e) => setAgentTask(e.target.value)}
                   disabled={agentRunning}
-                  onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runAgent(); }}
+                  onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !e.nativeEvent.isComposing) runAgent(); }}
                 />
                 <button className="agent-run-btn" disabled={agentRunning || !agentTask.trim() || !discussion} onClick={runAgent}>
                   {agentRunning ? "■ 停止" : "⚡ 执行"}
@@ -1728,7 +1728,7 @@ function App() {
               onChange={(e) => (bindBrief ? setBrief(e.target.value) : setUserInput(e.target.value))}
               disabled={tab === "produce"}
               placeholder={c.ph}
-              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!c.disabled) c.run(); } }}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); if (!c.disabled) c.run(); } }}
             />
             <div style={{ fontSize: 11, color: "#3a5878", fontFamily: "var(--mono)", marginTop: 4 }}>{c.hint}{tab !== "produce" ? " · 回车换行,⌘/Ctrl+Enter 提交" : ""}</div>
           </div>
@@ -1892,7 +1892,7 @@ function App() {
         <div style={{ padding: "9px 12px", borderTop: "1px solid var(--line)" }}>
           {editing ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", resize: "vertical", minHeight: 56, lineHeight: 1.5 }} value={correctText} autoFocus placeholder="这条哪儿不对?(可留空,直接否掉)· Enter 提交,Shift+Enter 换行" onChange={(e) => setCorrectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); correctTurn(turn, correctText.trim()); } if (e.key === "Escape") { setCorrectFor(null); setCorrectText(""); } }} />
+              <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", resize: "vertical", minHeight: 56, lineHeight: 1.5 }} value={correctText} autoFocus placeholder="这条哪儿不对?(可留空,直接否掉)· Enter 提交,Shift+Enter 换行" onChange={(e) => setCorrectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); correctTurn(turn, correctText.trim()); } if (e.key === "Escape") { setCorrectFor(null); setCorrectText(""); } }} />
               <div style={{ display: "flex", gap: 7 }}>
                 <button className="mbtn" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => correctTurn(turn, correctText.trim())}>纠偏 · 重答这条 + 告诉全桌</button>
                 <button className="ghost-chip" onClick={() => { setCorrectFor(null); setCorrectText(""); }}>取消</button>
@@ -1942,7 +1942,7 @@ function App() {
           <textarea value={bind ? brief : userInput} disabled={busy} rows={1}
             placeholder={drafting ? "说说你的点子,开始想清楚…" : "回应搭子 / 补充想法,继续往下聊…"}
             onChange={(e) => (bind ? setBrief(e.target.value) : setUserInput(e.target.value))}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
           <input ref={fileRef} type="file" multiple accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.yml,.yaml" style={{ display: "none" }} onChange={(e) => { addAttachFiles(e.target.files); e.currentTarget.value = ""; }} />
           <button className="ghost-chip" disabled={busy} title="添加图片 / 文本文件(喂给搭子参考)" onClick={() => fileRef.current?.click()} style={{ padding: "7px 11px", fontSize: 14 }}>📎</button>
           {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
@@ -2333,7 +2333,7 @@ function App() {
           <textarea value={drafting ? brief : userInput} disabled={busy} rows={1}
             placeholder={drafting ? "描述你的点子,开始事实侦察…" : "追加侦察方向 / 修订点子,重新搜索…"}
             onChange={(e) => (drafting ? setBrief(e.target.value) : setUserInput(e.target.value))}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
           {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
           <button className="amber-btn" style={{ padding: "10px 18px", fontFamily: "var(--mono)", fontSize: 13 }} disabled={busy || deliberating || (drafting && !brief.trim())} onClick={send}>{busy ? "侦察中…" : pack ? "重新搜索 →" : "开始搜索 →"}</button>
         </div>
@@ -2540,7 +2540,7 @@ function App() {
         {menuOpen && artMenu?.mode === "refine" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 7, paddingTop: 4 }}>
             <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>让 <b style={{ color: pc }}>{a.provider}</b> 自己改(给一句具体要求,不换模型):</span>
-            <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", resize: "vertical", minHeight: 50, lineHeight: 1.5 }} value={artInstr} autoFocus placeholder="例如:把 MVP 范围写具体 / 风险那节再补 2 条 / 语气更克制 …(⌘/Ctrl+Enter 提交)" onChange={(e) => setArtInstr(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { if (sameModelId) { produce(a.type, sameModelId, a.id, artInstr.trim() || undefined); setArtMenu(null); setArtInstr(""); } } if (e.key === "Escape") { setArtMenu(null); setArtInstr(""); } }} />
+            <textarea className="yc-reply" style={{ width: "100%", boxSizing: "border-box", flex: "none", resize: "vertical", minHeight: 50, lineHeight: 1.5 }} value={artInstr} autoFocus placeholder="例如:把 MVP 范围写具体 / 风险那节再补 2 条 / 语气更克制 …(⌘/Ctrl+Enter 提交)" onChange={(e) => setArtInstr(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { if (sameModelId) { produce(a.type, sameModelId, a.id, artInstr.trim() || undefined); setArtMenu(null); setArtInstr(""); } } if (e.key === "Escape") { setArtMenu(null); setArtInstr(""); } }} />
             <div style={{ display: "flex", gap: 7 }}>
               <button className="mbtn" disabled={producing || !sameModelId} onClick={() => { produce(a.type, sameModelId!, a.id, artInstr.trim() || undefined); setArtMenu(null); setArtInstr(""); }}>✎ 让 {a.provider} 改这版</button>
               <button className="ghost-chip" onClick={() => { setArtMenu(null); setArtInstr(""); }}>取消</button>
@@ -2690,7 +2690,7 @@ function App() {
                       value={agentTask}
                       onChange={(e) => setAgentTask(e.target.value)}
                       disabled={agentRunning}
-                      onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runAgent(); }}
+                      onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !e.nativeEvent.isComposing) runAgent(); }}
                     />
                     <button className="mz-run" disabled={agentRunning || !agentTask.trim() || !discussion} onClick={runAgent}>
                       {agentRunning ? "■ 停止" : "⚡ 执行"}
@@ -2742,7 +2742,7 @@ function App() {
               <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
               <textarea value={userInput} disabled={producing} rows={1} placeholder={discussion ? "补充生成要求 / 指定风格语气,让 AI 重新产出…" : "写要做什么 / 附素材 → 选格式+模型,直接生成(产出可独立用)…"}
                 onChange={(e) => setUserInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (model && !producing && (discussion || userInput.trim() || attachments.length)) { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); } } }} />
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); if (model && !producing && (discussion || userInput.trim() || attachments.length)) { produce(fmt, model, undefined, userInput.trim() || undefined); setUserInput(""); } } }} />
               <input ref={fileRef} type="file" multiple accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.yml,.yaml" style={{ display: "none" }} onChange={(e) => { addAttachFiles(e.target.files); e.currentTarget.value = ""; }} />
               <button className="ghost-chip" disabled={producing} title="附素材给 AI 参考(图片仿样 / 文档改写)" onClick={() => fileRef.current?.click()} style={{ padding: "7px 11px", fontSize: 14 }}>📎</button>
               {producing
@@ -2873,7 +2873,7 @@ function App() {
         </div>
         {replyOpen === v.id && (
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="yc-reply" value={replyText} autoFocus placeholder="插一句你的反驳 / 追问…" onChange={(e) => setReplyText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") replyTo(v.id!, replyText); }} />
+            <input className="yc-reply" value={replyText} autoFocus placeholder="插一句你的反驳 / 追问…" onChange={(e) => setReplyText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) replyTo(v.id!, replyText); }} />
             <button className="mbtn" onClick={() => replyTo(v.id!, replyText)}>记下</button>
           </div>
         )}
@@ -2984,7 +2984,7 @@ function App() {
               <span className="mono" style={{ color: "var(--cyan)", fontSize: 14 }}>›</span>
               <textarea value={userInput} disabled={deliberating || busy} rows={1} placeholder="追问某位 AI / 提出你的反驳,让议会再开一轮火…"
                 onChange={(e) => setUserInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (discussion && !deliberating) { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); } } }} />
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); if (discussion && !deliberating) { runCouncil(councilIntensity, userInput.trim() || undefined); setUserInput(""); } } }} />
               {started && <span className="ghost-chip" onClick={reset}>＋新讨论</span>}
               {deliberating || busy
                 ? <button className="ghost-chip" title="停止当前审议(卡住时点这里,不用退出重进)" onClick={cancelRun} style={{ padding: "7px 13px", fontSize: 12.5, color: "var(--red)", borderColor: "var(--red)" }}>■ 停止</button>
