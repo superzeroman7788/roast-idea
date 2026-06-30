@@ -1516,6 +1516,7 @@ export async function runAgentTask({ brief, task, skillText, onEvent, byoKeys, s
 - HTML 成果：完整自包含文件，内联 CSS 和 JS，图表用 Chart.js CDN，不依赖本地文件。
 - 数据分析：先输出关键结论，再附详细数据或图表，不要只甩原始数字。
 - 多步任务：每完成一步简短说明进展（一句话），最后汇总成果。
+- 生成文件（docx/xlsx/pdf 等）后：直接说"文件已生成，见下方下载按钮"，★ 不要在正文写 sandbox:/mnt/data/... 之类的下载链接（那是沙箱内部路径，用户点不了）。
 - 遇到模糊指令：基于项目背景做最合理的假设，完成后说明你做了什么假设。
 
 ## 不做的事
@@ -1544,6 +1545,9 @@ export async function runAgentTask({ brief, task, skillText, onEvent, byoKeys, s
   let lastEvType = "";
   let textAcc = "";
   const fileIds = [];
+  let containerId = null; // code_interpreter 容器 id —— 写到 /mnt/data 的文件要走容器端点下载,不是全局 /v1/files
+  const EXT_MIME = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf", csv: "text/csv", json: "application/json", txt: "text/plain", md: "text/markdown", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", zip: "application/zip" };
+  const mimeFromName = (n) => EXT_MIME[(String(n || "").split(".").pop() || "").toLowerCase()] || "application/octet-stream";
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1564,6 +1568,9 @@ export async function runAgentTask({ brief, task, skillText, onEvent, byoKeys, s
         const evType = lastEvType || ev.type || "";
         lastEvType = "";
 
+        // 容器 id 可能出现在多种事件里 —— 抓到就记,下载容器文件要用
+        containerId = ev.container_id || ev.item?.container_id || ev.code_interpreter_call?.container_id || containerId;
+
         if (evType === "response.output_text.delta") {
           const delta = ev.delta || "";
           textAcc += delta;
@@ -1574,10 +1581,22 @@ export async function runAgentTask({ brief, task, skillText, onEvent, byoKeys, s
           for (const out of (ev.outputs || [])) {
             if (out.type === "logs" && out.logs) onEvent("output", { text: out.logs });
             else if (out.type === "files") {
-              for (const f of (out.files || [])) { if (f.file_id) fileIds.push({ fileId: f.file_id, mimeType: f.mime_type || "application/octet-stream" }); }
+              for (const f of (out.files || [])) { if (f.file_id) fileIds.push({ fileId: f.file_id, mimeType: f.mime_type || "", filename: f.filename || "" }); }
             }
           }
-        } else if (evType === "response.completed") {
+        } else if (evType === "response.completed" || evType === "response.output_item.done") {
+          // ★ 容器文件:模型写到 /mnt/data 的 docx/xlsx/pdf 等,以 container_file_citation 注解出现在消息里(不是 outputs.files)
+          const items = ev.response?.output || (ev.item ? [ev.item] : []);
+          for (const item of items) {
+            if (item?.type === "code_interpreter_call" && item.container_id) containerId = item.container_id;
+            for (const c of (item?.content || [])) {
+              for (const a of (c.annotations || [])) {
+                if (a.file_id && (a.type === "container_file_citation" || a.type === "file_citation" || a.type === "file_path")) {
+                  fileIds.push({ fileId: a.file_id, containerId: a.container_id, filename: a.filename || "", mimeType: "" });
+                }
+              }
+            }
+          }
           // 从文本里提取 HTML 块
           const htmlMatch = textAcc.match(/```html\n?([\s\S]*?)```/i);
           const fullMatch = !htmlMatch && /<html[\s>]/i.test(textAcc) ? textAcc.match(/(<html[\s\S]*?<\/html>)/i) : null;
@@ -1588,15 +1607,26 @@ export async function runAgentTask({ brief, task, skillText, onEvent, byoKeys, s
     }
   }
 
-  // 下载 code_interpreter 生成的文件(如 matplotlib 图)
-  for (const { fileId, mimeType } of fileIds) {
+  // 下载 code_interpreter 生成的文件(matplotlib 图 / docx / xlsx / pdf…)
+  const seen = new Set();
+  for (const { fileId, containerId: cid, mimeType, filename } of fileIds) {
+    if (!fileId || seen.has(fileId)) continue;
+    seen.add(fileId);
+    const useCid = cid || containerId;
+    // ★ 优先容器端点(写到 /mnt/data 的文件在这里),回落全局 /v1/files(旧式 outputs.files)
+    const urls = [
+      useCid && `https://api.openai.com/v1/containers/${useCid}/files/${fileId}/content`,
+      `https://api.openai.com/v1/files/${fileId}/content`,
+    ].filter(Boolean);
     try {
-      const r = await fetch(`https://api.openai.com/v1/files/${fileId}/content`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-      if (r.ok) {
-        const b64 = Buffer.from(await r.arrayBuffer()).toString("base64");
-        onEvent("file-artifact", { mimeType, b64 });
+      let bytes = null;
+      for (const u of urls) {
+        const r = await fetch(u, { headers: { Authorization: `Bearer ${apiKey}` } });
+        if (r.ok) { bytes = await r.arrayBuffer(); break; }
+      }
+      if (bytes) {
+        const b64 = Buffer.from(bytes).toString("base64");
+        onEvent("file-artifact", { mimeType: mimeType || mimeFromName(filename), b64, filename: filename || "" });
       }
     } catch {}
   }

@@ -883,12 +883,13 @@ a.cl:hover{color:var(--cyan);text-decoration:underline}
 .agent-run-btn:hover:not(:disabled){background:rgba(72,220,255,.12);box-shadow:0 0 10px #48dcff22}
 .agent-run-btn:disabled{opacity:.4;cursor:not-allowed}
 .agent-stream{margin-top:10px;border:1px solid #0f2035;border-radius:8px;padding:8px 10px;background:#040a12;max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
-.agent-line{display:flex;gap:7px;align-items:flex-start;font-family:var(--mono);font-size:11px;line-height:1.5}
-.agent-line-label{flex:0 0 auto;font-size:10px;letter-spacing:.08em;padding:1px 5px;border-radius:3px;border:1px solid #1d3350;color:var(--tx3);margin-top:1px}
+.agent-line{display:flex;gap:7px;align-items:flex-start;font-size:12.5px;line-height:1.62}
+.agent-line-label{flex:0 0 auto;font-family:var(--mono);font-size:10px;letter-spacing:.08em;padding:1px 5px;border-radius:3px;border:1px solid #1d3350;color:var(--tx3);margin-top:1px}
 .agent-line-label.code{color:#f7c948;border-color:#3a2e1a}
 .agent-line-label.out{color:var(--green);border-color:#1c4a36}
-.agent-line-text{color:#b8cfe0;white-space:pre-wrap;word-break:break-all}
-.agent-line-thinking .agent-line-text{color:var(--tx3)}
+.agent-line-text{color:#cdd9e4;white-space:pre-wrap;word-break:break-word;font-family:var(--sans)} /* 中文自然语言用 sans —— 等宽字体没中文字形会糊 */
+.agent-line-code .agent-line-text{font-family:var(--mono);font-size:11.5px;color:#b8cfe0} /* 只有代码才用等宽 */
+.agent-line-thinking .agent-line-text{color:#9fb3c6}
 .agent-result{margin-top:12px;border:1px solid #1d3a5a;border-radius:9px;overflow:hidden}
 .agent-result-head{display:flex;align-items:center;gap:10px;padding:7px 11px;font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--tx2);background:#08121f;border-bottom:1px solid #1d3350}
 .agent-dl-btn{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--cyan);background:transparent;border:1px solid rgba(72,220,255,.3);border-radius:5px;padding:2px 8px;cursor:pointer}

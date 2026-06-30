@@ -300,7 +300,7 @@ function App() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentLog, setAgentLog] = useState<{ type: string; text: string }[]>([]);
   const [agentHtml, setAgentHtml] = useState("");
-  const [agentFiles, setAgentFiles] = useState<{ mimeType: string; b64: string }[]>([]);
+  const [agentFiles, setAgentFiles] = useState<{ mimeType: string; b64: string; filename?: string }[]>([]);
   const [mzOpen, setMzOpen] = useState(false);
   const [mzTarget, setMzTarget] = useState<"artifact" | "plan" | "blank">("blank");
   // Skill 系统
@@ -599,7 +599,7 @@ function App() {
           else if (ev === "agent-code") setAgentLog((p) => [...p, { type: "code", text: d.delta || "" }]);
           else if (ev === "agent-output") setAgentLog((p) => [...p, { type: "output", text: d.text || "" }]);
           else if (ev === "agent-html-artifact") setAgentHtml(d.html || "");
-          else if (ev === "agent-file-artifact") setAgentFiles((p) => [...p, { mimeType: d.mimeType, b64: d.b64 }]);
+          else if (ev === "agent-file-artifact") setAgentFiles((p) => [...p, { mimeType: d.mimeType, b64: d.b64, filename: d.filename || "" }]);
           else if (ev === "memories") setMemInjected({ station: d.station, items: d.injected || [] });
           else if (ev === "error") setRunError(d.error || "agent failed");
         },
@@ -959,6 +959,17 @@ function App() {
     flashTimer.current = setTimeout(() => setFlashMsg(""), 1600);
   }
   // 复制 + 反馈:成功浮「✓ 已复制」,失败给可操作提示(不再静默)
+  // 马仔产出文件下载:b64 → blob → 下载,用真实文件名(docx/xlsx/pdf 等)
+  function dlAgentFile(f: { mimeType: string; b64: string; filename?: string }) {
+    try {
+      const bs = atob(f.b64); const arr = new Uint8Array(bs.length);
+      for (let j = 0; j < bs.length; j++) arr[j] = bs.charCodeAt(j);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([arr], { type: f.mimeType }));
+      a.download = f.filename || `agent-output.${(f.mimeType.split("/")[1] || "bin").split("+")[0]}`;
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    } catch (e) { setRunError("下载失败:" + (e as Error).message); }
+  }
   async function copy(text: string, label = "已复制") {
     try { await navigator.clipboard.writeText(text || ""); flash("✓ " + label); }
     catch { flash("复制失败 —— 请手动选中复制"); }
@@ -1589,15 +1600,8 @@ function App() {
               {agentFiles.map((f, i) => (
                 <div key={i} className="agent-result">
                   <div className="agent-result-head">
-                    文件成果 ({f.mimeType})
-                    <button className="agent-dl-btn" onClick={() => {
-                      const byteStr = atob(f.b64);
-                      const arr = new Uint8Array(byteStr.length);
-                      for (let j = 0; j < byteStr.length; j++) arr[j] = byteStr.charCodeAt(j);
-                      const blob = new Blob([arr], { type: f.mimeType });
-                      const ext = f.mimeType.split("/")[1] || "bin";
-                      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `agent-output.${ext}`; a.click();
-                    }}>下载</button>
+                    📄 {f.filename || `文件成果 (${f.mimeType})`}
+                    <button className="agent-dl-btn" onClick={() => dlAgentFile(f)}>下载</button>
                   </div>
                   {f.mimeType.startsWith("image/") && (
                     <img className="agent-img" src={`data:${f.mimeType};base64,${f.b64}`} alt="agent output" />
@@ -2725,7 +2729,7 @@ function App() {
                   )}
                   {agentFiles.map((f, i) => (
                     <div key={i} className="agent-result">
-                      <div className="agent-result-head">文件成果 ({f.mimeType}) <button className="agent-dl-btn" onClick={() => { const byteStr = atob(f.b64); const arr = new Uint8Array(byteStr.length); for (let j = 0; j < byteStr.length; j++) arr[j] = byteStr.charCodeAt(j); const blob = new Blob([arr], { type: f.mimeType }); const ext = f.mimeType.split("/")[1] || "bin"; const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `agent-output.${ext}`; a.click(); }}>下载</button></div>
+                      <div className="agent-result-head">📄 {f.filename || `文件成果 (${f.mimeType})`} <button className="agent-dl-btn" onClick={() => dlAgentFile(f)}>下载</button></div>
                       {f.mimeType.startsWith("image/") && <img className="agent-img" src={`data:${f.mimeType};base64,${f.b64}`} alt="agent output" />}
                     </div>
                   ))}
