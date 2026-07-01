@@ -34,7 +34,7 @@ export function Landing() {
 
   return (
     <div className="landing">
-      <iframe className="land-video" src="/launch/launch.html" title="ROAST · 点子陪练" tabIndex={-1} />
+      <iframe className="land-video" src="/launch/launch.html" title="ROAST · jevis" tabIndex={-1} />
       <div className="land-overlay">
         {sent ? (
           <div className="land-sent">

@@ -110,7 +110,7 @@ function setSessionCookie(res, token) {
 }
 const clearSessionCookie = (res) => res.setHeader("Set-Cookie", `roast_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
 // 邀请白名单:站长 + 硬编码兜底名单 ALLOWED_EXTRA + env ROAST_ALLOWED_EMAILS(逗号分隔,两者合并)
-const ALLOWED_EXTRA = ["5423696@qq.com", "624958300@qq.com", "biglx@sina.com.cn"]; // 站长 QQ 备用邮箱 + 受邀用户
+const ALLOWED_EXTRA = ["5423696@qq.com", "624958300@qq.com", "biglx@sina.com.cn", "47337436@qq.com", "hedyvivian@gmail.com"]; // 站长 QQ 备用邮箱 + 受邀用户
 function isInvited(email) {
   const e = String(email || "").trim().toLowerCase();
   if (!e || !e.includes("@")) return false;
@@ -133,7 +133,7 @@ async function sendMagicLink(email, link) {
   try {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST", headers: { authorization: `Bearer ${process.env.RESEND_API_KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ from: process.env.ROAST_MAIL_FROM || "ROAST <onboarding@resend.dev>", to: email, subject: "登录 ROAST · 点子陪练", html: `<p>点击登录(15 分钟内有效):</p><p><a href="${link}">${link}</a></p>` }),
+      body: JSON.stringify({ from: process.env.ROAST_MAIL_FROM || "ROAST <onboarding@resend.dev>", to: email, subject: "登录 ROAST · jevis", html: `<p>点击登录(15 分钟内有效):</p><p><a href="${link}">${link}</a></p>` }),
     });
     if (!r.ok) { console.error("[roast-auth] resend failed:", r.status, await r.text().catch(() => "")); console.log(`[roast-auth] 链接回退日志: ${link}`); return "log"; }
     return "email";

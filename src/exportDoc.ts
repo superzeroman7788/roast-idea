@@ -42,7 +42,7 @@ export function exportMarkdown(p: ExportPayload) {
   const ev = p.evidence?.length
     ? "\n\n## 引用证据\n" + p.evidence.map((e) => `- ${e.id} [${e.source}] ${e.title} — ${e.url}`).join("\n")
     : "";
-  const md = `# ${p.title}\n\n> 由 ROAST 点子陪练(多 agent 讨论)打磨\n\n${p.conclusion}${ev}\n`;
+  const md = `# ${p.title}\n\n> 由 ROAST jevis(多 agent 讨论)打磨\n\n${p.conclusion}${ev}\n`;
   download(new Blob([md], { type: "text/markdown;charset=utf-8" }), `roast-${stamp()}.md`);
 }
 
@@ -69,7 +69,7 @@ export function exportPng(p: ExportPayload) {
   ctx.fillText("ROAST", 40, 56);
   ctx.fillStyle = "#5f7a98";
   ctx.font = '20px ui-monospace, Menlo, monospace';
-  ctx.fillText("· 点子陪练 · 打磨后的方案", 122, 56);
+  ctx.fillText("· jevis · 打磨后的方案", 122, 56);
 
   ctx.font = '600 26px -apple-system, system-ui, sans-serif';
   ctx.fillStyle = "#dcecf6";
@@ -145,7 +145,7 @@ export async function exportDocx(p: ExportPayload) {
   const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import("docx");
   const children: any[] = [
     new Paragraph({ text: p.title, heading: HeadingLevel.TITLE }),
-    new Paragraph({ children: [new TextRun({ text: "由 ROAST 点子陪练(多 agent 讨论)打磨", italics: true, color: "7F97B0" })] }),
+    new Paragraph({ children: [new TextRun({ text: "由 ROAST jevis(多 agent 讨论)打磨", italics: true, color: "7F97B0" })] }),
   ];
   for (const s of parseSections(p.conclusion)) {
     if (s.h) children.push(new Paragraph({ text: s.h, heading: HeadingLevel.HEADING_2 }));
@@ -173,7 +173,7 @@ export async function exportPptx(p: ExportPayload) {
   title.background = { color: "04070E" };
   title.addText("ROAST", { x: 0.5, y: 1.7, w: 9, h: 0.8, fontSize: 40, color: "34E1FF", bold: true, align: "center" });
   title.addText(p.title, { x: 0.8, y: 2.7, w: 8.4, h: 1.2, fontSize: 22, color: "DCECF6", align: "center" });
-  title.addText("点子陪练 · 多 agent 讨论打磨后的方案", { x: 0.5, y: 4.1, w: 9, h: 0.5, fontSize: 13, color: "7F97B0", align: "center" });
+  title.addText("jevis · 多 agent 讨论打磨后的方案", { x: 0.5, y: 4.1, w: 9, h: 0.5, fontSize: 13, color: "7F97B0", align: "center" });
 
   for (const s of parseSections(p.conclusion)) {
     const sl = pptx.addSlide();

@@ -1779,7 +1779,7 @@ function App() {
   const topChrome = () => (
     <>
       <div className="topbar">
-        <div className="brand">ROAST &nbsp;·&nbsp; <b>SPARRING&nbsp;COUNCIL</b> &nbsp;·&nbsp; 点子陪练</div>
+        <div className="brand">ROAST &nbsp;·&nbsp; <b>SPARRING&nbsp;COUNCIL</b> &nbsp;·&nbsp; jevis</div>
         <div className={`online${conn.ok ? "" : " off"}`}><span className="dot" />{conn.text}</div>
       </div>
       <div className="steps">

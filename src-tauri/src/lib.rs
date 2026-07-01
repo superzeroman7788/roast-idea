@@ -15,7 +15,7 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
   };
   let dl_dir = app.path().download_dir().ok();
   WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
-    .title("ROAST · 点子陪练")
+    .title("ROAST · jevis")
     .inner_size(1280.0, 860.0)
     .min_inner_size(1024.0, 700.0)
     .resizable(true)
