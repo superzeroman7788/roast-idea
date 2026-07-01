@@ -985,6 +985,7 @@ function App() {
       add("b64", f.b64); add("filename", name); add("mimeType", f.mimeType || "application/octet-stream");
       document.body.appendChild(form); form.submit();
       setTimeout(() => form.remove(), 4000);
+      flash(`↓ 已开始下载「${name}」· 见「下载」文件夹`); // 下载无"完成"事件,提交即给反馈,别让用户以为没反应
     } catch (e) { setRunError("下载失败:" + (e as Error).message); }
   }
   async function copy(text: string, label = "已复制") {
